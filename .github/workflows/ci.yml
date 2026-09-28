@@ -374,6 +374,13 @@ jobs:
                     /usr/local/lib/android \
                     /usr/share/dotnet \
                     /usr/share/swift
+        # Fix malformed eccodes.pc that generates invalid include paths
+        # Ubuntu 24.04's libeccodes-dev package has an incorrect includedir
+        for dir in /usr/lib/*/pkgconfig; do
+          if [ -f "$dir/eccodes.pc" ]; then
+            sudo sed -i 's|^includedir=.*$|includedir=/usr/include|' "$dir/eccodes.pc"
+          fi
+        done
         df -h
 
     - name: Setup macOS Environment
