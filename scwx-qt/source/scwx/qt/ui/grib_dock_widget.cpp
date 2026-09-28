@@ -1,8 +1,10 @@
 #include <scwx/qt/ui/grib_dock_widget.hpp>
 #include <scwx/qt/manager/grib_manager.hpp>
+#include <scwx/qt/manager/hodograph_manager.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
 #include <scwx/qt/ui/checkable_combo_box.hpp>
 #include <scwx/qt/ui/widgets/focused_spin_box.hpp>
+#include <scwx/provider/nbm_data_provider.hpp>
 #include <scwx/provider/rrfs_data_provider.hpp>
 
 #include <chrono>
@@ -12,6 +14,7 @@
 #include <fmt/format.h>
 
 #include <QComboBox>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -37,8 +40,10 @@ std::string CategoryDisplayName(map::GribCategory category)
    case map::GribCategory::Rtma:
       return "RTMA";
    case map::GribCategory::Rrfs:
-   default:
       return "RRFS";
+   case map::GribCategory::Nbm:
+   default:
+      return "NBM";
    }
 }
 
@@ -56,6 +61,43 @@ constexpr int kRrfsCycleHistoryHours_ = 24;
 // cycle's own max) takes ~42s at this pace, fast enough to actually watch
 // evolve without being so fast the frame-by-frame detail blurs together.
 constexpr int kRrfsAnimationIntervalMs_ = 500;
+
+// Same reasoning as kRrfsCycleHistoryHours_ -- NBM also cycles hourly.
+constexpr int kNbmCycleHistoryHours_ = 24;
+
+struct MapCropPreset
+{
+   std::string name;
+   double      southLatitude;
+   double      westLongitude;
+   double      northLatitude;
+   double      eastLongitude;
+};
+
+// SPC's own published mesoscale-analysis sector names (confirmed live,
+// 2026-09-26, via https://www.spc.noaa.gov/exper/mesoanalysis/'s own
+// sector-map image alt text -- "National", "Northwest", "Southwest",
+// "Northern Plains", "Central Plains", "Southern Plains", "Northeast",
+// "East Central", "Southeast", "Midwest") -- but the bounds below are
+// only approximate. SPC's page doesn't expose the sectors' own numeric
+// lat/lon bounds directly (only pixel coordinates in an HTML image map),
+// so these were derived by linearly transforming that image map's own
+// sector polygons against a standard CONUS bounding box, not scraped
+// precisely from an authoritative source. Good enough for a "jump the
+// view here" convenience preset, not meant to reproduce SPC's own
+// internal analysis grid to the pixel.
+const std::vector<MapCropPreset> kMapCropPresets_ {
+   {"CONUS", 24.5, -125.0, 49.5, -66.0},
+   {"Northwest", 39.2, -123.2, 49.0, -99.3},
+   {"Southwest", 32.0, -124.9, 42.3, -99.0},
+   {"Northern Plains", 39.1, -106.8, 48.1, -84.4},
+   {"Central Plains", 33.8, -106.7, 42.5, -85.0},
+   {"Southern Plains", 28.0, -108.7, 38.8, -83.0},
+   {"Midwest", 34.6, -100.8, 44.1, -79.2},
+   {"Northeast", 38.1, -91.2, 49.0, -67.1},
+   {"East Central", 33.4, -90.1, 42.5, -69.6},
+   {"Southeast", 28.2, -94.6, 36.8, -73.7},
+};
 
 } // namespace
 
@@ -86,6 +128,10 @@ struct CategorySection
    // preserves the original unbounded behavior.
    QSpinBox* loopStartSpinBox {};
    QSpinBox* loopEndSpinBox {};
+
+   // Captures the map view plus this section's own current product as a
+   // PNG (see GribDockWidget::ExportSnapshotRequested).
+   QPushButton* exportButton {};
 };
 
 class GribDockWidget::Impl
@@ -98,6 +144,19 @@ public:
                      QVBoxLayout*      parentLayout,
                      QWidget*          dockContents);
    void RefreshSection(CategorySection& section);
+
+   // Static (no live data, no manager, no signal wiring) -- just a color
+   // key for HodographLayer's height-band coloring plus a range-ring
+   // note, read from manager::HodographManager::HeightBands() (the same
+   // shared table HodographLayer itself colors segments from) so this
+   // can never show a color that doesn't match what's actually drawn on
+   // the map.
+   void BuildHodographLegend(QVBoxLayout* parentLayout, QWidget* dockContents);
+
+   // A row of named preset buttons, each emitting MapBoundsRequested()
+   // with that preset's own bounds (see kMapCropPresets_) -- map-wide, not
+   // per-category, so built once rather than per BuildSection() call.
+   void BuildMapCropPanel(QVBoxLayout* parentLayout, QWidget* dockContents);
 
    GribDockWidget*              self_;
    std::vector<CategorySection> sections_;
@@ -128,6 +187,9 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
       section.comboBox->SetChecked(name, true);
    }
    groupLayout->addWidget(section.comboBox);
+
+   section.exportButton = new QPushButton(tr("Export PNG..."), groupBox);
+   groupLayout->addWidget(section.exportButton);
 
    if (category == map::GribCategory::Rrfs)
    {
@@ -187,6 +249,45 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
       section.animationTimer = new QTimer(self_);
       section.animationTimer->setInterval(kRrfsAnimationIntervalMs_);
    }
+   else if (category == map::GribCategory::Nbm)
+   {
+      // Same shape as the Rrfs block above, minus the loop-range
+      // spinboxes and HodographManager coupling -- neither applies here
+      // (see GribManager::SetNbmCycle()'s own doc: no loop-range
+      // equivalent, and NBM doesn't feed the hodograph).
+      section.cycleComboBox = new QComboBox(groupBox);
+      section.cycleComboBox->addItem(tr("Latest"), QVariant());
+
+      const auto now = std::chrono::floor<std::chrono::hours>(
+         std::chrono::system_clock::now());
+      for (int i = 0; i < kNbmCycleHistoryHours_; ++i)
+      {
+         const auto cycleTime = now - std::chrono::hours {i};
+         const int  maxHour =
+            provider::NbmDataProvider::MaxForecastHourForCycle(cycleTime);
+         const std::string label = fmt::format(
+            "{:%Y-%m-%d %H}z ({}h)", fmt::gmtime(cycleTime), maxHour);
+         section.cycleComboBox->addItem(
+            QString::fromStdString(label),
+            QVariant::fromValue<qint64>(cycleTime.time_since_epoch().count()));
+      }
+      groupLayout->addWidget(section.cycleComboBox);
+
+      auto* hourRow      = new QHBoxLayout();
+      section.hourLabel  = new QLabel(tr("F001"), groupBox);
+      section.hourSlider = new QSlider(Qt::Horizontal, groupBox);
+      // Starts at 1, not 0 -- NBM has no F000 file at all (see
+      // NbmDataProvider's own kMinForecastHour_ comment).
+      section.hourSlider->setRange(1, section.gribManager->MaxNbmForecastHour());
+      section.playButton = new QPushButton(tr("Play"), groupBox);
+      hourRow->addWidget(section.hourLabel);
+      hourRow->addWidget(section.hourSlider);
+      hourRow->addWidget(section.playButton);
+      groupLayout->addLayout(hourRow);
+
+      section.animationTimer = new QTimer(self_);
+      section.animationTimer->setInterval(kRrfsAnimationIntervalMs_);
+   }
 
    parentLayout->addWidget(groupBox);
 
@@ -215,6 +316,15 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
               }
            });
 
+   connect(stored.exportButton,
+           &QPushButton::clicked,
+           self_,
+           [this, category]()
+           {
+              Q_EMIT self_->ExportSnapshotRequested(
+                 category, QString::fromStdString(CategoryDisplayName(category)));
+           });
+
    connect(stored.gribManager.get(),
            &manager::GribManager::FrameReady,
            self_,
@@ -232,9 +342,12 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
          self_,
          [&stored](int cycleIndex)
          {
+            auto& hodographManager = *manager::HodographManager::Instance();
+
             if (cycleIndex <= 0)
             {
                stored.gribManager->UseLatestRrfsCycle();
+               hodographManager.UseLatestCycle();
             }
             else
             {
@@ -243,6 +356,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                const auto cycleTime = std::chrono::system_clock::time_point {
                   std::chrono::system_clock::duration {ticks}};
                stored.gribManager->SetRrfsCycle(cycleTime);
+               hodographManager.SetCycle(cycleTime);
             }
             stored.hourSlider->setRange(
                0, stored.gribManager->MaxRrfsForecastHour());
@@ -266,6 +380,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
               [&stored](int hour)
               {
                  stored.gribManager->SetRrfsForecastHour(hour);
+                 manager::HodographManager::Instance()->SetForecastHour(hour);
                  stored.hourLabel->setText(
                     QString::fromStdString(fmt::format("F{:03d}", hour)));
               });
@@ -324,7 +439,13 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                     // playback doesn't block on a fresh ~320MB fetch (see
                     // GribManager::PrefetchRrfsForecastHourRange()'s own
                     // doc, and SetRrfsLoopRange()'s for why this is
-                    // usually much less than the full cycle).
+                    // usually much less than the full cycle). No separate
+                    // HodographManager prefetch call needed: it decodes
+                    // from the exact same downloaded GRIB2 file this
+                    // queues (its own Poll() already documents finding
+                    // that file "quite possibly ... already cached ... by
+                    // GribManager(Rrfs)"), so it transparently benefits
+                    // once this fills the shared cache.
                     stored.gribManager->PrefetchRrfsForecastHourRange();
                     stored.animationTimer->start();
                     stored.playButton->setText(tr("Pause"));
@@ -345,6 +466,96 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                  if (next > stored.loopEndSpinBox->value())
                  {
                     next = stored.loopStartSpinBox->value();
+                 }
+                 stored.hourSlider->setValue(next);
+              });
+   }
+   else if (category == map::GribCategory::Nbm)
+   {
+      connect(
+         stored.cycleComboBox,
+         qOverload<int>(&QComboBox::currentIndexChanged),
+         self_,
+         [&stored](int cycleIndex)
+         {
+            if (cycleIndex <= 0)
+            {
+               stored.gribManager->UseLatestNbmCycle();
+            }
+            else
+            {
+               const qint64 ticks =
+                  stored.cycleComboBox->itemData(cycleIndex).value<qint64>();
+               const auto cycleTime = std::chrono::system_clock::time_point {
+                  std::chrono::system_clock::duration {ticks}};
+               stored.gribManager->SetNbmCycle(cycleTime);
+            }
+            stored.hourSlider->setRange(
+               1, stored.gribManager->MaxNbmForecastHour());
+
+            // setRange() only fires valueChanged if it had to clamp the
+            // value into the new range -- re-snap explicitly too, since a
+            // value that stayed numerically in-range can still land in a
+            // step gap under the *new* cycle's own hourly/3-hourly/
+            // 6-hourly rule (see SetNbmForecastHour()'s own doc).
+            stored.gribManager->SetNbmForecastHour(stored.hourSlider->value());
+            const int actualHour = stored.gribManager->NbmForecastHour();
+            stored.hourSlider->setValue(actualHour);
+            stored.hourLabel->setText(
+               QString::fromStdString(fmt::format("F{:03d}", actualHour)));
+         });
+
+      connect(stored.hourSlider,
+              &QSlider::valueChanged,
+              self_,
+              [&stored](int hour)
+              {
+                 stored.gribManager->SetNbmForecastHour(hour);
+
+                 // NBM's own forecast-hour step is non-uniform (see
+                 // SetNbmForecastHour()'s own doc) -- what actually got
+                 // stored may differ from the raw slider position, so
+                 // read it back and snap the slider (and label) to match
+                 // rather than showing a value that wasn't really
+                 // fetched. setValue() only re-emits valueChanged if this
+                 // changes the value, and re-entering with an
+                 // already-valid hour is a harmless no-op the second
+                 // time.
+                 const int actualHour = stored.gribManager->NbmForecastHour();
+                 if (actualHour != hour)
+                 {
+                    stored.hourSlider->setValue(actualHour);
+                 }
+                 stored.hourLabel->setText(
+                    QString::fromStdString(fmt::format("F{:03d}", actualHour)));
+              });
+
+      connect(stored.playButton,
+              &QPushButton::clicked,
+              self_,
+              [&stored]()
+              {
+                 if (stored.animationTimer->isActive())
+                 {
+                    stored.animationTimer->stop();
+                    stored.playButton->setText(tr("Play"));
+                 }
+                 else
+                 {
+                    stored.animationTimer->start();
+                    stored.playButton->setText(tr("Pause"));
+                 }
+              });
+
+      connect(stored.animationTimer,
+              &QTimer::timeout,
+              self_,
+              [&stored]()
+              {
+                 int next = stored.hourSlider->value() + 1;
+                 if (next > stored.hourSlider->maximum())
+                 {
+                    next = stored.hourSlider->minimum(); // 1, not 0 -- no F000
                  }
                  stored.hourSlider->setValue(next);
               });
@@ -388,6 +599,80 @@ void GribDockWidget::Impl::RefreshSection(CategorySection& section)
    section.statusLabel->setText(QString::fromStdString(statusText));
 }
 
+void GribDockWidget::Impl::BuildHodographLegend(QVBoxLayout* parentLayout,
+                                                QWidget*     dockContents)
+{
+   auto* groupBox    = new QGroupBox(tr("Hodograph"), dockContents);
+   auto* groupLayout = new QVBoxLayout(groupBox);
+
+   for (const auto& band : manager::HodographManager::HeightBands())
+   {
+      auto* row = new QHBoxLayout();
+
+      // A small fixed-size colored square -- simplest way to show a
+      // solid color swatch with QWidget alone, no custom paint event
+      // needed for something this small/static.
+      auto* swatch = new QLabel(groupBox);
+      swatch->setFixedSize(14, 14);
+      swatch->setStyleSheet(
+         QString("background-color: rgb(%1, %2, %3); border: 1px solid "
+                 "black;")
+            .arg(band.rgb[0])
+            .arg(band.rgb[1])
+            .arg(band.rgb[2]));
+
+      auto* label = new QLabel(QString::fromStdString(band.label), groupBox);
+
+      row->addWidget(swatch);
+      row->addWidget(label);
+      row->addStretch();
+
+      groupLayout->addLayout(row);
+   }
+
+   auto* ringsNote = new QLabel(tr("Range rings: every 20 kt"), groupBox);
+   ringsNote->setWordWrap(true);
+   groupLayout->addWidget(ringsNote);
+
+   parentLayout->addWidget(groupBox);
+}
+
+void GribDockWidget::Impl::BuildMapCropPanel(QVBoxLayout* parentLayout,
+                                             QWidget*     dockContents)
+{
+   auto* groupBox    = new QGroupBox(tr("Map View"), dockContents);
+   auto* groupLayout = new QGridLayout(groupBox);
+
+   constexpr int kColumns = 2;
+   int           row = 0, col = 0;
+
+   for (const auto& preset : kMapCropPresets_)
+   {
+      auto* button = new QPushButton(QString::fromStdString(preset.name),
+                                     groupBox);
+
+      connect(button,
+              &QPushButton::clicked,
+              self_,
+              [this, preset]()
+              {
+                 Q_EMIT self_->MapBoundsRequested(preset.southLatitude,
+                                                  preset.westLongitude,
+                                                  preset.northLatitude,
+                                                  preset.eastLongitude);
+              });
+
+      groupLayout->addWidget(button, row, col);
+      if (++col >= kColumns)
+      {
+         col = 0;
+         ++row;
+      }
+   }
+
+   parentLayout->addWidget(groupBox);
+}
+
 GribDockWidget::GribDockWidget(QWidget* parent) :
     QDockWidget(parent), p {std::make_unique<Impl>(this)}
 {
@@ -397,13 +682,17 @@ GribDockWidget::GribDockWidget(QWidget* parent) :
    auto* contents = new QWidget(this);
    auto* layout   = new QVBoxLayout(contents);
 
-   // Fixed at 3 (Mrms/Rtma/Rrfs) -- reserved upfront so BuildSection's
+   p->BuildMapCropPanel(layout, contents);
+
+   // Fixed at 4 (Mrms/Rtma/Rrfs/Nbm) -- reserved upfront so BuildSection's
    // own push_back never reallocates mid-construction (see its comment).
-   p->sections_.reserve(3);
+   p->sections_.reserve(4);
 
    p->BuildSection(map::GribCategory::Mrms, layout, contents);
    p->BuildSection(map::GribCategory::Rtma, layout, contents);
    p->BuildSection(map::GribCategory::Rrfs, layout, contents);
+   p->BuildSection(map::GribCategory::Nbm, layout, contents);
+   p->BuildHodographLegend(layout, contents);
 
    layout->addStretch();
    setWidget(contents);

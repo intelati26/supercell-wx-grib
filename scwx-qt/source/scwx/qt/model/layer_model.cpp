@@ -134,7 +134,7 @@ static const std::vector<types::LayerInfo> kDefaultLayers_ {
    {.type_        = types::LayerType::Map,
     .description_ = types::MapLayer::MapUnderlay,
     .movable_     = false},
-   // All three placed last so the
+   // All four placed last so the
    // reverse-order layer loop in MapWidgetImpl::AddLayers() adds them
    // before any Map-type entry has changed "before" from its initial
    // value -- i.e. they render at the very bottom of the custom-layer
@@ -142,9 +142,19 @@ static const std::vector<types::LayerInfo> kDefaultLayers_ {
    // entry in this list ends up the absolute bottom (per that same
    // reverse-iteration behavior), so this order puts GribRrfs (coarsest,
    // a forecast background) under GribRtma (a finer rolling analysis)
-   // under GribMrms (e.g. a temperature background under reflectivity) --
-   // all three are user-movable via the Layer Manager if a different
-   // stacking is wanted.
+   // under GribMrms (e.g. a temperature background under reflectivity),
+   // with WindBarbs on top of all three (point glyphs read poorly buried
+   // under a color-fill layer) -- all four are user-movable via the
+   // Layer Manager if a different stacking is wanted.
+   {.type_        = types::LayerType::Data,
+    .description_ = types::DataLayer::WindBarbs,
+    .movable_     = true},
+   // Same "point glyphs read poorly buried under a color-fill layer"
+   // reasoning as WindBarbs -- placed alongside it, above the three GRIB
+   // fill layers.
+   {.type_        = types::LayerType::Data,
+    .description_ = types::DataLayer::Hodograph,
+    .movable_     = true},
    {.type_        = types::LayerType::Data,
     .description_ = types::DataLayer::GribMrms,
     .movable_     = true},
@@ -153,6 +163,12 @@ static const std::vector<types::LayerInfo> kDefaultLayers_ {
     .movable_     = true},
    {.type_        = types::LayerType::Data,
     .description_ = types::DataLayer::GribRrfs,
+    .movable_     = true},
+   // Placed last (so, per the same reverse-iteration behavior, absolute
+   // bottom) -- NBM is a blended, coarser-cadence forecast background,
+   // same category of layer as GribRrfs just added even more recently.
+   {.type_        = types::LayerType::Data,
+    .description_ = types::DataLayer::GribNbm,
     .movable_     = true},
 };
 
