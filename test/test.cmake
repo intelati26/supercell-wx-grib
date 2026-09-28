@@ -67,6 +67,7 @@ set(SRC_QT_UTIL_TESTS source/scwx/qt/util/q_file_input_stream.test.cpp
 set(SRC_TYPES_TESTS source/scwx/types/ondas_types.test.cpp)
 set(SRC_UTIL_TESTS source/scwx/util/float.test.cpp
                    source/scwx/util/grib_idx.test.cpp
+                   source/scwx/util/grib_model_config.test.cpp
                    source/scwx/util/rangebuf.test.cpp
                    source/scwx/util/streams.test.cpp
                    source/scwx/util/strings.test.cpp
