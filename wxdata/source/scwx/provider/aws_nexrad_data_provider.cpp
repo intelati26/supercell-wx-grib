@@ -114,25 +114,17 @@ AwsNexradDataProvider::AwsNexradDataProvider(const std::string& radarSite,
 AwsNexradDataProvider::~AwsNexradDataProvider() = default;
 
 size_t AwsNexradDataProvider::cache_size() const
-{
-   return p->objects_.size();
-}
+{ return p->objects_.size(); }
 
 std::shared_ptr<Aws::S3::S3Client> AwsNexradDataProvider::client()
-{
-   return p->client_;
-}
+{ return p->client_; }
 
 std::chrono::seconds AwsNexradDataProvider::update_period() const
-{
-   return p->updatePeriod_;
-}
+{ return p->updatePeriod_; }
 
 std::chrono::system_clock::time_point
 AwsNexradDataProvider::last_modified() const
-{
-   return p->lastModified_;
-}
+{ return p->lastModified_; }
 
 std::string
 AwsNexradDataProvider::FindKey(std::chrono::system_clock::time_point time)
@@ -170,9 +162,7 @@ std::string AwsNexradDataProvider::FindLatestKey()
 }
 
 std::chrono::system_clock::time_point AwsNexradDataProvider::FindLatestTime()
-{
-   return GetTimePointByKey(FindLatestKey());
-}
+{ return GetTimePointByKey(FindLatestKey()); }
 
 std::vector<std::chrono::system_clock::time_point>
 AwsNexradDataProvider::GetTimePointsByDate(
@@ -239,9 +229,7 @@ AwsNexradDataProvider::GetTimePointsByDate(
 }
 
 bool AwsNexradDataProvider::IsDateArchiveAvailable() const
-{
-   return true;
-}
+{ return true; }
 
 bool AwsNexradDataProvider::IsDateCached(
    std::chrono::system_clock::time_point date)
@@ -644,8 +632,6 @@ void AwsNexradDataProvider::Impl::UpdateObjectDates(
 }
 
 void AwsNexradDataProvider::Shutdown() noexcept
-{
-   p->running_ = false;
-}
+{ p->running_ = false; }
 
 } // namespace scwx::provider

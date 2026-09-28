@@ -9,6 +9,8 @@
 #include <scwx/qt/map/alert_layer.hpp>
 #include <scwx/qt/map/color_table_layer.hpp>
 #include <scwx/qt/map/grib_product_layer.hpp>
+#include <scwx/qt/map/hodograph_layer.hpp>
+#include <scwx/qt/map/wind_barb_layer.hpp>
 #include <scwx/qt/map/layer_wrapper.hpp>
 #include <scwx/qt/map/map_provider.hpp>
 #include <scwx/qt/map/map_settings.hpp>
@@ -403,6 +405,8 @@ public:
    std::shared_ptr<GribProductLayer>          gribRtmaLayer_;
    std::shared_ptr<GribProductLayer>          gribRrfsLayer_;
    std::shared_ptr<GribProductLayer>          gribNbmLayer_;
+   std::shared_ptr<WindBarbLayer>             windBarbLayer_;
+   std::shared_ptr<HodographLayer>            hodographLayer_;
    std::shared_ptr<OverlayLayer>              overlayLayer_;
    std::shared_ptr<OverlayProductLayer>       overlayProductLayer_ {nullptr};
    std::shared_ptr<PlacefileLayer>            placefileLayer_;
@@ -1467,6 +1471,31 @@ void MapWidget::SetMapParameters(
    }
 }
 
+void MapWidget::SetMapBounds(double southLatitude,
+                             double westLongitude,
+                             double northLatitude,
+                             double eastLongitude)
+{
+   if (p->map_ == nullptr)
+   {
+      return;
+   }
+
+   // coordinateZoomForBounds() computes the center/zoom that fits this box
+   // in the *current* viewport size -- unlike hand-picking a fixed zoom per
+   // named region, this stays correct regardless of the pane's own size or
+   // aspect ratio (a narrow pane needs a different zoom than a wide one to
+   // fit the same geographic box).
+   const auto coordinateZoom = p->map_->coordinateZoomForBounds(
+      {southLatitude, westLongitude}, {northLatitude, eastLongitude});
+
+   SetMapParameters(coordinateZoom.first.first,
+                    coordinateZoom.first.second,
+                    coordinateZoom.second,
+                    0.0,
+                    0.0);
+}
+
 void MapWidgetImpl::SyncStoredViewFromMap()
 {
    if (map_ == nullptr)
@@ -1705,6 +1734,65 @@ void MapWidgetImpl::AddLayers()
       }
    }
 
+   // Release any of these existence-guarded layer objects whose category
+   // isn't displayed for this pane any more, rather than leaving them
+   // (and the shared_ptr each holds on its own singleton manager --
+   // HodographLayer/WindBarbLayer both keep one from *Manager::Instance())
+   // alive forever once first created. Confirmed as a real, live bug:
+   // HodographManager/WindBarbManager have no visibility awareness of
+   // their own -- each starts an unconditional 4-minute poll (downloading
+   // and running ~21 decode_grib calls for HodographManager) the moment
+   // its layer is first added to *any* pane, and previously had no way to
+   // ever stop again, since turning the layer's own display off here only
+   // ever skipped re-adding it, never released the reference keeping its
+   // manager alive. GribManager doesn't need this same treatment --
+   // unlike Hodograph/WindBarbs, it already gates its own background work
+   // on an explicit product-activation list (see GribManager::
+   // SetProductActive()), a real, separate mechanism from pane
+   // visibility -- but it's released here too since a pane no longer
+   // displaying a GRIB category has no more use for that pane-local layer
+   // object either.
+   auto isDisplayedHere = [&customLayers, this](types::DataLayer layer)
+   {
+      for (const auto& customLayer : customLayers)
+      {
+         if (customLayer.type_ == types::LayerType::Data &&
+             std::holds_alternative<types::DataLayer>(
+                customLayer.description_) &&
+             std::get<types::DataLayer>(customLayer.description_) == layer)
+         {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
+            return customLayer.displayed_[id_];
+         }
+      }
+      return false;
+   };
+
+   if (!isDisplayedHere(types::DataLayer::Hodograph))
+   {
+      hodographLayer_ = nullptr;
+   }
+   if (!isDisplayedHere(types::DataLayer::WindBarbs))
+   {
+      windBarbLayer_ = nullptr;
+   }
+   if (!isDisplayedHere(types::DataLayer::GribMrms))
+   {
+      gribMrmsLayer_ = nullptr;
+   }
+   if (!isDisplayedHere(types::DataLayer::GribRtma))
+   {
+      gribRtmaLayer_ = nullptr;
+   }
+   if (!isDisplayedHere(types::DataLayer::GribRrfs))
+   {
+      gribRrfsLayer_ = nullptr;
+   }
+   if (!isDisplayedHere(types::DataLayer::GribNbm))
+   {
+      gribNbmLayer_ = nullptr;
+   }
+
    if (annotationLayer_ == nullptr)
    {
       annotationLayer_ = std::make_shared<MapAnnotationLayer>(glContext_);
@@ -1929,6 +2017,28 @@ void MapWidgetImpl::AddLayer(types::LayerType        type,
             WireAreaSiblingPair(gribNbmLayer_, radarProductLayer_);
          }
          AddLayer(layerName, gribNbmLayer_, before);
+         break;
+
+      // Unlike the three GRIB layers above, wind barbs are point icons,
+      // not a continuous "area" field -- their hover text goes through
+      // GeoIcons' own per-icon hover pathway, so there's no
+      // AddAreaSibling wiring needed here.
+      case types::DataLayer::WindBarbs:
+         if (windBarbLayer_ == nullptr)
+         {
+            windBarbLayer_ = std::make_shared<WindBarbLayer>(glContext_);
+         }
+         AddLayer(layerName, windBarbLayer_, before);
+         break;
+
+      // Same reasoning as WindBarbs above -- GeoLines' own hover pathway,
+      // no AddAreaSibling wiring needed.
+      case types::DataLayer::Hodograph:
+         if (hodographLayer_ == nullptr)
+         {
+            hodographLayer_ = std::make_shared<HodographLayer>(glContext_);
+         }
+         AddLayer(layerName, hodographLayer_, before);
          break;
 
       default:
@@ -3111,6 +3221,11 @@ void MapWidgetImpl::RadarProductViewDisconnect()
                  widget_,
                  nullptr);
    }
+}
+
+QImage MapWidget::CaptureImage()
+{
+   return grabFramebuffer();
 }
 
 void MapWidgetImpl::ScreenCaptureCopy()

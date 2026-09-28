@@ -26,6 +26,23 @@ public:
    explicit GribDockWidget(QWidget* parent = nullptr);
    ~GribDockWidget();
 
+signals:
+   // Emitted by the "Map View" panel's preset buttons -- MainWindow owns
+   // the actual MapWidget instances (this dock never has a direct
+   // reference to one, same as every other signal below), so it connects
+   // this to MapWidget::SetMapBounds() on the active pane.
+   void MapBoundsRequested(double southLatitude,
+                           double westLongitude,
+                           double northLatitude,
+                           double eastLongitude);
+
+   // Emitted by a category section's "Export PNG" button. `categoryLabel`
+   // is that section's own display name (e.g. "RRFS") -- passed through
+   // rather than recomputed on the receiving end, since CategoryDisplayName()
+   // is file-local to grib_dock_widget.cpp.
+   void ExportSnapshotRequested(map::GribCategory category,
+                                QString            categoryLabel);
+
 private:
    class Impl;
    std::unique_ptr<Impl> p;
