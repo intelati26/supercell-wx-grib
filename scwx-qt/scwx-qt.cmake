@@ -140,7 +140,8 @@ set(HDR_MANAGER source/scwx/qt/manager/alert_manager.hpp
                 source/scwx/qt/manager/text_event_manager.hpp
                 source/scwx/qt/manager/thread_manager.hpp
                 source/scwx/qt/manager/timeline_manager.hpp
-                source/scwx/qt/manager/update_manager.hpp)
+                source/scwx/qt/manager/update_manager.hpp
+                source/scwx/qt/manager/wind_barb_manager.hpp)
 set(SRC_MANAGER source/scwx/qt/manager/alert_manager.cpp
                 source/scwx/qt/manager/download_manager.cpp
                 source/scwx/qt/manager/font_manager.cpp
@@ -166,7 +167,8 @@ set(SRC_MANAGER source/scwx/qt/manager/alert_manager.cpp
                 source/scwx/qt/manager/text_event_manager.cpp
                 source/scwx/qt/manager/thread_manager.cpp
                 source/scwx/qt/manager/timeline_manager.cpp
-                source/scwx/qt/manager/update_manager.cpp)
+                source/scwx/qt/manager/update_manager.cpp
+                source/scwx/qt/manager/wind_barb_manager.cpp)
 set(HDR_MAP source/scwx/qt/map/alert_layer.hpp
             source/scwx/qt/map/map_link_policy.hpp
             source/scwx/qt/map/color_table_layer.hpp
@@ -193,7 +195,8 @@ set(HDR_MAP source/scwx/qt/map/alert_layer.hpp
             source/scwx/qt/map/marker_layer.hpp
             source/scwx/qt/map/radar_product_layer.hpp
             source/scwx/qt/map/radar_range_layer.hpp
-            source/scwx/qt/map/radar_site_layer.hpp)
+            source/scwx/qt/map/radar_site_layer.hpp
+            source/scwx/qt/map/wind_barb_layer.hpp)
 set(SRC_MAP source/scwx/qt/map/alert_layer.cpp
             source/scwx/qt/map/map_link_policy.cpp
             source/scwx/qt/map/color_table_layer.cpp
@@ -217,7 +220,8 @@ set(SRC_MAP source/scwx/qt/map/alert_layer.cpp
             source/scwx/qt/map/marker_layer.cpp
             source/scwx/qt/map/radar_product_layer.cpp
             source/scwx/qt/map/radar_range_layer.cpp
-            source/scwx/qt/map/radar_site_layer.cpp)
+            source/scwx/qt/map/radar_site_layer.cpp
+            source/scwx/qt/map/wind_barb_layer.cpp)
 set(HDR_MODEL source/scwx/qt/model/alert_model.hpp
               source/scwx/qt/model/alert_proxy_model.hpp
               source/scwx/qt/model/imgui_context_model.hpp
@@ -260,7 +264,8 @@ set(HDR_SETTINGS source/scwx/qt/settings/alert_palette_settings.hpp
                  source/scwx/qt/settings/settings_variable_base.hpp
                  source/scwx/qt/settings/text_settings.hpp
                  source/scwx/qt/settings/ui_settings.hpp
-                 source/scwx/qt/settings/unit_settings.hpp)
+                 source/scwx/qt/settings/unit_settings.hpp
+                 source/scwx/qt/settings/wind_barb_settings.hpp)
 set(SRC_SETTINGS source/scwx/qt/settings/alert_palette_settings.cpp
                  source/scwx/qt/settings/audio_settings.cpp
                  source/scwx/qt/settings/button_settings.cpp
@@ -280,7 +285,8 @@ set(SRC_SETTINGS source/scwx/qt/settings/alert_palette_settings.cpp
                  source/scwx/qt/settings/settings_variable_base.cpp
                  source/scwx/qt/settings/text_settings.cpp
                  source/scwx/qt/settings/ui_settings.cpp
-                 source/scwx/qt/settings/unit_settings.cpp)
+                 source/scwx/qt/settings/unit_settings.cpp
+                 source/scwx/qt/settings/wind_barb_settings.cpp)
 set(HDR_TYPES source/scwx/qt/types/alert_types.hpp
               source/scwx/qt/types/capture_types.hpp
               source/scwx/qt/types/event_types.hpp

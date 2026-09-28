@@ -30,6 +30,48 @@
         <file>res/icons/scwx-256.png</file>
         <file>res/icons/flaticon/cardinal-point-24.png</file>
         <file>res/icons/flaticon/compass-24.png</file>
+        <file>res/icons/wind-barbs/barb_000.svg</file>
+        <file>res/icons/wind-barbs/barb_005.svg</file>
+        <file>res/icons/wind-barbs/barb_010.svg</file>
+        <file>res/icons/wind-barbs/barb_015.svg</file>
+        <file>res/icons/wind-barbs/barb_020.svg</file>
+        <file>res/icons/wind-barbs/barb_025.svg</file>
+        <file>res/icons/wind-barbs/barb_030.svg</file>
+        <file>res/icons/wind-barbs/barb_035.svg</file>
+        <file>res/icons/wind-barbs/barb_040.svg</file>
+        <file>res/icons/wind-barbs/barb_045.svg</file>
+        <file>res/icons/wind-barbs/barb_050.svg</file>
+        <file>res/icons/wind-barbs/barb_055.svg</file>
+        <file>res/icons/wind-barbs/barb_060.svg</file>
+        <file>res/icons/wind-barbs/barb_065.svg</file>
+        <file>res/icons/wind-barbs/barb_070.svg</file>
+        <file>res/icons/wind-barbs/barb_075.svg</file>
+        <file>res/icons/wind-barbs/barb_080.svg</file>
+        <file>res/icons/wind-barbs/barb_085.svg</file>
+        <file>res/icons/wind-barbs/barb_090.svg</file>
+        <file>res/icons/wind-barbs/barb_095.svg</file>
+        <file>res/icons/wind-barbs/barb_100.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_000.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_005.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_010.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_015.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_020.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_025.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_030.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_035.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_040.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_045.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_050.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_055.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_060.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_065.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_070.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_075.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_080.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_085.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_090.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_095.svg</file>
+        <file>res/icons/wind-barbs/barb_gust_100.svg</file>
         <file>res/icons/font-awesome-6/angle-down-solid.svg</file>
         <file>res/icons/font-awesome-6/angle-left-solid.svg</file>
         <file>res/icons/font-awesome-6/angle-right-solid.svg</file>

@@ -152,6 +152,18 @@ public:
                      units::angle::degrees<double>           angle);
 
    /**
+    * Sets the scale of a geo icon, relative to its icon sheet's native
+    * pixel size (both the icon's screen-space size and its hot X/Y
+    * anchor offset scale together, so the anchor stays at the same
+    * fraction of the icon). Default is 1.0 (native size) -- callers that
+    * never call this are unaffected.
+    *
+    * @param [in] di Geo icon draw item
+    * @param [in] scale Scale factor, 1.0 = native pixel size
+    */
+   void SetIconScale(const std::shared_ptr<GeoIconDrawItem>& di, float scale);
+
+   /**
     * Sets the modulate color of a geo icon.
     *
     * @param [in] di Geo icon draw item

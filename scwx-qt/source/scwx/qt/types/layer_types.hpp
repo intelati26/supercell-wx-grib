@@ -34,6 +34,7 @@ enum class DataLayer
    GribRtma, // RTMA rolling surface analysis
    GribRrfs, // RRFS forecast model
    GribNbm,  // NBM (National Blend of Models) forecast
+   WindBarbs, // RTMA 10m wind barbs
    Hodograph, // RRFS gridded hodograph
    Unknown
 };

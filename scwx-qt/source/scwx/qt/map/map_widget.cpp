@@ -10,6 +10,7 @@
 #include <scwx/qt/map/color_table_layer.hpp>
 #include <scwx/qt/map/grib_product_layer.hpp>
 #include <scwx/qt/map/hodograph_layer.hpp>
+#include <scwx/qt/map/wind_barb_layer.hpp>
 #include <scwx/qt/map/layer_wrapper.hpp>
 #include <scwx/qt/map/map_provider.hpp>
 #include <scwx/qt/map/map_settings.hpp>
@@ -404,6 +405,7 @@ public:
    std::shared_ptr<GribProductLayer>          gribRtmaLayer_;
    std::shared_ptr<GribProductLayer>          gribRrfsLayer_;
    std::shared_ptr<GribProductLayer>          gribNbmLayer_;
+   std::shared_ptr<WindBarbLayer>             windBarbLayer_;
    std::shared_ptr<HodographLayer>            hodographLayer_;
    std::shared_ptr<OverlayLayer>              overlayLayer_;
    std::shared_ptr<OverlayProductLayer>       overlayProductLayer_ {nullptr};
@@ -1933,9 +1935,20 @@ void MapWidgetImpl::AddLayer(types::LayerType        type,
          AddLayer(layerName, gribNbmLayer_, before);
          break;
 
-      // Unlike the GRIB layers above, the hodograph is point/line
-      // geometry rendered through GeoLines' own hover pathway, not a
-      // continuous "area" field -- no AddAreaSibling wiring needed here.
+      // Unlike the three GRIB layers above, wind barbs are point icons,
+      // not a continuous "area" field -- their hover text goes through
+      // GeoIcons' own per-icon hover pathway, so there's no
+      // AddAreaSibling wiring needed here.
+      case types::DataLayer::WindBarbs:
+         if (windBarbLayer_ == nullptr)
+         {
+            windBarbLayer_ = std::make_shared<WindBarbLayer>(glContext_);
+         }
+         AddLayer(layerName, windBarbLayer_, before);
+         break;
+
+      // Same reasoning as WindBarbs above -- GeoLines' own hover pathway,
+      // no AddAreaSibling wiring needed.
       case types::DataLayer::Hodograph:
          if (hodographLayer_ == nullptr)
          {

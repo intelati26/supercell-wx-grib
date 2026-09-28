@@ -134,7 +134,7 @@ static const std::vector<types::LayerInfo> kDefaultLayers_ {
    {.type_        = types::LayerType::Map,
     .description_ = types::MapLayer::MapUnderlay,
     .movable_     = false},
-   // All four placed last so the
+   // All five placed last so the
    // reverse-order layer loop in MapWidgetImpl::AddLayers() adds them
    // before any Map-type entry has changed "before" from its initial
    // value -- i.e. they render at the very bottom of the custom-layer
@@ -143,9 +143,15 @@ static const std::vector<types::LayerInfo> kDefaultLayers_ {
    // reverse-iteration behavior), so this order puts GribRrfs (coarsest,
    // a forecast background) under GribRtma (a finer rolling analysis)
    // under GribMrms (e.g. a temperature background under reflectivity),
-   // with Hodograph on top of all three (point glyphs read poorly buried
-   // under a color-fill layer) -- all four are user-movable via the
+   // with WindBarbs on top of all three (point glyphs read poorly buried
+   // under a color-fill layer) -- all five are user-movable via the
    // Layer Manager if a different stacking is wanted.
+   {.type_        = types::LayerType::Data,
+    .description_ = types::DataLayer::WindBarbs,
+    .movable_     = true},
+   // Same "point glyphs read poorly buried under a color-fill layer"
+   // reasoning as WindBarbs -- placed alongside it, above the three GRIB
+   // fill layers.
    {.type_        = types::LayerType::Data,
     .description_ = types::DataLayer::Hodograph,
     .movable_     = true},
