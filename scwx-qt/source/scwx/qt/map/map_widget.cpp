@@ -9,6 +9,7 @@
 #include <scwx/qt/map/alert_layer.hpp>
 #include <scwx/qt/map/color_table_layer.hpp>
 #include <scwx/qt/map/grib_product_layer.hpp>
+#include <scwx/qt/map/hodograph_layer.hpp>
 #include <scwx/qt/map/layer_wrapper.hpp>
 #include <scwx/qt/map/map_provider.hpp>
 #include <scwx/qt/map/map_settings.hpp>
@@ -403,6 +404,7 @@ public:
    std::shared_ptr<GribProductLayer>          gribRtmaLayer_;
    std::shared_ptr<GribProductLayer>          gribRrfsLayer_;
    std::shared_ptr<GribProductLayer>          gribNbmLayer_;
+   std::shared_ptr<HodographLayer>            hodographLayer_;
    std::shared_ptr<OverlayLayer>              overlayLayer_;
    std::shared_ptr<OverlayProductLayer>       overlayProductLayer_ {nullptr};
    std::shared_ptr<PlacefileLayer>            placefileLayer_;
@@ -1929,6 +1931,17 @@ void MapWidgetImpl::AddLayer(types::LayerType        type,
             WireAreaSiblingPair(gribNbmLayer_, radarProductLayer_);
          }
          AddLayer(layerName, gribNbmLayer_, before);
+         break;
+
+      // Unlike the GRIB layers above, the hodograph is point/line
+      // geometry rendered through GeoLines' own hover pathway, not a
+      // continuous "area" field -- no AddAreaSibling wiring needed here.
+      case types::DataLayer::Hodograph:
+         if (hodographLayer_ == nullptr)
+         {
+            hodographLayer_ = std::make_shared<HodographLayer>(glContext_);
+         }
+         AddLayer(layerName, hodographLayer_, before);
          break;
 
       default:

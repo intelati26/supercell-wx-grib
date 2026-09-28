@@ -119,6 +119,7 @@ set(HDR_MANAGER source/scwx/qt/manager/alert_manager.hpp
                 source/scwx/qt/manager/download_manager.hpp
                 source/scwx/qt/manager/font_manager.hpp
                 source/scwx/qt/manager/grib_manager.hpp
+                source/scwx/qt/manager/hodograph_manager.hpp
                 source/scwx/qt/manager/hotkey_manager.hpp
                 source/scwx/qt/manager/log_manager.hpp
                 source/scwx/qt/manager/marker_manager.hpp
@@ -144,6 +145,7 @@ set(SRC_MANAGER source/scwx/qt/manager/alert_manager.cpp
                 source/scwx/qt/manager/download_manager.cpp
                 source/scwx/qt/manager/font_manager.cpp
                 source/scwx/qt/manager/grib_manager.cpp
+                source/scwx/qt/manager/hodograph_manager.cpp
                 source/scwx/qt/manager/hotkey_manager.cpp
                 source/scwx/qt/manager/log_manager.cpp
                 source/scwx/qt/manager/marker_manager.cpp
@@ -172,6 +174,7 @@ set(HDR_MAP source/scwx/qt/map/alert_layer.hpp
             source/scwx/qt/map/generic_layer.hpp
             source/scwx/qt/map/grib_frame_info.hpp
             source/scwx/qt/map/grib_product_layer.hpp
+            source/scwx/qt/map/hodograph_layer.hpp
             source/scwx/qt/map/layer_wrapper.hpp
             source/scwx/qt/map/map_annotation_layer.hpp
             source/scwx/qt/map/map_annotation_model.hpp
@@ -198,6 +201,7 @@ set(SRC_MAP source/scwx/qt/map/alert_layer.cpp
             source/scwx/qt/map/generic_layer.cpp
             source/scwx/qt/map/grib_frame_info.cpp
             source/scwx/qt/map/grib_product_layer.cpp
+            source/scwx/qt/map/hodograph_layer.cpp
             source/scwx/qt/map/layer_wrapper.cpp
             source/scwx/qt/map/map_annotation_layer.cpp
             source/scwx/qt/map/map_annotation_model.cpp
@@ -240,6 +244,7 @@ set(HDR_SETTINGS source/scwx/qt/settings/alert_palette_settings.hpp
                  source/scwx/qt/settings/audio_settings.hpp
                  source/scwx/qt/settings/button_settings.hpp
                  source/scwx/qt/settings/general_settings.hpp
+                 source/scwx/qt/settings/hodograph_settings.hpp
                  source/scwx/qt/settings/hotkey_settings.hpp
                  source/scwx/qt/settings/line_settings.hpp
                  source/scwx/qt/settings/map_settings.hpp
@@ -260,6 +265,7 @@ set(SRC_SETTINGS source/scwx/qt/settings/alert_palette_settings.cpp
                  source/scwx/qt/settings/audio_settings.cpp
                  source/scwx/qt/settings/button_settings.cpp
                  source/scwx/qt/settings/general_settings.cpp
+                 source/scwx/qt/settings/hodograph_settings.cpp
                  source/scwx/qt/settings/hotkey_settings.cpp
                  source/scwx/qt/settings/line_settings.cpp
                  source/scwx/qt/settings/map_settings.cpp

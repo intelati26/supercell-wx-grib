@@ -34,10 +34,11 @@ enum class DataLayer
    GribRtma, // RTMA rolling surface analysis
    GribRrfs, // RRFS forecast model
    GribNbm,  // NBM (National Blend of Models) forecast
+   Hodograph, // RRFS gridded hodograph
    Unknown
 };
 using DataLayerIterator = scwx::util::
-   Iterator<DataLayer, DataLayer::OverlayProduct, DataLayer::GribNbm>;
+   Iterator<DataLayer, DataLayer::OverlayProduct, DataLayer::Hodograph>;
 
 enum class InformationLayer
 {

@@ -1,5 +1,6 @@
 #include <scwx/qt/ui/grib_dock_widget.hpp>
 #include <scwx/qt/manager/grib_manager.hpp>
+#include <scwx/qt/manager/hodograph_manager.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
 #include <scwx/qt/ui/checkable_combo_box.hpp>
 #include <scwx/qt/ui/widgets/focused_spin_box.hpp>
@@ -104,6 +105,14 @@ public:
                      QVBoxLayout*      parentLayout,
                      QWidget*          dockContents);
    void RefreshSection(CategorySection& section);
+
+   // Static (no live data, no manager, no signal wiring) -- just a color
+   // key for HodographLayer's height-band coloring plus a range-ring
+   // note, read from manager::HodographManager::HeightBands() (the same
+   // shared table HodographLayer itself colors segments from) so this
+   // can never show a color that doesn't match what's actually drawn on
+   // the map.
+   void BuildHodographLegend(QVBoxLayout* parentLayout, QWidget* dockContents);
 
    GribDockWidget*              self_;
    std::vector<CategorySection> sections_;
@@ -277,9 +286,12 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
          self_,
          [&stored](int cycleIndex)
          {
+            auto& hodographManager = *manager::HodographManager::Instance();
+
             if (cycleIndex <= 0)
             {
                stored.gribManager->UseLatestRrfsCycle();
+               hodographManager.UseLatestCycle();
             }
             else
             {
@@ -288,6 +300,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                const auto cycleTime = std::chrono::system_clock::time_point {
                   std::chrono::system_clock::duration {ticks}};
                stored.gribManager->SetRrfsCycle(cycleTime);
+               hodographManager.SetCycle(cycleTime);
             }
             stored.hourSlider->setRange(
                0, stored.gribManager->MaxRrfsForecastHour());
@@ -311,6 +324,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
               [&stored](int hour)
               {
                  stored.gribManager->SetRrfsForecastHour(hour);
+                 manager::HodographManager::Instance()->SetForecastHour(hour);
                  stored.hourLabel->setText(
                     QString::fromStdString(fmt::format("F{:03d}", hour)));
               });
@@ -369,7 +383,13 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                     // playback doesn't block on a fresh ~320MB fetch (see
                     // GribManager::PrefetchRrfsForecastHourRange()'s own
                     // doc, and SetRrfsLoopRange()'s for why this is
-                    // usually much less than the full cycle).
+                    // usually much less than the full cycle). No separate
+                    // HodographManager prefetch call needed: it decodes
+                    // from the exact same downloaded GRIB2 file this
+                    // queues (its own Poll() already documents finding
+                    // that file "quite possibly ... already cached ... by
+                    // GribManager(Rrfs)"), so it transparently benefits
+                    // once this fills the shared cache.
                     stored.gribManager->PrefetchRrfsForecastHourRange();
                     stored.animationTimer->start();
                     stored.playButton->setText(tr("Pause"));
@@ -523,6 +543,44 @@ void GribDockWidget::Impl::RefreshSection(CategorySection& section)
    section.statusLabel->setText(QString::fromStdString(statusText));
 }
 
+void GribDockWidget::Impl::BuildHodographLegend(QVBoxLayout* parentLayout,
+                                                QWidget*     dockContents)
+{
+   auto* groupBox    = new QGroupBox(tr("Hodograph"), dockContents);
+   auto* groupLayout = new QVBoxLayout(groupBox);
+
+   for (const auto& band : manager::HodographManager::HeightBands())
+   {
+      auto* row = new QHBoxLayout();
+
+      // A small fixed-size colored square -- simplest way to show a
+      // solid color swatch with QWidget alone, no custom paint event
+      // needed for something this small/static.
+      auto* swatch = new QLabel(groupBox);
+      swatch->setFixedSize(14, 14);
+      swatch->setStyleSheet(
+         QString("background-color: rgb(%1, %2, %3); border: 1px solid "
+                 "black;")
+            .arg(band.rgb[0])
+            .arg(band.rgb[1])
+            .arg(band.rgb[2]));
+
+      auto* label = new QLabel(QString::fromStdString(band.label), groupBox);
+
+      row->addWidget(swatch);
+      row->addWidget(label);
+      row->addStretch();
+
+      groupLayout->addLayout(row);
+   }
+
+   auto* ringsNote = new QLabel(tr("Range rings: every 20 kt"), groupBox);
+   ringsNote->setWordWrap(true);
+   groupLayout->addWidget(ringsNote);
+
+   parentLayout->addWidget(groupBox);
+}
+
 GribDockWidget::GribDockWidget(QWidget* parent) :
     QDockWidget(parent), p {std::make_unique<Impl>(this)}
 {
@@ -540,6 +598,7 @@ GribDockWidget::GribDockWidget(QWidget* parent) :
    p->BuildSection(map::GribCategory::Rtma, layout, contents);
    p->BuildSection(map::GribCategory::Rrfs, layout, contents);
    p->BuildSection(map::GribCategory::Nbm, layout, contents);
+   p->BuildHodographLegend(layout, contents);
 
    layout->addStretch();
    setWidget(contents);

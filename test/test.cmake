@@ -43,6 +43,7 @@ set(SRC_QT_MAIN_TESTS source/scwx/qt/main/application_paths.test.cpp
                       source/scwx/qt/main/program_options.test.cpp
                       source/scwx/qt/main/theme.test.cpp)
 set(SRC_QT_MANAGER_TESTS source/scwx/qt/manager/grib_manager.test.cpp
+                         source/scwx/qt/manager/hodograph_manager.test.cpp
                          source/scwx/qt/manager/product_datastore.test.cpp
                          source/scwx/qt/manager/radar_product_manager.test.cpp
                          source/scwx/qt/manager/settings_manager.test.cpp

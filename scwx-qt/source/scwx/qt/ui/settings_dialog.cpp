@@ -13,6 +13,7 @@
 #include <scwx/qt/map/map_provider.hpp>
 #include <scwx/qt/settings/audio_settings.hpp>
 #include <scwx/qt/settings/general_settings.hpp>
+#include <scwx/qt/settings/hodograph_settings.hpp>
 #include <scwx/qt/settings/palette_settings.hpp>
 #include <scwx/qt/settings/product_settings.hpp>
 #include <scwx/qt/settings/settings_interface.hpp>
@@ -155,6 +156,8 @@ public:
           &showMapCenter_,
           &showMapLogo_,
           &showSmoothedRangeFolding_,
+          &showHodographRangeRings_,
+          &hodographSizeScale_,
           &updateNotificationsEnabled_,
           &cursorIconAlwaysOn_,
           &cursorIconScale_,
@@ -285,6 +288,8 @@ public:
    settings::SettingsInterface<bool>         showMapCenter_ {};
    settings::SettingsInterface<bool>         showMapLogo_ {};
    settings::SettingsInterface<bool>         showSmoothedRangeFolding_ {};
+   settings::SettingsInterface<bool>         showHodographRangeRings_ {};
+   settings::SettingsInterface<double>       hodographSizeScale_ {};
    settings::SettingsInterface<bool>         updateNotificationsEnabled_ {};
    settings::SettingsInterface<bool>         cursorIconAlwaysOn_ {};
    settings::SettingsInterface<double>       cursorIconScale_ {};
@@ -570,6 +575,8 @@ void SettingsDialogImpl::SetupGeneralTab()
       settings::GeneralSettings::Instance();
    settings::ProductSettings& productSettings =
       settings::ProductSettings::Instance();
+   settings::HodographSettings& hodographSettings =
+      settings::HodographSettings::Instance();
 
    QObject::connect(
       self_->ui->themeComboBox,
@@ -984,6 +991,15 @@ void SettingsDialogImpl::SetupGeneralTab()
       productSettings.show_smoothed_range_folding());
    showSmoothedRangeFolding_.SetEditWidget(
       self_->ui->showSmoothedRangeFoldingCheckBox);
+
+   showHodographRangeRings_.SetSettingsVariable(
+      hodographSettings.show_range_rings());
+   showHodographRangeRings_.SetEditWidget(
+      self_->ui->showHodographRangeRingsCheckBox);
+
+   hodographSizeScale_.SetSettingsVariable(hodographSettings.size_scale());
+   hodographSizeScale_.SetEditWidget(self_->ui->hodographSizeScaleSpinBox);
+   hodographSizeScale_.SetResetButton(self_->ui->resetHodographSizeScaleButton);
 
    updateNotificationsEnabled_.SetSettingsVariable(
       generalSettings.update_notifications_enabled());
