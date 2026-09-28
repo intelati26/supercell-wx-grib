@@ -1471,6 +1471,31 @@ void MapWidget::SetMapParameters(
    }
 }
 
+void MapWidget::SetMapBounds(double southLatitude,
+                             double westLongitude,
+                             double northLatitude,
+                             double eastLongitude)
+{
+   if (p->map_ == nullptr)
+   {
+      return;
+   }
+
+   // coordinateZoomForBounds() computes the center/zoom that fits this box
+   // in the *current* viewport size -- unlike hand-picking a fixed zoom per
+   // named region, this stays correct regardless of the pane's own size or
+   // aspect ratio (a narrow pane needs a different zoom than a wide one to
+   // fit the same geographic box).
+   const auto coordinateZoom = p->map_->coordinateZoomForBounds(
+      {southLatitude, westLongitude}, {northLatitude, eastLongitude});
+
+   SetMapParameters(coordinateZoom.first.first,
+                    coordinateZoom.first.second,
+                    coordinateZoom.second,
+                    0.0,
+                    0.0);
+}
+
 void MapWidgetImpl::SyncStoredViewFromMap()
 {
    if (map_ == nullptr)
@@ -1707,6 +1732,65 @@ void MapWidgetImpl::AddLayers()
          // If the layer is displayed for the current map, add it
          AddLayer(customLayer.type_, customLayer.description_, before);
       }
+   }
+
+   // Release any of these existence-guarded layer objects whose category
+   // isn't displayed for this pane any more, rather than leaving them
+   // (and the shared_ptr each holds on its own singleton manager --
+   // HodographLayer/WindBarbLayer both keep one from *Manager::Instance())
+   // alive forever once first created. Confirmed as a real, live bug:
+   // HodographManager/WindBarbManager have no visibility awareness of
+   // their own -- each starts an unconditional 4-minute poll (downloading
+   // and running ~21 decode_grib calls for HodographManager) the moment
+   // its layer is first added to *any* pane, and previously had no way to
+   // ever stop again, since turning the layer's own display off here only
+   // ever skipped re-adding it, never released the reference keeping its
+   // manager alive. GribManager doesn't need this same treatment --
+   // unlike Hodograph/WindBarbs, it already gates its own background work
+   // on an explicit product-activation list (see GribManager::
+   // SetProductActive()), a real, separate mechanism from pane
+   // visibility -- but it's released here too since a pane no longer
+   // displaying a GRIB category has no more use for that pane-local layer
+   // object either.
+   auto isDisplayedHere = [&customLayers, this](types::DataLayer layer)
+   {
+      for (const auto& customLayer : customLayers)
+      {
+         if (customLayer.type_ == types::LayerType::Data &&
+             std::holds_alternative<types::DataLayer>(
+                customLayer.description_) &&
+             std::get<types::DataLayer>(customLayer.description_) == layer)
+         {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
+            return customLayer.displayed_[id_];
+         }
+      }
+      return false;
+   };
+
+   if (!isDisplayedHere(types::DataLayer::Hodograph))
+   {
+      hodographLayer_ = nullptr;
+   }
+   if (!isDisplayedHere(types::DataLayer::WindBarbs))
+   {
+      windBarbLayer_ = nullptr;
+   }
+   if (!isDisplayedHere(types::DataLayer::GribMrms))
+   {
+      gribMrmsLayer_ = nullptr;
+   }
+   if (!isDisplayedHere(types::DataLayer::GribRtma))
+   {
+      gribRtmaLayer_ = nullptr;
+   }
+   if (!isDisplayedHere(types::DataLayer::GribRrfs))
+   {
+      gribRrfsLayer_ = nullptr;
+   }
+   if (!isDisplayedHere(types::DataLayer::GribNbm))
+   {
+      gribNbmLayer_ = nullptr;
    }
 
    if (annotationLayer_ == nullptr)
@@ -3137,6 +3221,11 @@ void MapWidgetImpl::RadarProductViewDisconnect()
                  widget_,
                  nullptr);
    }
+}
+
+QImage MapWidget::CaptureImage()
+{
+   return grabFramebuffer();
 }
 
 void MapWidgetImpl::ScreenCaptureCopy()

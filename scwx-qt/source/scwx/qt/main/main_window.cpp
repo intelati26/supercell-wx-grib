@@ -13,6 +13,7 @@
 #include <scwx/qt/manager/alert_manager.hpp>
 #include <scwx/qt/manager/hotkey_manager.hpp>
 #include <scwx/qt/manager/placefile_manager.hpp>
+#include <scwx/qt/manager/grib_manager.hpp>
 #include <scwx/qt/manager/outlook_manager.hpp>
 #include <scwx/qt/manager/settings_manager.hpp>
 #include <scwx/qt/manager/status_manager.hpp>
@@ -28,6 +29,7 @@
 #include <scwx/qt/model/layer_model.hpp>
 #include <scwx/qt/model/radar_site_model.hpp>
 #include <scwx/qt/settings/general_settings.hpp>
+#include <scwx/qt/util/grib_legend.hpp>
 #include <scwx/qt/settings/map_settings.hpp>
 #include <scwx/qt/settings/product_settings.hpp>
 #include <scwx/qt/settings/ui_settings.hpp>
@@ -101,7 +103,7 @@ namespace scwx::qt::main
 {
 
 static const std::string logPrefix_ = "scwx::qt::main::main_window";
-static const auto        logger_    = util::Logger::Create(logPrefix_);
+static const auto        logger_    = scwx::util::Logger::Create(logPrefix_);
 
 namespace
 {
@@ -299,6 +301,8 @@ public:
                            const std::string&        productName,
                            int16_t                   productCode);
    void ApplyStoredColorTableThreshold(map::MapWidget* mapWidget);
+   void ExportGribSnapshot(map::GribCategory category,
+                           const QString&    categoryLabel);
    void HandleMapPaneLinkViewToggled(std::size_t     mapIndex,
                                      map::MapWidget* map,
                                      bool            linked);
@@ -500,6 +504,27 @@ MainWindow::MainWindow(QWidget* parent) :
    p->gribDockWidget_->toggleViewAction()->setText(tr("&GRIB"));
    ui->menuView->addAction(p->gribDockWidget_->toggleViewAction());
    p->gribDockWidget_->hide();
+
+   connect(p->gribDockWidget_,
+           &ui::GribDockWidget::MapBoundsRequested,
+           this,
+           [this](double southLatitude,
+                 double westLongitude,
+                 double northLatitude,
+                 double eastLongitude)
+           {
+              if (p->activeMap_ != nullptr)
+              {
+                 p->activeMap_->SetMapBounds(
+                    southLatitude, westLongitude, northLatitude, eastLongitude);
+              }
+           });
+
+   connect(p->gribDockWidget_,
+           &ui::GribDockWidget::ExportSnapshotRequested,
+           this,
+           [this](map::GribCategory category, const QString& categoryLabel)
+           { p->ExportGribSnapshot(category, categoryLabel); });
 
    p->mapAnnotationDock_ =
       new ui::MapAnnotationDockWidget(p->mainWindow_->ui->centralwidget);
@@ -3202,8 +3227,8 @@ void MainWindowImpl::ConnectOtherSignals()
            this,
            [this]()
            {
-              timeLabel_->setText(
-                 QString::fromStdString(util::TimeString(util::time::now())));
+              timeLabel_->setText(QString::fromStdString(
+                 scwx::util::TimeString(scwx::util::time::now())));
               timeLabel_->setVisible(true);
            });
    clockTimer_.start(1000);
@@ -3231,15 +3256,15 @@ void MainWindowImpl::ConnectOtherSignals()
       generalSettings.clock_format().changed_signal().connect(
          [](const auto& event)
          {
-            util::time::set_default_clock_format(
-               util::GetClockFormat(event.newValue_));
+            scwx::util::time::set_default_clock_format(
+               scwx::util::GetClockFormat(event.newValue_));
          });
    defaultTimeZoneConnection_ =
       generalSettings.default_time_zone().changed_signal().connect(
          [this](auto&&...)
          {
             const auto defaultTimeZone = activeMap_->GetDefaultTimeZone();
-            util::time::set_current_time_zone(defaultTimeZone);
+            scwx::util::time::set_current_time_zone(defaultTimeZone);
             animationDockWidget_->UpdateTimeZone(defaultTimeZone);
          });
 
@@ -3276,8 +3301,8 @@ void MainWindowImpl::ConnectOtherSignals()
          { ScheduleMapLayoutSyncIfGridChanged(); }));
 
    // Ensure default clock format is initialized
-   util::time::set_default_clock_format(
-      util::GetClockFormat(generalSettings.clock_format().GetValue()));
+   scwx::util::time::set_default_clock_format(
+      scwx::util::GetClockFormat(generalSettings.clock_format().GetValue()));
 }
 
 void MainWindowImpl::InitializeLayerDisplayActions()
@@ -3474,6 +3499,50 @@ void MainWindowImpl::ApplyStoredColorTableThreshold(map::MapWidget* mapWidget)
    }
 
    mapWidget->SetColorTableThreshold(threshold);
+}
+
+void MainWindowImpl::ExportGribSnapshot(map::GribCategory category,
+                                        const QString&    categoryLabel)
+{
+   if (activeMap_ == nullptr)
+   {
+      return;
+   }
+
+   QImage image = activeMap_->CaptureImage();
+
+   auto gribManager = manager::GribManager::Instance(category);
+   qt::util::grib_legend::DrawLegend(
+      image, *gribManager, category, categoryLabel.toStdString());
+
+   auto&             generalSettings = settings::GeneralSettings::Instance();
+   const std::string defaultFolder =
+      generalSettings.screen_capture_folder().GetValue();
+
+   std::string productName = gribManager->CurrentProductName();
+   std::replace(productName.begin(), productName.end(), ' ', '_');
+
+   const QString defaultPath = QString::fromStdString(fmt::format(
+      "{}/{}_{}.png", defaultFolder, categoryLabel.toStdString(), productName));
+
+   const QString path = QFileDialog::getSaveFileName(mainWindow_,
+                                                      tr("Export GRIB Snapshot"),
+                                                      defaultPath,
+                                                      tr("PNG Image (*.png)"));
+
+   if (path.isEmpty())
+   {
+      return;
+   }
+
+   if (!image.save(path))
+   {
+      logger_->error("Unable to save GRIB snapshot: {}", path.toStdString());
+   }
+   else
+   {
+      logger_->info("GRIB snapshot saved: {}", path.toStdString());
+   }
 }
 
 void MainWindowImpl::SetActiveMap(map::MapWidget* mapWidget)
@@ -3863,7 +3932,7 @@ void MainWindowImpl::UpdateRadarSite()
    placefileManager_->SetRadarSite(radarSite);
 
    const auto timeZone = activeMap_->GetDefaultTimeZone();
-   util::time::set_current_time_zone(timeZone);
+   scwx::util::time::set_current_time_zone(timeZone);
    animationDockWidget_->UpdateTimeZone(timeZone);
 }
 

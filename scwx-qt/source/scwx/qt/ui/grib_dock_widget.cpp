@@ -14,6 +14,7 @@
 #include <fmt/format.h>
 
 #include <QComboBox>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -64,6 +65,40 @@ constexpr int kRrfsAnimationIntervalMs_ = 500;
 // Same reasoning as kRrfsCycleHistoryHours_ -- NBM also cycles hourly.
 constexpr int kNbmCycleHistoryHours_ = 24;
 
+struct MapCropPreset
+{
+   std::string name;
+   double      southLatitude;
+   double      westLongitude;
+   double      northLatitude;
+   double      eastLongitude;
+};
+
+// SPC's own published mesoscale-analysis sector names (confirmed live,
+// 2026-09-26, via https://www.spc.noaa.gov/exper/mesoanalysis/'s own
+// sector-map image alt text -- "National", "Northwest", "Southwest",
+// "Northern Plains", "Central Plains", "Southern Plains", "Northeast",
+// "East Central", "Southeast", "Midwest") -- but the bounds below are
+// only approximate. SPC's page doesn't expose the sectors' own numeric
+// lat/lon bounds directly (only pixel coordinates in an HTML image map),
+// so these were derived by linearly transforming that image map's own
+// sector polygons against a standard CONUS bounding box, not scraped
+// precisely from an authoritative source. Good enough for a "jump the
+// view here" convenience preset, not meant to reproduce SPC's own
+// internal analysis grid to the pixel.
+const std::vector<MapCropPreset> kMapCropPresets_ {
+   {"CONUS", 24.5, -125.0, 49.5, -66.0},
+   {"Northwest", 39.2, -123.2, 49.0, -99.3},
+   {"Southwest", 32.0, -124.9, 42.3, -99.0},
+   {"Northern Plains", 39.1, -106.8, 48.1, -84.4},
+   {"Central Plains", 33.8, -106.7, 42.5, -85.0},
+   {"Southern Plains", 28.0, -108.7, 38.8, -83.0},
+   {"Midwest", 34.6, -100.8, 44.1, -79.2},
+   {"Northeast", 38.1, -91.2, 49.0, -67.1},
+   {"East Central", 33.4, -90.1, 42.5, -69.6},
+   {"Southeast", 28.2, -94.6, 36.8, -73.7},
+};
+
 } // namespace
 
 // One category's worth of UI -- a header, a status label, and the
@@ -93,6 +128,10 @@ struct CategorySection
    // preserves the original unbounded behavior.
    QSpinBox* loopStartSpinBox {};
    QSpinBox* loopEndSpinBox {};
+
+   // Captures the map view plus this section's own current product as a
+   // PNG (see GribDockWidget::ExportSnapshotRequested).
+   QPushButton* exportButton {};
 };
 
 class GribDockWidget::Impl
@@ -113,6 +152,11 @@ public:
    // can never show a color that doesn't match what's actually drawn on
    // the map.
    void BuildHodographLegend(QVBoxLayout* parentLayout, QWidget* dockContents);
+
+   // A row of named preset buttons, each emitting MapBoundsRequested()
+   // with that preset's own bounds (see kMapCropPresets_) -- map-wide, not
+   // per-category, so built once rather than per BuildSection() call.
+   void BuildMapCropPanel(QVBoxLayout* parentLayout, QWidget* dockContents);
 
    GribDockWidget*              self_;
    std::vector<CategorySection> sections_;
@@ -143,6 +187,9 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
       section.comboBox->SetChecked(name, true);
    }
    groupLayout->addWidget(section.comboBox);
+
+   section.exportButton = new QPushButton(tr("Export PNG..."), groupBox);
+   groupLayout->addWidget(section.exportButton);
 
    if (category == map::GribCategory::Rrfs)
    {
@@ -267,6 +314,15 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                  stored.gribManager->SetProductActive(
                     name, stored.comboBox->IsChecked(name));
               }
+           });
+
+   connect(stored.exportButton,
+           &QPushButton::clicked,
+           self_,
+           [this, category]()
+           {
+              Q_EMIT self_->ExportSnapshotRequested(
+                 category, QString::fromStdString(CategoryDisplayName(category)));
            });
 
    connect(stored.gribManager.get(),
@@ -581,6 +637,42 @@ void GribDockWidget::Impl::BuildHodographLegend(QVBoxLayout* parentLayout,
    parentLayout->addWidget(groupBox);
 }
 
+void GribDockWidget::Impl::BuildMapCropPanel(QVBoxLayout* parentLayout,
+                                             QWidget*     dockContents)
+{
+   auto* groupBox    = new QGroupBox(tr("Map View"), dockContents);
+   auto* groupLayout = new QGridLayout(groupBox);
+
+   constexpr int kColumns = 2;
+   int           row = 0, col = 0;
+
+   for (const auto& preset : kMapCropPresets_)
+   {
+      auto* button = new QPushButton(QString::fromStdString(preset.name),
+                                     groupBox);
+
+      connect(button,
+              &QPushButton::clicked,
+              self_,
+              [this, preset]()
+              {
+                 Q_EMIT self_->MapBoundsRequested(preset.southLatitude,
+                                                  preset.westLongitude,
+                                                  preset.northLatitude,
+                                                  preset.eastLongitude);
+              });
+
+      groupLayout->addWidget(button, row, col);
+      if (++col >= kColumns)
+      {
+         col = 0;
+         ++row;
+      }
+   }
+
+   parentLayout->addWidget(groupBox);
+}
+
 GribDockWidget::GribDockWidget(QWidget* parent) :
     QDockWidget(parent), p {std::make_unique<Impl>(this)}
 {
@@ -589,6 +681,8 @@ GribDockWidget::GribDockWidget(QWidget* parent) :
 
    auto* contents = new QWidget(this);
    auto* layout   = new QVBoxLayout(contents);
+
+   p->BuildMapCropPanel(layout, contents);
 
    // Fixed at 4 (Mrms/Rtma/Rrfs/Nbm) -- reserved upfront so BuildSection's
    // own push_back never reallocates mid-construction (see its comment).
