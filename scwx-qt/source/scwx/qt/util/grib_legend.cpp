@@ -77,8 +77,18 @@ void DrawLegend(QImage&                image,
                map::GribCategory       category,
                const std::string&      categoryLabel)
 {
-   const std::size_t productIndex = gribManager.CurrentProductIndex();
-   const std::string framePath = map::GetGribFramePath(category, productIndex);
+   const auto productIndex = gribManager.CurrentProductIndex();
+   if (!productIndex)
+   {
+      // Rrfs/Nbm with nothing checked yet -- same "nothing to show" bail
+      // as the no-decoded-frame case just below, just for the other way
+      // this category can have nothing yet.
+      logger_->info("No product active for {}, skipping legend", categoryLabel);
+      return;
+   }
+
+   const std::string framePath =
+      map::GetGribFramePath(category, *productIndex);
 
    const auto colorRange = map::ReadGribFrameColorRange(framePath);
    if (colorRange.colorScale == 0.0f)

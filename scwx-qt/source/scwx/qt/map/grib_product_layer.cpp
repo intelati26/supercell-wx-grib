@@ -298,8 +298,11 @@ void GribProductLayer::Initialize(
                  // ever renders one frame -- the current/primary one -- so a
                  // FrameReady for any other active product isn't relevant here
                  // yet. Rendering every active product at once is a real,
-                 // separate follow-up, not done in this pass.
-                 if (productIndex == p->gribManager_->CurrentProductIndex())
+                 // separate follow-up, not done in this pass. No current
+                 // product at all (Rrfs/Nbm with nothing checked) is simply
+                 // never relevant either.
+                 const auto currentIndex = p->gribManager_->CurrentProductIndex();
+                 if (currentIndex && productIndex == *currentIndex)
                  {
                     p->frameNeedsReload_ = true;
                     Q_EMIT NeedsRendering();
@@ -317,8 +320,15 @@ void GribProductLayer::Initialize(
            this,
            [this]()
            {
-              const std::string framePath = GetGribFramePath(
-                 p->category_, p->gribManager_->CurrentProductIndex());
+              const auto currentIndex = p->gribManager_->CurrentProductIndex();
+              if (!currentIndex)
+              {
+                 // Rrfs/Nbm with nothing checked yet -- nothing to reload.
+                 return;
+              }
+
+              const std::string framePath =
+                 GetGribFramePath(p->category_, *currentIndex);
               try
               {
                  if (std::filesystem::last_write_time(framePath) !=
@@ -413,8 +423,17 @@ void GribProductLayer::BuildPalette()
 
 void GribProductLayer::LoadFrame()
 {
+   const auto currentIndex = p->gribManager_->CurrentProductIndex();
+   if (!currentIndex)
+   {
+      // Rrfs/Nbm with nothing checked yet -- nothing to load. Whatever
+      // was rendered before (if anything) just stays as-is, same as the
+      // "frame file missing" case just below already does.
+      return;
+   }
+
    const std::string framePath =
-      GetGribFramePath(p->category_, p->gribManager_->CurrentProductIndex());
+      GetGribFramePath(p->category_, *currentIndex);
 
    std::ifstream in(framePath, std::ios::binary);
    if (!in)
