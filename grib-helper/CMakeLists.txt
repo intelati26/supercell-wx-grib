@@ -2,10 +2,11 @@
 # WindBarbManager invoke via QProcess (see grib-helper/README.md for why
 # it isn't linked directly into wxdata). eccodes isn't on conancenter, so
 # unlike the rest of the project's dependencies this one comes from the
-# system package manager -- optional: if it isn't installed, this target
-# is skipped and the GRIB/wind-barb overlays are unavailable at runtime
-# (GribManager/WindBarbManager already log and no-op when decode_grib
-# can't be started) rather than failing the whole configure.
+# system package manager (pkg-config on Linux) or from vcpkg's CMake
+# config package (Windows CI) -- optional: if it isn't installed, this
+# target is skipped and the GRIB/wind-barb overlays are unavailable at
+# runtime (GribManager/WindBarbManager already log and no-op when
+# decode_grib can't be started) rather than failing the whole configure.
 find_package(PkgConfig)
 
 if (PkgConfig_FOUND)
@@ -30,9 +31,23 @@ if (TARGET PkgConfig::ECCODES)
     endif()
 endif()
 
+# vcpkg (Windows) ships a CMake config package instead of a .pc file.
+if (NOT TARGET PkgConfig::ECCODES)
+    find_package(eccodes CONFIG QUIET)
+endif()
+
+set(SCWX_ECCODES_TARGET "")
 if (TARGET PkgConfig::ECCODES)
+    set(SCWX_ECCODES_TARGET PkgConfig::ECCODES)
+elseif (TARGET eccodes::eccodes)
+    set(SCWX_ECCODES_TARGET eccodes::eccodes)
+elseif (TARGET eccodes)
+    set(SCWX_ECCODES_TARGET eccodes)
+endif()
+
+if (SCWX_ECCODES_TARGET)
     add_executable(decode_grib src/decode_grib.cpp)
-    target_link_libraries(decode_grib PRIVATE PkgConfig::ECCODES)
+    target_link_libraries(decode_grib PRIVATE ${SCWX_ECCODES_TARGET})
     set_target_properties(decode_grib PROPERTIES
         FOLDER               grib-helper
         CXX_STANDARD          20
@@ -46,6 +61,12 @@ if (TARGET PkgConfig::ECCODES)
         FOLDER               grib-helper
         CXX_STANDARD          20
         CXX_STANDARD_REQUIRED ON)
+
+    # Must sit next to supercell-wx: GribManager/WindBarbManager/
+    # HodographManager resolve it via QCoreApplication::applicationDirPath().
+    install(TARGETS decode_grib
+            RUNTIME
+              COMPONENT supercell-wx)
 else()
     message(STATUS
         "eccodes not found: decode_grib will not be built, GRIB/wind-barb "
