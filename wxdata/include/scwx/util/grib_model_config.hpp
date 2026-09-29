@@ -5,12 +5,24 @@
 #include <string_view>
 #include <vector>
 
+// A user-importable GRIB model is a folder holding two files:
+//
+//   model.json    -- what rarely changes: name, source (bucket, key
+//                    pattern, cycles), and per-model display defaults.
+//   products.csv  -- what people edit in bulk: one row per field, in a
+//                    spreadsheet. Blank display cells inherit the JSON's
+//                    "defaults" block.
+//
+// Both files are untrusted text. Nothing here throws or touches the
+// network; problems come back as human-readable lines.
 namespace scwx::util::grib_model_config
 {
 
 // Locates one field inside a model's bundled GRIB2 file: wgrib2's own
-// .idx vocabulary (PARAM/LEVEL/STEP/QUALIFIER), matched literally by
-// grib_idx::FindRecord(). Not eccodes shortNames -- see ProductSpec.
+// .idx vocabulary (PARAM/LEVEL/QUALIFIER), matched literally by
+// grib_idx::FindRecord(). The idx STEP text is deliberately absent: it
+// changes per forecast hour ("1 hour fcst", "2 hour fcst"), so a match
+// on it would only ever work for one file.
 struct IndexSpec
 {
    std::string parameter; // e.g. "TMP"
@@ -25,15 +37,15 @@ struct DisplaySpec
    std::string type     = "fill"; // "fill" | "contour"
    std::string units;             // shown as-is when quantity is "none"
    std::string quantity = "none"; // "none" | "temperature_kelvin" | ...
-   float       colorOffset      = 0.0f;
-   float       colorScale       = 1.0f;
-   float       noDataThreshold  = -999.0f;
-   float       contourInterval  = 0.0f; // only meaningful for "contour"
+   float       colorOffset     = 0.0f;
+   float       colorScale      = 1.0f;
+   float       noDataThreshold = -999.0f;
+   float       contourInterval = 0.0f; // required (> 0) for "contour"
 };
 
 struct ProductSpec
 {
-   std::string name; // dock dropdown label
+   std::string name; // dock dropdown label; unique within a model
    IndexSpec   index;
 
    // eccodes shortName decode_grib selects once the one downloaded message
@@ -57,19 +69,46 @@ struct ModelConfig
    std::string              kind = "idx"; // v1 supports only "idx"
    bool                     alwaysOneActive = false;
    SourceSpec               source;
+   DisplaySpec              defaults; // inherited by blank CSV cells
    std::vector<ProductSpec> products;
 };
 
-// Config files are untrusted text: a malformed file yields errors (one
-// human-readable line each, prefixed with the offending JSON path), never
-// an exception and never a partially-filled config.
 struct ParseResult
 {
+   // Set only when `errors` is empty.
    std::optional<ModelConfig> config;
-   std::vector<std::string>   errors;
+
+   // Fatal: the model can't load. JSON problems are prefixed with the
+   // offending JSON path, CSV ones with "row N (column)".
+   std::vector<std::string> errors;
+
+   // Non-fatal: a CSV row was skipped. A typo in one of 40 rows shouldn't
+   // take the whole model down, but must never pass silently.
+   std::vector<std::string> warnings;
 };
 
-ParseResult ParseModelConfig(std::string_view jsonText);
+// model.json -> ModelConfig with no products yet. A "products" key is an
+// error: the CSV is the only source of products.
+ParseResult ParseModelSettings(std::string_view jsonText);
+
+struct ProductsResult
+{
+   std::vector<ProductSpec> products;
+   std::vector<std::string> errors;   // fatal: no usable header, no rows
+   std::vector<std::string> warnings; // skipped rows
+};
+
+// products.csv -> rows. Columns are matched by header name (any order,
+// case-insensitive); required: name, parameter, level, short_name. Handles
+// a UTF-8 BOM, CRLF/LF, RFC 4180 quoting, and sniffs ',' vs ';' (European
+// spreadsheets export ';' and write decimal commas, accepted only then).
+// Rows starting with '#' and entirely blank rows are ignored. A bad row
+// is skipped with a warning; duplicate names skip the later row.
+ProductsResult ParseProductsCsv(std::string_view csvText,
+                                const DisplaySpec& defaults);
+
+// Reads <folder>/model.json and <folder>/products.csv and combines them.
+ParseResult LoadModelFolder(const std::string& folder);
 
 // Empty string if `keyPattern` is acceptable, else a reason. Runs before a
 // pattern is ever expanded or used to build a request path.

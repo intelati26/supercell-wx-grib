@@ -1,7 +1,12 @@
 #include <scwx/util/grib_model_config.hpp>
 
 #include <algorithm>
+#include <cctype>
+#include <cerrno>
 #include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
 
 #include <boost/json.hpp>
 
@@ -15,6 +20,51 @@ namespace
 
 constexpr std::string_view kSupportedKind = "idx";
 
+// One table drives both front ends, so the JSON "defaults" block and a CSV
+// cell can never disagree about what a legal value is.
+struct NumericField
+{
+   const char* key;
+   double      lo;
+   double      hi;
+   float DisplaySpec::*member;
+};
+
+constexpr NumericField kNumericFields[] = {
+   {"color_offset", -1e9, 1e9, &DisplaySpec::colorOffset},
+   {"color_scale", 1e-9, 1e9, &DisplaySpec::colorScale},
+   {"no_data_threshold", -1e9, 1e9, &DisplaySpec::noDataThreshold},
+   {"contour_interval", 0.0, 1e9, &DisplaySpec::contourInterval}};
+
+std::string RangeText(const NumericField& f)
+{
+   return "out of range [" + std::to_string(f.lo) + ", " +
+          std::to_string(f.hi) + "]";
+}
+
+struct DisplayProblem
+{
+   const char* field;
+   const char* message;
+};
+
+// Cross-field rules shared by both front ends.
+std::optional<DisplayProblem> CheckDisplay(const DisplaySpec& d)
+{
+   if (d.type != "fill" && d.type != "contour")
+   {
+      return DisplayProblem {"type", "must be \"fill\" or \"contour\""};
+   }
+   if (d.type == "contour" && d.contourInterval <= 0.0f)
+   {
+      return DisplayProblem {"contour_interval",
+                             "required (> 0) when type is contour"};
+   }
+   return std::nullopt;
+}
+
+// ---------------------------------------------------------------- JSON
+
 struct Reader
 {
    std::vector<std::string>& errors;
@@ -25,7 +75,6 @@ struct Reader
    }
 
    const json::object* Object(const json::object& parent,
-                              const std::string&  parentPath,
                               const char*         key,
                               bool                required)
    {
@@ -34,13 +83,13 @@ struct Reader
       {
          if (required)
          {
-            Error(parentPath + key, "missing required object");
+            Error(key, "missing required object");
          }
          return nullptr;
       }
       if (!it->value().is_object())
       {
-         Error(parentPath + key, "expected an object");
+         Error(key, "expected an object");
          return nullptr;
       }
       return &it->value().as_object();
@@ -93,92 +142,200 @@ struct Reader
       out = it->value().as_bool();
    }
 
-   // Accepts any JSON number; rejects NaN/inf and values outside [lo, hi].
-   void Number(const json::object& o,
-               const std::string&  path,
-               const char*         key,
-               double              lo,
-               double              hi,
-               double&             out)
+   void Display(const json::object& o, const std::string& path, DisplaySpec& d)
    {
-      auto it = o.find(key);
-      if (it == o.end())
+      String(o, path, "type", false, d.type);
+      String(o, path, "units", false, d.units);
+      String(o, path, "quantity", false, d.quantity);
+
+      for (const auto& f : kNumericFields)
       {
-         return;
+         auto it = o.find(f.key);
+         if (it == o.end())
+         {
+            continue;
+         }
+         if (!it->value().is_number())
+         {
+            Error(path + f.key, "expected a number");
+            continue;
+         }
+         double value = it->value().to_number<double>();
+         if (!(value >= f.lo && value <= f.hi))
+         {
+            Error(path + f.key, RangeText(f));
+            continue;
+         }
+         d.*(f.member) = static_cast<float>(value);
       }
-      if (!it->value().is_number())
+
+      // Only when the fields above were individually fine, otherwise the
+      // cross-check would just repeat an error already reported.
+      if (errors.empty())
       {
-         Error(path + key, "expected a number");
-         return;
+         if (auto problem = CheckDisplay(d))
+         {
+            Error(path + problem->field, problem->message);
+         }
       }
-      double value = it->value().to_number<double>();
-      if (!(value >= lo && value <= hi))
-      {
-         Error(path + key,
-               "out of range [" + std::to_string(lo) + ", " +
-                  std::to_string(hi) + "]");
-         return;
-      }
-      out = value;
    }
 };
 
-void ReadProduct(Reader&             r,
-                 const json::object& o,
-                 const std::string&  path,
-                 ProductSpec&        product)
+// ----------------------------------------------------------------- CSV
+
+using Record = std::vector<std::string>;
+
+// RFC 4180: quoted fields may hold delimiters, quotes ("") and newlines.
+// Returns false on an unterminated quote.
+bool ReadCsv(std::string_view text, char delimiter, std::vector<Record>& out)
 {
-   r.String(o, path, "name", true, product.name);
+   Record      record;
+   std::string field;
+   bool        quoted    = false;
+   bool        fieldOpen = false; // distinguishes "" from no field at all
 
-   if (auto* index = r.Object(o, path, "index", true))
+   auto endField = [&]
    {
-      auto p = path + "index.";
-      r.String(*index, p, "parameter", true, product.index.parameter);
-      r.String(*index, p, "level", true, product.index.level);
-      r.String(*index, p, "qualifier", false, product.index.qualifier);
-   }
-
-   if (auto* decode = r.Object(o, path, "decode", true))
+      record.push_back(std::move(field));
+      field.clear();
+      fieldOpen = false;
+   };
+   auto endRecord = [&]
    {
-      r.String(*decode, path + "decode.", "short_name", true, product.shortName);
-   }
-
-   if (auto* display = r.Object(o, path, "display", false))
-   {
-      auto        p = path + "display.";
-      auto&       d = product.display;
-      double      v = 0.0;
-      r.String(*display, p, "type", false, d.type);
-      if (d.type != "fill" && d.type != "contour")
+      if (fieldOpen || !record.empty())
       {
-         r.Error(p + "type", "must be \"fill\" or \"contour\"");
+         endField();
+         out.push_back(std::move(record));
+         record.clear();
       }
-      r.String(*display, p, "units", false, d.units);
-      r.String(*display, p, "quantity", false, d.quantity);
+   };
 
-      v = d.colorOffset;
-      r.Number(*display, p, "color_offset", -1e9, 1e9, v);
-      d.colorOffset = static_cast<float>(v);
-      v = d.colorScale;
-      r.Number(*display, p, "color_scale", 1e-9, 1e9, v);
-      d.colorScale = static_cast<float>(v);
-      v = d.noDataThreshold;
-      r.Number(*display, p, "no_data_threshold", -1e9, 1e9, v);
-      d.noDataThreshold = static_cast<float>(v);
-      v = d.contourInterval;
-      r.Number(*display, p, "contour_interval", 0.0, 1e9, v);
-      d.contourInterval = static_cast<float>(v);
-
-      if (d.type == "contour" && d.contourInterval <= 0.0f)
+   for (std::size_t i = 0; i < text.size(); ++i)
+   {
+      const char c = text[i];
+      if (quoted)
       {
-         r.Error(p + "contour_interval", "required (> 0) when type is contour");
+         if (c == '"')
+         {
+            if (i + 1 < text.size() && text[i + 1] == '"')
+            {
+               field += '"';
+               ++i;
+            }
+            else
+            {
+               quoted = false;
+            }
+         }
+         else
+         {
+            field += c;
+         }
+      }
+      else if (c == '"' && field.empty())
+      {
+         quoted    = true;
+         fieldOpen = true;
+      }
+      else if (c == delimiter)
+      {
+         endField();
+      }
+      else if (c == '\r' || c == '\n')
+      {
+         if (c == '\r' && i + 1 < text.size() && text[i + 1] == '\n')
+         {
+            ++i;
+         }
+         if (!fieldOpen && record.empty())
+         {
+            out.push_back({}); // blank line still occupies a row number
+         }
+         else
+         {
+            endRecord();
+         }
+      }
+      else
+      {
+         field += c;
+         fieldOpen = true;
       }
    }
+   if (quoted)
+   {
+      return false;
+   }
+   endRecord();
+   return true;
+}
+
+char SniffDelimiter(std::string_view text)
+{
+   bool        quoted = false;
+   std::size_t commas = 0;
+   std::size_t semis  = 0;
+   for (char c : text)
+   {
+      if (c == '"')
+      {
+         quoted = !quoted;
+      }
+      else if (!quoted && (c == '\n' || c == '\r'))
+      {
+         break;
+      }
+      else if (!quoted && c == ',')
+      {
+         ++commas;
+      }
+      else if (!quoted && c == ';')
+      {
+         ++semis;
+      }
+   }
+   return semis > commas ? ';' : ',';
+}
+
+std::string Trim(const std::string& s)
+{
+   auto notSpace = [](unsigned char c) { return !std::isspace(c); };
+   auto first    = std::find_if(s.begin(), s.end(), notSpace);
+   auto last     = std::find_if(s.rbegin(), s.rend(), notSpace).base();
+   return first < last ? std::string(first, last) : std::string {};
+}
+
+std::string Lower(std::string s)
+{
+   std::transform(s.begin(),
+                  s.end(),
+                  s.begin(),
+                  [](unsigned char c) { return std::tolower(c); });
+   return s;
+}
+
+bool IsBlank(const Record& rec)
+{
+   return std::all_of(
+      rec.begin(), rec.end(), [](const std::string& c) { return Trim(c).empty(); });
+}
+
+bool IsComment(const Record& rec)
+{
+   return !rec.empty() && Trim(rec[0]).starts_with('#');
+}
+
+std::string RowLabel(std::size_t row, const std::string& column = {})
+{
+   auto label = "row " + std::to_string(row);
+   return column.empty() ? label : label + " (" + column + ")";
 }
 
 } // namespace
 
-ParseResult ParseModelConfig(std::string_view jsonText)
+// ---------------------------------------------------------------- API
+
+ParseResult ParseModelSettings(std::string_view jsonText)
 {
    ParseResult result;
    Reader      r {result.errors};
@@ -199,7 +356,12 @@ ParseResult ParseModelConfig(std::string_view jsonText)
    ModelConfig config;
    const auto& top = root.as_object();
 
-   if (auto* model = r.Object(top, "", "model", true))
+   if (top.contains("products"))
+   {
+      r.Error("products", "not allowed here; products live in products.csv");
+   }
+
+   if (auto* model = r.Object(top, "model", true))
    {
       r.String(*model, "model.", "name", true, config.name);
       r.String(*model, "model.", "kind", false, config.kind);
@@ -211,7 +373,7 @@ ParseResult ParseModelConfig(std::string_view jsonText)
       }
    }
 
-   if (auto* source = r.Object(top, "", "source", true))
+   if (auto* source = r.Object(top, "source", true))
    {
       auto& s = config.source;
       r.String(*source, "source.", "bucket", true, s.bucket);
@@ -226,9 +388,18 @@ ParseResult ParseModelConfig(std::string_view jsonText)
          }
       }
 
-      double fh = 0.0;
-      r.Number(*source, "source.", "max_forecast_hour", 0, 384, fh);
-      s.maxForecastHour = static_cast<int>(fh);
+      if (auto it = source->find("max_forecast_hour"); it != source->end())
+      {
+         if (!it->value().is_int64() || it->value().as_int64() < 0 ||
+             it->value().as_int64() > 384)
+         {
+            r.Error("source.max_forecast_hour", "expected an integer 0-384");
+         }
+         else
+         {
+            s.maxForecastHour = static_cast<int>(it->value().as_int64());
+         }
+      }
 
       auto it = source->find("cycle_hours");
       if (it == source->end() || !it->value().is_array() ||
@@ -250,47 +421,257 @@ ParseResult ParseModelConfig(std::string_view jsonText)
       }
    }
 
-   auto products = top.find("products");
-   if (products == top.end() || !products->value().is_array() ||
-       products->value().as_array().empty())
+   if (auto* defaults = r.Object(top, "defaults", false))
    {
-      r.Error("products", "expected a non-empty array");
-   }
-   else
-   {
-      std::size_t i = 0;
-      for (const auto& entry : products->value().as_array())
-      {
-         auto path = "products[" + std::to_string(i++) + "].";
-         if (!entry.is_object())
-         {
-            r.Error(path, "expected an object");
-            continue;
-         }
-         ProductSpec product;
-         ReadProduct(r, entry.as_object(), path, product);
-         config.products.push_back(std::move(product));
-      }
-
-      // Names key saved per-product state, so duplicates would alias.
-      for (std::size_t a = 0; a < config.products.size(); ++a)
-      {
-         for (std::size_t b = a + 1; b < config.products.size(); ++b)
-         {
-            if (!config.products[a].name.empty() &&
-                config.products[a].name == config.products[b].name)
-            {
-               r.Error("products[" + std::to_string(b) + "].name",
-                       "duplicate of products[" + std::to_string(a) + "]");
-            }
-         }
-      }
+      r.Display(*defaults, "defaults.", config.defaults);
    }
 
    if (result.errors.empty())
    {
       result.config = std::move(config);
    }
+   return result;
+}
+
+ProductsResult ParseProductsCsv(std::string_view csvText,
+                                const DisplaySpec& defaults)
+{
+   ProductsResult result;
+
+   if (csvText.starts_with("\xEF\xBB\xBF")) // UTF-8 BOM from Excel
+   {
+      csvText.remove_prefix(3);
+   }
+
+   const char          delimiter = SniffDelimiter(csvText);
+   std::vector<Record> records;
+   if (!ReadCsv(csvText, delimiter, records))
+   {
+      result.errors.push_back("unterminated quote");
+      return result;
+   }
+
+   // Record i is spreadsheet row i+1. Skipped blank/comment records still
+   // count, so row numbers match what the user sees in their editor.
+   std::size_t headerIndex = 0;
+   while (headerIndex < records.size() &&
+          (IsBlank(records[headerIndex]) || IsComment(records[headerIndex])))
+   {
+      ++headerIndex;
+   }
+   if (headerIndex == records.size())
+   {
+      result.errors.push_back("no header row");
+      return result;
+   }
+
+   std::vector<std::string> columns;
+   for (const auto& c : records[headerIndex])
+   {
+      columns.push_back(Lower(Trim(c)));
+   }
+
+   auto columnOf = [&](const std::string& name) -> std::optional<std::size_t>
+   {
+      auto it = std::find(columns.begin(), columns.end(), name);
+      if (it == columns.end())
+      {
+         return std::nullopt;
+      }
+      return static_cast<std::size_t>(it - columns.begin());
+   };
+
+   for (const char* required : {"name", "parameter", "level", "short_name"})
+   {
+      if (!columnOf(required))
+      {
+         result.errors.push_back(
+            std::string("header: missing required column \"") + required + "\"");
+      }
+   }
+   if (!result.errors.empty())
+   {
+      return result;
+   }
+
+   auto cell = [&](const Record& rec, const std::string& column)
+   {
+      auto index = columnOf(column);
+      return (index && *index < rec.size()) ? Trim(rec[*index]) : std::string {};
+   };
+
+   for (std::size_t i = headerIndex + 1; i < records.size(); ++i)
+   {
+      const auto& rec = records[i];
+      const auto  row = i + 1;
+
+      if (IsBlank(rec) || IsComment(rec))
+      {
+         continue;
+      }
+
+      ProductSpec              product;
+      std::vector<std::string> problems;
+      product.display = defaults;
+
+      product.name            = cell(rec, "name");
+      product.index.parameter = cell(rec, "parameter");
+      product.index.level     = cell(rec, "level");
+      product.index.qualifier = cell(rec, "qualifier");
+      product.shortName       = cell(rec, "short_name");
+
+      const std::pair<const char*, const std::string*> requiredCells[] = {
+         {"name", &product.name},
+         {"parameter", &product.index.parameter},
+         {"level", &product.index.level},
+         {"short_name", &product.shortName}};
+      for (const auto& [column, value] : requiredCells)
+      {
+         if (value->empty())
+         {
+            problems.push_back(RowLabel(row, column) + ": required");
+         }
+      }
+
+      if (auto v = cell(rec, "type"); !v.empty())
+      {
+         product.display.type = v;
+      }
+      if (auto v = cell(rec, "units"); !v.empty())
+      {
+         product.display.units = v;
+      }
+      if (auto v = cell(rec, "quantity"); !v.empty())
+      {
+         product.display.quantity = v;
+      }
+
+      for (const auto& f : kNumericFields)
+      {
+         auto text = cell(rec, f.key);
+         if (text.empty())
+         {
+            continue;
+         }
+         if (delimiter == ';') // decimal comma only alongside ';'
+         {
+            std::replace(text.begin(), text.end(), ',', '.');
+         }
+         errno        = 0;
+         char*  end   = nullptr;
+         double value = std::strtod(text.c_str(), &end);
+         if (end == text.c_str() || *end != '\0' || errno == ERANGE)
+         {
+            problems.push_back(RowLabel(row, f.key) + ": \"" + text +
+                               "\" is not a number");
+         }
+         else if (!(value >= f.lo && value <= f.hi))
+         {
+            problems.push_back(RowLabel(row, f.key) + ": " + RangeText(f));
+         }
+         else
+         {
+            product.display.*(f.member) = static_cast<float>(value);
+         }
+      }
+
+      if (problems.empty())
+      {
+         if (auto problem = CheckDisplay(product.display))
+         {
+            problems.push_back(RowLabel(row, problem->field) + ": " +
+                               problem->message);
+         }
+      }
+
+      if (problems.empty())
+      {
+         const bool duplicate = std::any_of(
+            result.products.begin(),
+            result.products.end(),
+            [&](const ProductSpec& p) { return p.name == product.name; });
+         if (duplicate)
+         {
+            problems.push_back(RowLabel(row, "name") + ": duplicate of \"" +
+                               product.name + "\"");
+         }
+      }
+
+      if (!problems.empty())
+      {
+         for (const auto& p : problems)
+         {
+            result.warnings.push_back(p + " -- row skipped");
+         }
+         continue;
+      }
+      result.products.push_back(std::move(product));
+   }
+
+   if (result.products.empty())
+   {
+      result.errors.push_back("no valid product rows");
+   }
+   return result;
+}
+
+ParseResult LoadModelFolder(const std::string& folder)
+{
+   auto slurp = [](const std::string& path, std::string& out)
+   {
+      std::ifstream in(path, std::ios::binary);
+      if (!in)
+      {
+         return false;
+      }
+      std::ostringstream ss;
+      ss << in.rdbuf();
+      out = ss.str();
+      return true;
+   };
+
+   ParseResult result;
+   std::string jsonText;
+   std::string csvText;
+   if (!slurp(folder + "/model.json", jsonText))
+   {
+      result.errors.push_back("model.json: cannot read");
+   }
+   if (!slurp(folder + "/products.csv", csvText))
+   {
+      result.errors.push_back("products.csv: cannot read");
+   }
+   if (!result.errors.empty())
+   {
+      return result;
+   }
+
+   result = ParseModelSettings(jsonText);
+   for (auto& e : result.errors)
+   {
+      e = "model.json: " + e;
+   }
+   if (!result.errors.empty())
+   {
+      return result;
+   }
+
+   auto products = ParseProductsCsv(csvText, result.config->defaults);
+   for (const auto& e : products.errors)
+   {
+      result.errors.push_back("products.csv: " + e);
+   }
+   for (const auto& w : products.warnings)
+   {
+      result.warnings.push_back("products.csv: " + w);
+   }
+   if (!result.errors.empty())
+   {
+      result.config.reset();
+      return result;
+   }
+
+   result.config->products = std::move(products.products);
    return result;
 }
 
@@ -306,9 +687,9 @@ std::string ExpandKeyPattern(std::string_view keyPattern,
                              int              cycleHour,
                              int              forecastHour)
 {
-   char hh[8];
-   char fh2[8];
-   char fh3[8];
+   char hh[16];
+   char fh2[16];
+   char fh3[16];
    std::snprintf(hh, sizeof(hh), "%02d", cycleHour);
    std::snprintf(fh2, sizeof(fh2), "%02d", forecastHour);
    std::snprintf(fh3, sizeof(fh3), "%03d", forecastHour);
