@@ -29,6 +29,7 @@ jobs:
             cppflags: ''
             ldflags: ''
             vs_arch: x64
+            vcpkg_triplet: x64-windows-static-md
             vs_version: 18
             qt_version: 6.11.1
             qt_arch_aqt: win64_msvc2022_64
@@ -49,6 +50,7 @@ jobs:
             cppflags: ''
             ldflags: ''
             vs_arch: arm64
+            vcpkg_triplet: arm64-windows-static-md
             vs_version: 18
             qt_version: 6.11.1
             qt_arch_aqt: win64_msvc2022_arm64_cross_compiled
@@ -179,6 +181,26 @@ jobs:
                     GitPython `
                     conan
 
+    - name: Restore vcpkg Archives (Windows)
+      if: ${{ startsWith(matrix.os, 'windows') }}
+      uses: actions/cache@v4
+      with:
+        path: ~\AppData\Local\vcpkg\archives
+        key: vcpkg-eccodes-${{ matrix.vcpkg_triplet }}-v1
+
+    - name: Install eccodes (Windows, vcpkg)
+      if: ${{ startsWith(matrix.os, 'windows') }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        # eccodes is not on conancenter. decode_grib (grib-helper/) is the
+        # only consumer, so a static vcpkg build is enough: the triplet
+        # keeps the dynamic CRT to match the rest of the build.
+        & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "eccodes[aec,png]:${{ matrix.vcpkg_triplet }}"
+        if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed" }
+        "SCWX_VCPKG_PREFIX=$env:VCPKG_INSTALLATION_ROOT/installed/${{ matrix.vcpkg_triplet }}" |
+          Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
     - name: Restore Conan Packages
       id: cache-conan
       uses: actions/cache/restore@v6
@@ -241,8 +263,13 @@ jobs:
         if ('${{ matrix.os }}' -like 'macos*') {
           $cmakeArgs += '-DCMAKE_OSX_DEPLOYMENT_TARGET=12.0'
         }
+        if ($env:SCWX_VCPKG_PREFIX) {
+          $cmakeArgs += "-DCMAKE_PREFIX_PATH=$env:SCWX_VCPKG_PREFIX"
+        }
         cmake @cmakeArgs
-        ninja supercell-wx
+        # decode_grib is not a dependency of supercell-wx, so it must be
+        # named or it is never built (and never installed/packaged).
+        ninja supercell-wx decode_grib
 
     - name: Build Supercell Wx (Test)
       if: ${{ matrix.conan_build_profile == matrix.conan_host_profile }}
