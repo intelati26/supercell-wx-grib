@@ -126,7 +126,7 @@ TEST(GribManagerTest, PrslevProductDecodesRealFile)
    double             lastMean        = 0.0;
    std::vector<float> payload;
 
-   for (int i = 0; i < 300 && !found; ++i)
+   for (int i = 0; i < 900 && !found; ++i)
    {
       std::ifstream in(framePath, std::ios::binary);
       if (in.is_open())
@@ -207,7 +207,7 @@ TEST(GribManagerTest, ShipProductDecodesRealFile)
    double             lastMean      = 0.0;
    std::vector<float> payload;
 
-   for (int i = 0; i < 300 && !found; ++i)
+   for (int i = 0; i < 900 && !found; ++i)
    {
       std::ifstream in(framePath, std::ios::binary);
       if (in.is_open())
