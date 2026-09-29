@@ -52,3 +52,14 @@ else()
         "overlays will be unavailable at runtime "
         "(see grib-helper/README.md)")
 endif()
+
+# Pins wind_rotation.hpp's grid-relative -> earth-relative wind rotation
+# against known values (see grib-helper/src/wind_rotation_test.cpp).
+# Header-only and eccodes-free, so unlike decode_grib itself this builds
+# and runs unconditionally.
+add_executable(wind_rotation_test src/wind_rotation_test.cpp)
+set_target_properties(wind_rotation_test PROPERTIES
+    FOLDER               grib-helper
+    CXX_STANDARD          20
+    CXX_STANDARD_REQUIRED ON)
+add_test(NAME wind_rotation_test COMMAND wind_rotation_test)

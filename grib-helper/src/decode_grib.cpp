@@ -9,6 +9,8 @@
 
 #include <eccodes.h>
 
+#include "../include/wind_rotation.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -255,6 +257,25 @@ codes_handle* FindMessage(FILE*              f,
    }
 
    return nullptr;
+}
+
+// Non-empty iff shortName is one of the raw grid-relative wind components
+// this file's single-field decode path rotates to earth-relative (see
+// wind_rotation.hpp) -- "10u"/"10v" (2dfld's 10m wind) and "u"/"v"
+// (prslev's isobaric wind, and 2dfld's own above-10m height levels, which
+// eccodes also reports as plain "u"/"v" -- confirmed live, see
+// hodograph_manager.cpp's LevelTable). Every derived index that touches
+// wind (wind10/wind500/shear6 in RunDerived below) goes through
+// ComputeVectorMagnitude/ReadDerivedField instead, a separate code path
+// this function is never consulted from -- magnitude is rotation-
+// invariant, so those are correct either way and deliberately untouched.
+std::string PairedWindShortName(const std::string& shortName)
+{
+   if (shortName == "10u") return "10v";
+   if (shortName == "10v") return "10u";
+   if (shortName == "u") return "v";
+   if (shortName == "v") return "u";
+   return "";
 }
 
 // RTMA's filename (e.g. "rtma2p5.t00z.2dvaranl_ndfd.grb2_wexp") carries no
@@ -1148,7 +1169,101 @@ int main(int argc, char** argv)
       const ProductInfo   productInfo = shortName.empty() ?
                                            ProductInfoFromPath(inputPath) :
                                            ProductInfoFromHandle(h, shortName);
+
+      // Grid-relative -> earth-relative wind rotation (see
+      // grib-helper/include/wind_rotation.hpp) -- RRFS and RTMA both
+      // store raw U/V wind components relative to the Lambert grid's own
+      // x/y axes (uvRelativeToGrid=1, confirmed live on every wind field
+      // seen so far), not true north/east. Done once here, in the single
+      // shared decode path every "u"/"v"/"10u"/"10v" request goes
+      // through (currently just HodographManager -- see
+      // PairedWindShortName's own comment for what's deliberately NOT
+      // covered), rather than leaving every consumer to forget it.
+      const std::string pairedShortName = PairedWindShortName(shortName);
+      std::vector<double> lons;
+      if (!pairedShortName.empty() && grid.type == GridType::Lambert)
+      {
+         long uvRelativeToGrid = 1; // matches everything measured so
+                                    // far; if the key is simply absent,
+                                    // rotate anyway rather than silently
+                                    // skip a needed correction.
+         codes_get_long(h, "uvRelativeToGrid", &uvRelativeToGrid);
+
+         if (uvRelativeToGrid != 0)
+         {
+            lons.resize(values.size());
+            size_t lonCount = values.size();
+            CODES_CHECK(
+               codes_get_double_array(h, "longitudes", lons.data(), &lonCount),
+               nullptr);
+         }
+      }
+
       codes_handle_delete(h);
+      h = nullptr;
+
+      if (!lons.empty())
+      {
+         FILE* fPaired = std::fopen(inputPath, "rb");
+         if (fPaired == nullptr)
+         {
+            throw std::runtime_error("Could not reopen " +
+                                     std::string(inputPath) +
+                                     " for paired wind component");
+         }
+
+         codes_handle* hPaired = FindMessage(fPaired,
+                                             pairedShortName,
+                                             typeOfLevel,
+                                             topLevel,
+                                             bottomLevel,
+                                             startStep,
+                                             lengthOfTimeRange);
+         std::fclose(fPaired);
+         if (hPaired == nullptr)
+         {
+            throw std::runtime_error("Could not find paired wind "
+                                     "component \"" +
+                                     pairedShortName + "\" for \"" +
+                                     shortName + "\" in " + inputPath);
+         }
+
+         double pairedMissingValue = 0.0;
+         CODES_CHECK(
+            codes_get_double(hPaired, "missingValue", &pairedMissingValue),
+            nullptr);
+         std::vector<double> pairedValues = ReadValues(hPaired);
+         codes_handle_delete(hPaired);
+
+         if (pairedValues.size() != values.size())
+         {
+            throw std::runtime_error("Paired wind component grid size "
+                                     "mismatch: " +
+                                     pairedShortName);
+         }
+
+         const bool requestedIsU = (shortName == "10u" || shortName == "u");
+         const double n =
+            scwx::grib::LambertConeConstant(grid.latin1, grid.latin2);
+
+         for (size_t i = 0; i < values.size(); ++i)
+         {
+            if (values[i] == grid.missingValue ||
+                pairedValues[i] == pairedMissingValue)
+            {
+               values[i] = grid.missingValue;
+               continue;
+            }
+
+            const double gridU  = requestedIsU ? values[i] : pairedValues[i];
+            const double gridV  = requestedIsU ? pairedValues[i] : values[i];
+            const double lonDeg = NormalizeLongitude(lons[i]);
+
+            const auto earth = scwx::grib::RotateGridWindToEarth(
+               gridU, gridV, lonDeg, grid.lov, n);
+            values[i] = requestedIsU ? earth.u : earth.v;
+         }
+      }
 
       if (static_cast<long>(values.size()) != grid.ni * grid.nj)
       {
@@ -1178,7 +1293,10 @@ int main(int argc, char** argv)
    catch (const std::exception& e)
    {
       std::cerr << "Error: " << e.what() << "\n";
-      codes_handle_delete(h);
+      if (h != nullptr)
+      {
+         codes_handle_delete(h);
+      }
       return 1;
    }
 
