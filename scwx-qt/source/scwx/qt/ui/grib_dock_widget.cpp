@@ -7,7 +7,10 @@
 #include <scwx/provider/nbm_data_provider.hpp>
 #include <scwx/provider/rrfs_data_provider.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <map>
+#include <set>
 #include <vector>
 
 #include <fmt/chrono.h>
@@ -19,6 +22,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSlider>
 #include <QSpinBox>
 #include <QTimer>
@@ -61,6 +65,14 @@ constexpr int kRrfsCycleHistoryHours_ = 24;
 // cycle's own max) takes ~42s at this pace, fast enough to actually watch
 // evolve without being so fast the frame-by-frame detail blurs together.
 constexpr int kRrfsAnimationIntervalMs_ = 500;
+
+// Rough size of one RRFS hour's prslev object (see GribManager's
+// PrefetchRrfsForecastHourRange doc) -- only used to tell the user what a
+// pick list is about to cost, not for any accounting.
+constexpr int kRrfsApproxHourMegabytes_ = 320;
+
+// Hour buttons per grid row: 8 fits the dock width (a full 84h cycle is 11 rows).
+constexpr int kRrfsHourButtonColumns_ = 8;
 
 // Same reasoning as kRrfsCycleHistoryHours_ -- NBM also cycles hourly.
 constexpr int kNbmCycleHistoryHours_ = 24;
@@ -129,6 +141,21 @@ struct CategorySection
    QSpinBox* loopStartSpinBox {};
    QSpinBox* loopEndSpinBox {};
 
+   // Hour pick list (RRFS only). Clicking an hour button views that hour
+   // and toggles it in the list; Play then downloads only the picked,
+   // not-yet-cached hours and loops through exactly those. Kept per cycle
+   // (keyed by the cycle's epoch ticks) so it survives switching products
+   // -- the hour files are per cycle, not per product -- but doesn't leak
+   // a run's picks onto a different run. With nothing picked, Play falls
+   // back to the loop-range spin boxes above.
+   QWidget*                         hourButtonHost {};
+   QGridLayout*                     hourGrid {};
+   std::vector<QPushButton*>        hourButtons;
+   QPushButton*                     addRangeButton {};
+   QPushButton*                     clearPicksButton {};
+   QLabel*                          pickSummaryLabel {};
+   std::map<qint64, std::set<int>>  picksByCycle;
+
    // Captures the map view plus this section's own current product as a
    // PNG (see GribDockWidget::ExportSnapshotRequested).
    QPushButton* exportButton {};
@@ -144,6 +171,12 @@ public:
                      QVBoxLayout*      parentLayout,
                      QWidget*          dockContents);
    void RefreshSection(CategorySection& section);
+
+   // RRFS hour pick list -- see CategorySection::picksByCycle.
+   [[nodiscard]] std::set<int>& Picks(CategorySection& section);
+   [[nodiscard]] std::vector<int> PlaybackHours(CategorySection& section);
+   void RebuildHourButtons(CategorySection& section);
+   void RefreshHourButtons(CategorySection& section);
 
    // Static (no live data, no manager, no signal wiring) -- just a color
    // key for HodographLayer's height-band coloring plus a range-ring
@@ -242,7 +275,26 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
       loopRow->addWidget(loopToLabel);
       loopRow->addWidget(section.loopEndSpinBox);
       loopRow->addWidget(loopUnitsLabel);
+      section.addRangeButton = new QPushButton(tr("Pick range"), groupBox);
+      section.addRangeButton->setToolTip(
+         tr("Add every hour from the loop start to the loop end to the pick "
+            "list"));
+      loopRow->addWidget(section.addRangeButton);
       groupLayout->addLayout(loopRow);
+
+      section.hourButtonHost = new QWidget(groupBox);
+      section.hourGrid       = new QGridLayout(section.hourButtonHost);
+      section.hourGrid->setContentsMargins(0, 0, 0, 0);
+      section.hourGrid->setSpacing(2);
+      groupLayout->addWidget(section.hourButtonHost);
+
+      auto* pickRow            = new QHBoxLayout();
+      section.pickSummaryLabel = new QLabel(groupBox);
+      section.pickSummaryLabel->setWordWrap(true);
+      section.clearPicksButton = new QPushButton(tr("Clear"), groupBox);
+      pickRow->addWidget(section.pickSummaryLabel, 1);
+      pickRow->addWidget(section.clearPicksButton);
+      groupLayout->addLayout(pickRow);
 
       section.gribManager->SetRrfsLoopRange(0, initialMaxHour);
 
@@ -299,6 +351,11 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
    sections_.push_back(section);
    CategorySection& stored = sections_.back();
 
+   if (category == map::GribCategory::Rrfs)
+   {
+      RebuildHourButtons(stored);
+   }
+
    // Reconciles the combo box's checked set onto GribManager rather than
    // trying to diff "what changed" from CheckedItemsChanged alone (which
    // doesn't say which item toggled) -- SetProductActive is a no-op for
@@ -307,7 +364,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
    connect(section.comboBox,
            &CheckableComboBox::CheckedItemsChanged,
            self_,
-           [&stored, category]()
+           [this, &stored, category]()
            {
               for (const auto& name : stored.gribManager->ProductNames())
               {
@@ -333,6 +390,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                  stored.gribManager->SetRrfsLoopRange(
                     stored.loopStartSpinBox->value(),
                     stored.loopEndSpinBox->value());
+                 RebuildHourButtons(stored);
               }
               else if (category == map::GribCategory::Nbm)
               {
@@ -365,7 +423,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
          stored.cycleComboBox,
          qOverload<int>(&QComboBox::currentIndexChanged),
          self_,
-         [&stored](int cycleIndex)
+         [this, &stored](int cycleIndex)
          {
             auto& hodographManager = *manager::HodographManager::Instance();
 
@@ -397,17 +455,48 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
             stored.gribManager->SetRrfsLoopRange(
                stored.loopStartSpinBox->value(),
                stored.loopEndSpinBox->value());
+            RebuildHourButtons(stored);
          });
 
       connect(stored.hourSlider,
               &QSlider::valueChanged,
               self_,
-              [&stored](int hour)
+              [this, &stored](int hour)
               {
                  stored.gribManager->SetRrfsForecastHour(hour);
                  manager::HodographManager::Instance()->SetForecastHour(hour);
                  stored.hourLabel->setText(
                     QString::fromStdString(fmt::format("F{:03d}", hour)));
+                 RefreshHourButtons(stored);
+              });
+
+      connect(stored.gribManager.get(),
+              &manager::GribManager::RrfsCacheChanged,
+              self_,
+              [this, &stored]() { RefreshHourButtons(stored); });
+
+      connect(stored.addRangeButton,
+              &QPushButton::clicked,
+              self_,
+              [this, &stored]()
+              {
+                 auto& picks = Picks(stored);
+                 for (int hour = stored.loopStartSpinBox->value();
+                      hour <= stored.loopEndSpinBox->value();
+                      ++hour)
+                 {
+                    picks.insert(hour);
+                 }
+                 RefreshHourButtons(stored);
+              });
+
+      connect(stored.clearPicksButton,
+              &QPushButton::clicked,
+              self_,
+              [this, &stored]()
+              {
+                 Picks(stored).clear();
+                 RefreshHourButtons(stored);
               });
 
       // Cross-clamped so start can never exceed end or vice versa --
@@ -437,7 +526,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
       connect(stored.playButton,
               &QPushButton::clicked,
               self_,
-              [&stored]()
+              [this, &stored]()
               {
                  if (stored.animationTimer->isActive())
                  {
@@ -446,32 +535,30 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                  }
                  else
                  {
-                    // Starting outside the loop range (e.g. the slider was
-                    // left at F040 from manual scrubbing, then the loop
-                    // was narrowed to 0-6h) would otherwise animate
-                    // outside the range the user just asked for until it
-                    // happened to wrap around into it -- snap in first.
-                    const int loopStart = stored.loopStartSpinBox->value();
-                    const int loopEnd   = stored.loopEndSpinBox->value();
-                    if (stored.hourSlider->value() < loopStart ||
-                        stored.hourSlider->value() > loopEnd)
+                    const std::vector<int> hours = PlaybackHours(stored);
+                    if (hours.empty())
                     {
-                       stored.hourSlider->setValue(loopStart);
+                       return;
                     }
 
-                    // Warms the disk cache for every forecast hour this
-                    // loop will visit, in the background, so per-step
-                    // playback doesn't block on a fresh ~320MB fetch (see
-                    // GribManager::PrefetchRrfsForecastHourRange()'s own
-                    // doc, and SetRrfsLoopRange()'s for why this is
-                    // usually much less than the full cycle). No separate
-                    // HodographManager prefetch call needed: it decodes
-                    // from the exact same downloaded GRIB2 file this
-                    // queues (its own Poll() already documents finding
-                    // that file "quite possibly ... already cached ... by
-                    // GribManager(Rrfs)"), so it transparently benefits
-                    // once this fills the shared cache.
-                    stored.gribManager->PrefetchRrfsForecastHourRange();
+                    // Starting on an hour that isn't part of the loop (e.g.
+                    // the slider was left at F040 while the picks are 2-6)
+                    // would otherwise show it until the timer happened to
+                    // wrap -- snap in first.
+                    if (!std::binary_search(
+                           hours.begin(), hours.end(), stored.hourSlider->value()))
+                    {
+                       stored.hourSlider->setValue(hours.front());
+                    }
+
+                    // This is the deferred download: only now, and only
+                    // for the picked hours not already cached. No separate
+                    // HodographManager prefetch needed: it decodes from the
+                    // exact same downloaded GRIB2 file, so it benefits once
+                    // this fills the shared cache.
+                    stored.gribManager->PrefetchRrfsForecastHours(
+                       std::set<int>(hours.begin(), hours.end()));
+                    RefreshHourButtons(stored);
                     stored.animationTimer->start();
                     stored.playButton->setText(tr("Pause"));
                  }
@@ -480,19 +567,20 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
       connect(stored.animationTimer,
               &QTimer::timeout,
               self_,
-              [&stored]()
+              [this, &stored]()
               {
-                 // Loops back to the loop range's own start rather than
-                 // stopping at its end -- "keep watching the run evolve"
-                 // is the whole point of Play, so wrapping (not halting)
-                 // matches that intent, same as the original always-
-                 // [0, max] behavior this generalizes.
-                 int next = stored.hourSlider->value() + 1;
-                 if (next > stored.loopEndSpinBox->value())
+                 // Wraps to the first hour rather than stopping at the
+                 // last -- "keep watching the run evolve" is the point of
+                 // Play.
+                 const std::vector<int> hours = PlaybackHours(stored);
+                 if (hours.empty())
                  {
-                    next = stored.loopStartSpinBox->value();
+                    return;
                  }
-                 stored.hourSlider->setValue(next);
+                 const auto it = std::upper_bound(
+                    hours.begin(), hours.end(), stored.hourSlider->value());
+                 stored.hourSlider->setValue(it == hours.end() ? hours.front() :
+                                                                  *it);
               });
    }
    else if (category == map::GribCategory::Nbm)
@@ -587,6 +675,141 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
    }
 
    RefreshSection(stored);
+}
+
+std::set<int>& GribDockWidget::Impl::Picks(CategorySection& section)
+{
+   const qint64 cycleKey =
+      section.gribManager->CurrentRrfsCycle().time_since_epoch().count();
+   return section.picksByCycle[cycleKey];
+}
+
+std::vector<int> GribDockWidget::Impl::PlaybackHours(CategorySection& section)
+{
+   const int        maxHour = section.gribManager->MaxRrfsForecastHour();
+   std::vector<int> hours;
+
+   for (const int hour : Picks(section))
+   {
+      if (hour <= maxHour)
+      {
+         hours.push_back(hour);
+      }
+   }
+
+   if (hours.empty())
+   {
+      for (int hour = section.loopStartSpinBox->value();
+           hour <= section.loopEndSpinBox->value();
+           ++hour)
+      {
+         hours.push_back(hour);
+      }
+   }
+
+   return hours;
+}
+
+void GribDockWidget::Impl::RebuildHourButtons(CategorySection& section)
+{
+   const int hourCount = section.gribManager->MaxRrfsForecastHour() + 1;
+
+   if (static_cast<int>(section.hourButtons.size()) != hourCount)
+   {
+      for (auto* button : section.hourButtons)
+      {
+         section.hourGrid->removeWidget(button);
+         delete button;
+      }
+      section.hourButtons.clear();
+
+      // A cycle that's gone (nothing active yet) has one degenerate hour;
+      // don't show a lone F000 button for it.
+      const bool haveCycle = section.gribManager->CurrentProductIndex().has_value();
+      for (int hour = 0; haveCycle && hour < hourCount; ++hour)
+      {
+         auto* button = new QPushButton(
+            QString::fromStdString(fmt::format("{:03d}", hour)),
+            section.hourButtonHost);
+         button->setFixedWidth(34);
+         button->setFlat(false);
+         button->setFocusPolicy(Qt::NoFocus);
+         button->setContentsMargins(0, 0, 0, 0);
+         section.hourGrid->addWidget(
+            button, hour / kRrfsHourButtonColumns_, hour % kRrfsHourButtonColumns_);
+         section.hourButtons.push_back(button);
+
+         connect(button,
+                 &QPushButton::clicked,
+                 self_,
+                 [this, &section, hour]()
+                 {
+                    auto& picks = Picks(section);
+                    if (!picks.erase(hour))
+                    {
+                       picks.insert(hour);
+                    }
+                    // Viewing is the on-demand fetch of just this hour; the
+                    // deferred bulk download only starts at Play.
+                    section.hourSlider->setValue(hour);
+                    RefreshHourButtons(section);
+                 });
+      }
+   }
+
+   RefreshHourButtons(section);
+}
+
+void GribDockWidget::Impl::RefreshHourButtons(CategorySection& section)
+{
+   const std::set<int>& picks   = Picks(section);
+   const std::set<int>  cached  = section.gribManager->CachedRrfsForecastHours();
+   const int            current = section.hourSlider->value();
+
+   // Three independent cues so any combination stays readable:
+   // downloaded = filled, picked = accent border, viewing = bold text.
+   for (std::size_t hour = 0; hour < section.hourButtons.size(); ++hour)
+   {
+      const int  h          = static_cast<int>(hour);
+      const bool isCached   = cached.contains(h);
+      const bool isPicked   = picks.contains(h);
+      const bool isViewing  = (h == current);
+
+      QString style = QStringLiteral("QPushButton { padding: 1px 0px; ");
+      style += isCached ? QStringLiteral("background: palette(mid); ") :
+                          QStringLiteral("background: palette(button); ");
+      style += isPicked ? QStringLiteral("border: 2px solid palette(highlight); ") :
+                          QStringLiteral("border: 1px solid palette(mid); ");
+      style += isViewing ? QStringLiteral("font-weight: bold; ") : QString();
+      style += QStringLiteral("}");
+      section.hourButtons[hour]->setStyleSheet(style);
+   }
+
+   int toDownload = 0;
+   for (const int hour : picks)
+   {
+      if (hour < static_cast<int>(section.hourButtons.size()) &&
+          !cached.contains(hour))
+      {
+         ++toDownload;
+      }
+   }
+
+   if (picks.empty())
+   {
+      section.pickSummaryLabel->setText(
+         tr("Click hours to pick them; Play downloads and loops only the "
+            "picked ones (or the loop range if none)."));
+   }
+   else
+   {
+      section.pickSummaryLabel->setText(
+         tr("%1 picked, %2 to download (~%3 MB)")
+            .arg(picks.size())
+            .arg(toDownload)
+            .arg(toDownload * kRrfsApproxHourMegabytes_));
+   }
+   section.clearPicksButton->setEnabled(!picks.empty());
 }
 
 void GribDockWidget::Impl::RefreshSection(CategorySection& section)
@@ -722,7 +945,15 @@ GribDockWidget::GribDockWidget(QWidget* parent) :
    p->BuildHodographLegend(layout, contents);
 
    layout->addStretch();
-   setWidget(contents);
+
+   // The RRFS hour button grid (up to 85 buttons) makes this taller than a
+   // screen, and without a scroll area the layout just squashed every row.
+   auto* scrollArea = new QScrollArea(this);
+   scrollArea->setWidgetResizable(true);
+   scrollArea->setFrameShape(QFrame::NoFrame);
+   scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+   scrollArea->setWidget(contents);
+   setWidget(scrollArea);
 }
 
 GribDockWidget::~GribDockWidget() = default;

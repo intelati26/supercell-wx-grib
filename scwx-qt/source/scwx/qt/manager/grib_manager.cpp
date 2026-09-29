@@ -1388,6 +1388,30 @@ void GribManager::PrefetchRrfsForecastHourRange()
       return;
    }
 
+   const int maxHour   = MaxRrfsForecastHour();
+   const int startHour = std::clamp(p->rrfsLoopStartHour_, 0, maxHour);
+   const int endHour   = (p->rrfsLoopEndHour_ < 0) ?
+                            maxHour :
+                            std::clamp(p->rrfsLoopEndHour_, startHour, maxHour);
+
+   std::set<int> hours;
+   for (int hour = startHour; hour <= endHour; ++hour)
+   {
+      hours.insert(hour);
+   }
+   PrefetchRrfsForecastHours(hours);
+}
+
+void GribManager::PrefetchRrfsForecastHours(const std::set<int>& hours)
+{
+   if (p->category_ != map::GribCategory::Rrfs)
+   {
+      logger_->warn(
+         "PrefetchRrfsForecastHours() is only meaningful for "
+         "GribCategory::Rrfs");
+      return;
+   }
+
    // Nothing to prefetch with no product active (e.g. Play pressed the
    // instant a category is enabled, before any product is checked).
    const auto index = CurrentProductIndex();
@@ -1401,22 +1425,56 @@ void GribManager::PrefetchRrfsForecastHourRange()
    const int  maxHour =
       provider::RrfsDataProvider::MaxForecastHourForCycle(cycle);
 
-   const int startHour = std::clamp(p->rrfsLoopStartHour_, 0, maxHour);
-   const int endHour   = (p->rrfsLoopEndHour_ < 0) ?
-                            maxHour :
-                            std::clamp(p->rrfsLoopEndHour_, startHour, maxHour);
-
-   logger_->debug("Prefetching {} RRFS forecast hour(s) for cycle {} ({}-{}h)",
-                  endHour - startHour + 1,
-                  scwx::util::TimeString(cycle),
-                  startHour,
-                  endHour);
-
-   for (int hour = startHour; hour <= endHour; ++hour)
+   int queued = 0;
+   for (const int hour : hours)
    {
-      QueueDownload(*index,
-                    provider::RrfsDataProvider::BuildKey(cycle, hour, family));
+      if (hour < 0 || hour > maxHour)
+      {
+         continue;
+      }
+
+      const std::string key =
+         provider::RrfsDataProvider::BuildKey(cycle, hour, family);
+      if (std::filesystem::exists(CachedDownloadPath(key)))
+      {
+         continue;
+      }
+
+      QueueDownload(*index, key);
+      ++queued;
    }
+
+   logger_->debug("Prefetching {} of {} picked RRFS hour(s) for cycle {}",
+                  queued,
+                  hours.size(),
+                  scwx::util::TimeString(cycle));
+}
+
+std::set<int> GribManager::CachedRrfsForecastHours() const
+{
+   std::set<int> cached;
+
+   const auto index = CurrentProductIndex();
+   if (p->category_ != map::GribCategory::Rrfs || !index)
+   {
+      return cached;
+   }
+
+   const auto cycle   = CurrentRrfsCycle();
+   const auto family  = Products(p->category_)[*index].rrfsFileFamily;
+   const int  maxHour =
+      provider::RrfsDataProvider::MaxForecastHourForCycle(cycle);
+
+   for (int hour = 0; hour <= maxHour; ++hour)
+   {
+      if (std::filesystem::exists(CachedDownloadPath(
+             provider::RrfsDataProvider::BuildKey(cycle, hour, family))))
+      {
+         cached.insert(hour);
+      }
+   }
+
+   return cached;
 }
 
 void GribManager::Poll()
@@ -2341,6 +2399,11 @@ void GribManager::QueueDownload(std::size_t        productIndex,
          }
 
          PruneDownloadCache();
+
+         if (p->category_ == map::GribCategory::Rrfs)
+         {
+            Q_EMIT RrfsCacheChanged();
+         }
 
          // Only apply this to the display if it's still what's wanted --
          // otherwise playback/scrubbing has moved on since this was
