@@ -151,6 +151,8 @@ TEST(GribManagerTest, PrslevProductDecodesRealFile)
             }
          }
       }
+      // Windows refuses to rename a new frame over a file still open here.
+      in.close();
       std::this_thread::sleep_for(500ms);
    }
 
@@ -232,6 +234,8 @@ TEST(GribManagerTest, ShipProductDecodesRealFile)
             }
          }
       }
+      // Windows refuses to rename a new frame over a file still open here.
+      in.close();
       std::this_thread::sleep_for(500ms);
    }
 
@@ -402,6 +406,8 @@ TEST(GribManagerTest, NbmProductDecodesRealFile)
             }
          }
       }
+      // Windows refuses to rename a new frame over a file still open here.
+      in.close();
       std::this_thread::sleep_for(500ms);
    }
 
