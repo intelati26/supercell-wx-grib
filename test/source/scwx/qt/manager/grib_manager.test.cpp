@@ -32,6 +32,15 @@ TEST(GribManagerTest, RrfsForecastHourSelection)
 
    auto gribManager = GribManager::Instance(map::GribCategory::Rrfs);
 
+   // Rrfs starts with no product active (see GribManager's own
+   // per-category default) -- CurrentRrfsCycle()/MaxRrfsForecastHour()
+   // below need a real active product to resolve against, so activate
+   // one explicitly rather than relying on a default that no longer
+   // exists. Which product doesn't matter here (unlike
+   // PrslevProductDecodesRealFile/ShipProductDecodesRealFile below, this
+   // test never checks a decoded value), so the first one is fine.
+   gribManager->SetProductActive(gribManager->ProductNames().front(), true);
+
    // Defaults, before any selection has been made.
    EXPECT_TRUE(gribManager->IsUsingLatestRrfsCycle());
    EXPECT_EQ(gribManager->RrfsForecastHour(), 0);
@@ -61,6 +70,8 @@ TEST(GribManagerTest, RrfsForecastHourSelection)
 
    gribManager->UseLatestRrfsCycle();
    EXPECT_TRUE(gribManager->IsUsingLatestRrfsCycle());
+
+   gribManager->SetProductActive(gribManager->ProductNames().front(), false);
 }
 
 // Real S3 access + a real ~580MB fetch and decode below -- confirms the
@@ -115,7 +126,7 @@ TEST(GribManagerTest, PrslevProductDecodesRealFile)
    double             lastMean        = 0.0;
    std::vector<float> payload;
 
-   for (int i = 0; i < 300 && !found; ++i)
+   for (int i = 0; i < 900 && !found; ++i)
    {
       std::ifstream in(framePath, std::ios::binary);
       if (in.is_open())
@@ -140,6 +151,8 @@ TEST(GribManagerTest, PrslevProductDecodesRealFile)
             }
          }
       }
+      // Windows refuses to rename a new frame over a file still open here.
+      in.close();
       std::this_thread::sleep_for(500ms);
    }
 
@@ -196,7 +209,7 @@ TEST(GribManagerTest, ShipProductDecodesRealFile)
    double             lastMean      = 0.0;
    std::vector<float> payload;
 
-   for (int i = 0; i < 300 && !found; ++i)
+   for (int i = 0; i < 900 && !found; ++i)
    {
       std::ifstream in(framePath, std::ios::binary);
       if (in.is_open())
@@ -221,6 +234,8 @@ TEST(GribManagerTest, ShipProductDecodesRealFile)
             }
          }
       }
+      // Windows refuses to rename a new frame over a file still open here.
+      in.close();
       std::this_thread::sleep_for(500ms);
    }
 
@@ -229,6 +244,34 @@ TEST(GribManagerTest, ShipProductDecodesRealFile)
 
    gribManager->SetProductActive("SHIP", false);
    gribManager->UseLatestRrfsCycle();
+}
+
+// Rrfs and Nbm (and any category added later) start with no product
+// active; Mrms and Rtma keep an always-at-least-one-active invariant. No
+// network access: nothing is fetched until a product is activated.
+TEST(GribManagerTest, ProductsActiveByDefault)
+{
+   for (auto category : {map::GribCategory::Rrfs, map::GribCategory::Nbm})
+   {
+      auto gribManager = GribManager::Instance(category);
+      EXPECT_TRUE(gribManager->ActiveProductNames().empty());
+      EXPECT_FALSE(gribManager->CurrentProductIndex().has_value());
+      EXPECT_EQ(gribManager->CurrentProductName(), "");
+      EXPECT_EQ(gribManager->MaxRrfsForecastHour(), 0);
+      EXPECT_EQ(gribManager->MaxNbmForecastHour(), 0);
+   }
+
+   for (auto category : {map::GribCategory::Mrms, map::GribCategory::Rtma})
+   {
+      auto gribManager = GribManager::Instance(category);
+      ASSERT_EQ(gribManager->ActiveProductNames().size(), 1u);
+      EXPECT_TRUE(gribManager->CurrentProductIndex().has_value());
+
+      // The last active product can't be deactivated.
+      gribManager->SetProductActive(gribManager->ActiveProductNames().front(),
+                                    false);
+      EXPECT_EQ(gribManager->ActiveProductNames().size(), 1u);
+   }
 }
 
 // SetRrfsCycle()/SetRrfsForecastHour()/UseLatestRrfsCycle() are refused
@@ -264,6 +307,11 @@ TEST(GribManagerTest, NbmForecastHourSelection)
 
    auto gribManager = GribManager::Instance(map::GribCategory::Nbm);
 
+   // Nbm starts with no product active -- CurrentNbmCycle()/
+   // MaxNbmForecastHour() below need one to resolve against. Which one
+   // doesn't matter (no decoded value is checked here).
+   gribManager->SetProductActive(gribManager->ProductNames().front(), true);
+
    EXPECT_TRUE(gribManager->IsUsingLatestNbmCycle());
    // 1, not 0 -- NBM has no F000 file at all (see NbmDataProvider's own
    // kMinForecastHour_ comment).
@@ -291,6 +339,8 @@ TEST(GribManagerTest, NbmForecastHourSelection)
 
    gribManager->UseLatestNbmCycle();
    EXPECT_TRUE(gribManager->IsUsingLatestNbmCycle());
+
+   gribManager->SetProductActive(gribManager->ProductNames().front(), false);
 }
 
 // Confirms the whole Nbm chain -- FetchNbmSelectionForProduct()/
@@ -356,6 +406,8 @@ TEST(GribManagerTest, NbmProductDecodesRealFile)
             }
          }
       }
+      // Windows refuses to rename a new frame over a file still open here.
+      in.close();
       std::this_thread::sleep_for(500ms);
    }
 

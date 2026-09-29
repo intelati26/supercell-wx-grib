@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -96,10 +97,13 @@ public:
    // map::GetGribFramePath(category, index)) -- several products active
    // at once within one category, built one level narrower than a full
    // per-pane version would be (per manager instance, not yet per pane).
-   // At least one product is always active; a request to
-   // deactivate the last one is refused, not silently ignored -- there
-   // must always be something for CurrentProductIndex()/GribProductLayer
-   // to fall back on. No-op if displayName isn't in ProductNames(), or
+   // Mrms/Rtma keep this class's original behavior: at least one product
+   // is always active, and a request to deactivate the last one is
+   // refused, not silently ignored. Rrfs/Nbm (and any category added
+   // after them) instead start with *no* product active -- an idle
+   // instance shouldn't be fetching/decoding anything until the user
+   // opts into a specific product -- and can be brought back down to
+   // zero the same way. No-op if displayName isn't in ProductNames(), or
    // already in the requested state.
    void SetProductActive(const std::string& displayName, bool active);
    [[nodiscard]] bool IsProductActive(const std::string& displayName) const;
@@ -109,9 +113,11 @@ public:
    // single-frame renderer shows (see class comment: rendering multiple
    // active products at once on the map is a separate, not-yet-built
    // piece; this manager's fetch/decode side supports it today, the
-   // render side doesn't). Also what CurrentProductName()/FormatValue()
-   // below report on.
-   [[nodiscard]] std::size_t CurrentProductIndex() const;
+   // render side doesn't). std::nullopt when no product is active at all
+   // (only reachable for Rrfs/Nbm-style categories -- see
+   // SetProductActive()'s own doc). Also what CurrentProductName()/
+   // FormatValue() below report on.
+   [[nodiscard]] std::optional<std::size_t> CurrentProductIndex() const;
    [[nodiscard]] std::string CurrentProductName() const;
 
    // Formats a raw decoded value for the current (see CurrentProductIndex)

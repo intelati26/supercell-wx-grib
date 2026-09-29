@@ -29,6 +29,7 @@ jobs:
             cppflags: ''
             ldflags: ''
             vs_arch: x64
+            vcpkg_triplet: x64-windows-static-md
             vs_version: 18
             qt_version: 6.11.1
             qt_arch_aqt: win64_msvc2022_64
@@ -49,6 +50,7 @@ jobs:
             cppflags: ''
             ldflags: ''
             vs_arch: arm64
+            vcpkg_triplet: arm64-windows-static-md
             vs_version: 18
             qt_version: 6.11.1
             qt_arch_aqt: win64_msvc2022_arm64_cross_compiled
@@ -137,6 +139,7 @@ jobs:
       run: |
         sudo apt-get install doxygen \
                              libeccodes-dev \
+                             patchelf \
                              libfuse2 \
                              ninja-build \
                              wayland-protocols \
@@ -178,6 +181,28 @@ jobs:
         pip install geopandas `
                     GitPython `
                     conan
+
+    - name: Restore vcpkg Archives (Windows)
+      if: ${{ startsWith(matrix.os, 'windows') }}
+      uses: actions/cache@v4
+      with:
+        path: ~\AppData\Local\vcpkg\archives
+        key: vcpkg-eccodes-${{ matrix.vcpkg_triplet }}-v1
+
+    - name: Install eccodes (Windows, vcpkg)
+      if: ${{ startsWith(matrix.os, 'windows') }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        # eccodes is not on conancenter. decode_grib (grib-helper/) is the
+        # only consumer, so a static vcpkg build is enough: the triplet
+        # keeps the dynamic CRT to match the rest of the build.
+        & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "eccodes[aec,png]:${{ matrix.vcpkg_triplet }}"
+        if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed" }
+        # Forward slashes: CMake parses backslashes in CMAKE_PREFIX_PATH as escapes.
+        $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT -replace '\\', '/'
+        "SCWX_VCPKG_PREFIX=$vcpkgRoot/installed/${{ matrix.vcpkg_triplet }}" |
+          Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
     - name: Restore Conan Packages
       id: cache-conan
@@ -241,8 +266,13 @@ jobs:
         if ('${{ matrix.os }}' -like 'macos*') {
           $cmakeArgs += '-DCMAKE_OSX_DEPLOYMENT_TARGET=12.0'
         }
+        if ($env:SCWX_VCPKG_PREFIX) {
+          $cmakeArgs += "-DCMAKE_PREFIX_PATH=$env:SCWX_VCPKG_PREFIX"
+        }
         cmake @cmakeArgs
-        ninja supercell-wx
+        # decode_grib is not a dependency of supercell-wx, so it must be
+        # named or it is never built (and never installed/packaged).
+        ninja supercell-wx decode_grib
 
     - name: Build Supercell Wx (Test)
       if: ${{ matrix.conan_build_profile == matrix.conan_host_profile }}
@@ -271,6 +301,19 @@ jobs:
         cd build
         cmake --install . --component supercell-wx
 
+    - name: Verify decode_grib was installed
+      shell: bash
+      run: |
+        # decode_grib is launched by path next to the app; a missing helper
+        # only shows up at runtime as GRIB layers that never render.
+        if [ -f supercell-wx/bin/decode_grib ] || [ -f supercell-wx/bin/decode_grib.exe ]; then
+          ls -l supercell-wx/bin/decode_grib*
+        else
+          echo "::error::decode_grib missing from the install tree"
+          ls -R supercell-wx | head -50
+          exit 1
+        fi
+
     - name: Collect Artifacts
       if: ${{ startsWith(matrix.os, 'ubuntu') }}
       shell: bash
@@ -282,6 +325,13 @@ jobs:
         rm -f libOpenGL.so*
         cp -p ${RUNNER_WORKSPACE}/Qt/${{ matrix.qt_version }}/${{ matrix.qt_arch_dir }}/lib/libQt6WaylandClient.so* .
         cd ..
+        # decode_grib links the system libeccodes; ship it (and its codec
+        # libraries) so the tarball works without eccodes installed.
+        for lib in $(ldd bin/decode_grib | awk '/=> \// {print $3}' | grep -E '/(libeccodes|libaec|libsz|libopenjp2|libjasper|libpng)[^/]*$'); do
+          cp -pL "$lib" lib/
+        done
+        patchelf --set-rpath '$ORIGIN/../lib' bin/decode_grib
+        ldd bin/decode_grib | grep -E 'eccodes|not found'
         mkdir -p plugins/
         cd plugins/
         mkdir -p sqldrivers/
@@ -461,7 +511,7 @@ jobs:
       env:
         MAPBOX_API_KEY:   ${{ secrets.MAPBOX_API_KEY }}
         MAPTILER_API_KEY: ${{ secrets.MAPTILER_API_KEY }}
-      run: ctest -C ${{ matrix.build_type }} --exclude-regex "test_mln.*|NtpClient.*|UpdateManager.*"
+      run: ctest --output-on-failure -C ${{ matrix.build_type }} --exclude-regex "test_mln.*|NtpClient.*|UpdateManager.*"
 
     - name: Upload Test Logs
       if: ${{ !cancelled() }}

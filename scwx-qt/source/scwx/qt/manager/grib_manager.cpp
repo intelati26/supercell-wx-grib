@@ -807,6 +807,19 @@ void PruneDownloadCache()
    }
 }
 
+// Mrms/Rtma keep this class's original "always exactly one active
+// product" behavior (auto-activated at construction) -- Rrfs/Nbm instead
+// start with none active, so an idle instance never kicks off a network
+// fetch/decode until the user opts into a specific product. Checked by
+// category rather than an explicit "these are opt-in" list, so a
+// category added after Rrfs/Nbm defaults to opt-in too without this
+// needing an update.
+bool StartsWithAllProductsInactive(map::GribCategory category)
+{
+   return category != map::GribCategory::Mrms &&
+          category != map::GribCategory::Rtma;
+}
+
 } // namespace
 
 class GribManager::Impl
@@ -820,13 +833,19 @@ public:
        // signal connections.
        timelineManager_ {manager::TimelineManager::Instance()}
    {
-      // Start with just the first entry active, matching this class's
-      // pre-multi-select behavior exactly -- activeProducts_ must never
-      // be empty (see SetProductActive), so this can't be done as a
-      // default member initializer the way a single productIndex_ once
-      // was; it needs the provider constructed alongside it.
-      activeProducts_.insert(0);
-      providers_[0] = MakeProvider(category_, Products(category_)[0]);
+      // Mrms/Rtma start with just the first entry active, matching this
+      // class's pre-multi-select behavior exactly -- activeProducts_ must
+      // never become empty for these two (see SetProductActive), so this
+      // can't be done as a default member initializer the way a single
+      // productIndex_ once was; it needs the provider constructed
+      // alongside it. Rrfs/Nbm (and anything added after them) instead
+      // start with activeProducts_/providers_ both empty -- see
+      // StartsWithAllProductsInactive()'s own doc.
+      if (!StartsWithAllProductsInactive(category_))
+      {
+         activeProducts_.insert(0);
+         providers_[0] = MakeProvider(category_, Products(category_)[0]);
+      }
    }
 
    // Same idiom TimelineManager::Impl uses for its own thread pools:
@@ -848,7 +867,9 @@ public:
    // e.g. std::vector<bool>) both for the ordered "lowest = current/
    // primary" convention CurrentProductIndex() relies on, and because
    // insert/erase by index is simpler to reason about than an always-
-   // full-size boolean vector. Always non-empty after construction.
+   // full-size boolean vector. Non-empty after construction for Mrms/
+   // Rtma; empty until the user opts in for Rrfs/Nbm (see
+   // StartsWithAllProductsInactive()).
    std::set<std::size_t> activeProducts_;
 
    // One provider per active product, not one shared provider -- needed
@@ -1008,19 +1029,34 @@ std::vector<std::string> GribManager::ProductNames() const
    return names;
 }
 
-std::size_t GribManager::CurrentProductIndex() const
+std::optional<std::size_t> GribManager::CurrentProductIndex() const
 {
-   // activeProducts_ is never empty after construction (see
-   // SetProductActive) -- begin() is always valid.
+   if (p->activeProducts_.empty())
+   {
+      return std::nullopt;
+   }
    return *p->activeProducts_.begin();
 }
 
 std::string GribManager::CurrentProductName() const
-{ return Products(p->category_)[CurrentProductIndex()].displayName; }
+{
+   const auto index = CurrentProductIndex();
+   return index ? Products(p->category_)[*index].displayName : std::string {};
+}
 
 std::string GribManager::FormatValue(float rawValue) const
 {
-   const ProductConfig& product = Products(p->category_)[CurrentProductIndex()];
+   const auto index = CurrentProductIndex();
+   if (!index)
+   {
+      // Only reachable for Rrfs/Nbm with nothing active -- every current
+      // caller (grib_legend.cpp, GribProductLayer's own hover text) is
+      // already guarded not to reach here, this is just insurance against
+      // a future one that isn't.
+      return fmt::format("{:.2f}", rawValue);
+   }
+
+   const ProductConfig& product = Products(p->category_)[*index];
    auto&                unitSettings = settings::UnitSettings::Instance();
 
    switch (product.quantity)
@@ -1102,11 +1138,13 @@ void GribManager::SetProductActive(const std::string& displayName, bool active)
       }
       else
       {
-         if (p->activeProducts_.size() == 1)
+         if (p->activeProducts_.size() == 1 &&
+             !StartsWithAllProductsInactive(p->category_))
          {
-            // Refused, not silently ignored -- CurrentProductIndex() (and
-            // so GribProductLayer's rendering) needs at least one active
-            // product to fall back on at all times.
+            // Refused, not silently ignored -- Mrms/Rtma need at least
+            // one active product to fall back on at all times (unlike
+            // Rrfs/Nbm, which are allowed back down to zero -- see
+            // StartsWithAllProductsInactive()'s own doc).
             logger_->warn("Refusing to deactivate the only active product: {}",
                           displayName);
             return;
@@ -1202,9 +1240,18 @@ void GribManager::FetchRrfsSelection()
 {
    using namespace std::chrono;
 
-   const std::size_t index = CurrentProductIndex();
-   auto&             rrfsProvider =
-      static_cast<provider::RrfsDataProvider&>(*p->providers_.at(index));
+   // No-op with nothing active yet -- e.g. the user moved the cycle/hour
+   // picker before checking any product. Whatever selection is in effect
+   // gets fetched once a product actually activates (SetProductActive()
+   // syncs a freshly-constructed provider to it and fetches then).
+   const auto index = CurrentProductIndex();
+   if (!index)
+   {
+      return;
+   }
+
+   auto& rrfsProvider =
+      static_cast<provider::RrfsDataProvider&>(*p->providers_.at(*index));
 
    const auto time =
       rrfsProvider.CurrentCycle() + hours {rrfsProvider.ForecastHour()};
@@ -1260,8 +1307,16 @@ std::chrono::system_clock::time_point GribManager::CurrentRrfsCycle() const
       return {};
    }
 
-   return static_cast<provider::RrfsDataProvider&>(
-             *p->providers_.at(CurrentProductIndex()))
+   // Epoch when nothing is active yet -- same "nothing meaningful to
+   // report" fallback as the category check above, just for the other
+   // way this can have no real answer.
+   const auto index = CurrentProductIndex();
+   if (!index)
+   {
+      return {};
+   }
+
+   return static_cast<provider::RrfsDataProvider&>(*p->providers_.at(*index))
       .CurrentCycle();
 }
 
@@ -1289,8 +1344,12 @@ int GribManager::RrfsForecastHour() const
 
 int GribManager::MaxRrfsForecastHour() const
 {
-   if (p->category_ != map::GribCategory::Rrfs)
+   if (p->category_ != map::GribCategory::Rrfs || !CurrentProductIndex())
    {
+      // The second check matters on its own, not just as a guard against
+      // CurrentRrfsCycle()'s own epoch fallback below -- an epoch cycle
+      // would still resolve to *some* (meaningless) max-hour value rather
+      // than the real "nothing selected yet" of 0.
       return 0;
    }
 
@@ -1329,10 +1388,17 @@ void GribManager::PrefetchRrfsForecastHourRange()
       return;
    }
 
-   const std::size_t index  = CurrentProductIndex();
-   const auto        cycle  = CurrentRrfsCycle();
-   const auto        family = Products(p->category_)[index].rrfsFileFamily;
-   const int         maxHour =
+   // Nothing to prefetch with no product active (e.g. Play pressed the
+   // instant a category is enabled, before any product is checked).
+   const auto index = CurrentProductIndex();
+   if (!index)
+   {
+      return;
+   }
+
+   const auto cycle   = CurrentRrfsCycle();
+   const auto family  = Products(p->category_)[*index].rrfsFileFamily;
+   const int  maxHour =
       provider::RrfsDataProvider::MaxForecastHourForCycle(cycle);
 
    const int startHour = std::clamp(p->rrfsLoopStartHour_, 0, maxHour);
@@ -1348,7 +1414,7 @@ void GribManager::PrefetchRrfsForecastHourRange()
 
    for (int hour = startHour; hour <= endHour; ++hour)
    {
-      QueueDownload(index,
+      QueueDownload(*index,
                     provider::RrfsDataProvider::BuildKey(cycle, hour, family));
    }
 }
@@ -1465,8 +1531,13 @@ void GribManager::PrefetchLoopRange()
 
    // Current product only, not every active one -- see this method's own
    // doc in grib_manager.hpp. A reasonable follow-up, not attempted here.
-   const std::size_t index    = CurrentProductIndex();
-   auto&             provider = p->providers_.at(index);
+   // Also nothing to prefetch at all with no product active yet.
+   const auto index = CurrentProductIndex();
+   if (!index)
+   {
+      return;
+   }
+   auto& provider = p->providers_.at(*index);
 
    auto [startTime, endTime] = p->timelineManager_->GetLoopStartAndEndTimes();
    if (startTime >= endTime)
@@ -1502,7 +1573,7 @@ void GribManager::PrefetchLoopRange()
 
    for (const auto& key : neededKeys)
    {
-      QueueDownload(index, key);
+      QueueDownload(*index, key);
    }
 }
 
@@ -1867,8 +1938,16 @@ void GribManager::FetchNbmSelection()
 {
    using namespace std::chrono;
 
-   auto& nbmProvider = static_cast<provider::NbmDataProvider&>(
-      *p->providers_.at(CurrentProductIndex()));
+   // No-op with nothing active yet -- same reasoning as
+   // FetchRrfsSelection()'s identical guard.
+   const auto index = CurrentProductIndex();
+   if (!index)
+   {
+      return;
+   }
+
+   auto& nbmProvider =
+      static_cast<provider::NbmDataProvider&>(*p->providers_.at(*index));
 
    // FetchArchiveFrameForProduct()'s own Nbm branch ignores this `time`
    // argument entirely, resolving each product's key from its own
@@ -2081,8 +2160,15 @@ std::chrono::system_clock::time_point GribManager::CurrentNbmCycle() const
       return {};
    }
 
-   return static_cast<provider::NbmDataProvider&>(
-             *p->providers_.at(CurrentProductIndex()))
+   // Epoch when nothing is active yet -- same reasoning as
+   // CurrentRrfsCycle()'s identical fallback.
+   const auto index = CurrentProductIndex();
+   if (!index)
+   {
+      return {};
+   }
+
+   return static_cast<provider::NbmDataProvider&>(*p->providers_.at(*index))
       .CurrentCycle();
 }
 
@@ -2118,8 +2204,10 @@ int GribManager::NbmForecastHour() const
 
 int GribManager::MaxNbmForecastHour() const
 {
-   if (p->category_ != map::GribCategory::Nbm)
+   if (p->category_ != map::GribCategory::Nbm || !CurrentProductIndex())
    {
+      // The second check matters on its own -- same reasoning as
+      // MaxRrfsForecastHour()'s identical guard.
       return 0;
    }
 

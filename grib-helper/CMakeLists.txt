@@ -2,10 +2,11 @@
 # WindBarbManager invoke via QProcess (see grib-helper/README.md for why
 # it isn't linked directly into wxdata). eccodes isn't on conancenter, so
 # unlike the rest of the project's dependencies this one comes from the
-# system package manager -- optional: if it isn't installed, this target
-# is skipped and the GRIB/wind-barb overlays are unavailable at runtime
-# (GribManager/WindBarbManager already log and no-op when decode_grib
-# can't be started) rather than failing the whole configure.
+# system package manager (pkg-config on Linux) or from vcpkg's CMake
+# config package (Windows CI) -- optional: if it isn't installed, this
+# target is skipped and the GRIB/wind-barb overlays are unavailable at
+# runtime (GribManager/WindBarbManager already log and no-op when
+# decode_grib can't be started) rather than failing the whole configure.
 find_package(PkgConfig)
 
 if (PkgConfig_FOUND)
@@ -30,9 +31,57 @@ if (TARGET PkgConfig::ECCODES)
     endif()
 endif()
 
+# vcpkg (Windows) ships a CMake config package instead of a .pc file.
+if (NOT TARGET PkgConfig::ECCODES)
+    # vcpkg's eccodes-targets.cmake names its own dependencies' imported
+    # targets (e.g. PNG::PNG) without finding them first, so find them
+    # here or the whole configure fails at generate time.
+    # vcpkg installs its static zlib as zs.lib, a name CMake's FindZLIB
+    # doesn't search for (vcpkg's own toolchain file normally patches this
+    # over). PNGConfig.cmake find_dependency()s ZLIB, so point FindZLIB at
+    # it -- but only when nothing has already provided zlib (the main
+    # build's Conan zlib wins in that case).
+    if (NOT TARGET ZLIB::ZLIB AND NOT ZLIB_LIBRARY)
+        find_library(SCWX_VCPKG_ZLIB NAMES zs zlib PATH_SUFFIXES lib)
+        if (SCWX_VCPKG_ZLIB)
+            set(ZLIB_LIBRARY "${SCWX_VCPKG_ZLIB}" CACHE FILEPATH "" FORCE)
+        endif()
+    endif()
+    find_package(PNG CONFIG QUIET)
+    if (NOT TARGET PNG::PNG)
+        find_package(PNG QUIET)
+    endif()
+    if (NOT TARGET PNG::PNG)
+        message(STATUS "grib-helper: PNG::PNG missing (PNG_FOUND=${PNG_FOUND}, PREFIX=${CMAKE_PREFIX_PATH})")
+    endif()
+    find_package(OpenJPEG CONFIG QUIET)
+    find_package(libaec CONFIG QUIET)
+    find_package(eccodes CONFIG QUIET)
+endif()
+
+set(SCWX_ECCODES_TARGET "")
 if (TARGET PkgConfig::ECCODES)
+    set(SCWX_ECCODES_TARGET PkgConfig::ECCODES)
+elseif (TARGET eccodes::eccodes)
+    set(SCWX_ECCODES_TARGET eccodes::eccodes)
+elseif (TARGET eccodes)
+    set(SCWX_ECCODES_TARGET eccodes)
+endif()
+
+if (SCWX_ECCODES_TARGET)
     add_executable(decode_grib src/decode_grib.cpp)
-    target_link_libraries(decode_grib PRIVATE PkgConfig::ECCODES)
+    target_link_libraries(decode_grib PRIVATE ${SCWX_ECCODES_TARGET})
+
+    # Static eccodes registers its accessor classes ("transient", ...) from
+    # otherwise-unreferenced objects; MSVC's linker drops them and every
+    # decode then dies with "No creator for type transient". Keep them all.
+    if (MSVC)
+        get_target_property(SCWX_ECCODES_TYPE ${SCWX_ECCODES_TARGET} TYPE)
+        if (SCWX_ECCODES_TYPE STREQUAL "STATIC_LIBRARY")
+            target_link_options(decode_grib PRIVATE
+                "LINKER:/WHOLEARCHIVE:$<TARGET_FILE:${SCWX_ECCODES_TARGET}>")
+        endif()
+    endif()
     set_target_properties(decode_grib PROPERTIES
         FOLDER               grib-helper
         CXX_STANDARD          20
@@ -46,6 +95,12 @@ if (TARGET PkgConfig::ECCODES)
         FOLDER               grib-helper
         CXX_STANDARD          20
         CXX_STANDARD_REQUIRED ON)
+
+    # Must sit next to supercell-wx: GribManager/WindBarbManager/
+    # HodographManager resolve it via QCoreApplication::applicationDirPath().
+    install(TARGETS decode_grib
+            RUNTIME
+              COMPONENT supercell-wx)
 else()
     message(STATUS
         "eccodes not found: decode_grib will not be built, GRIB/wind-barb "

@@ -307,12 +307,37 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
    connect(section.comboBox,
            &CheckableComboBox::CheckedItemsChanged,
            self_,
-           [&stored]()
+           [&stored, category]()
            {
               for (const auto& name : stored.gribManager->ProductNames())
               {
                  stored.gribManager->SetProductActive(
                     name, stored.comboBox->IsChecked(name));
+              }
+
+              // Rrfs/Nbm start with no product active (see GribManager's
+              // own per-category default), so the hour slider/loop range
+              // spinboxes are all still at their degenerate construction-
+              // time [0,0] (or [1,0], for Nbm) range until a first
+              // product gets checked here -- MaxRrfsForecastHour()/
+              // MaxNbmForecastHour() can only resolve a real cycle once
+              // something is actually active. Re-range now, the same way
+              // the cycle combo box's own handler below already does
+              // whenever the cycle changes.
+              if (category == map::GribCategory::Rrfs)
+              {
+                 const int maxHour = stored.gribManager->MaxRrfsForecastHour();
+                 stored.hourSlider->setRange(0, maxHour);
+                 stored.loopStartSpinBox->setRange(0, maxHour);
+                 stored.loopEndSpinBox->setRange(0, maxHour);
+                 stored.gribManager->SetRrfsLoopRange(
+                    stored.loopStartSpinBox->value(),
+                    stored.loopEndSpinBox->value());
+              }
+              else if (category == map::GribCategory::Nbm)
+              {
+                 stored.hourSlider->setRange(
+                    1, stored.gribManager->MaxNbmForecastHour());
               }
            });
 
@@ -570,10 +595,10 @@ void GribDockWidget::Impl::RefreshSection(CategorySection& section)
 
    if (activeNames.empty())
    {
-      // Never actually reachable today (GribManager always keeps at
-      // least one product active -- see its own SetProductActive), kept
-      // as a defensive display case rather than assuming that invariant
-      // holds forever.
+      // Genuinely reachable now for Rrfs/Nbm, which start (and can be
+      // brought back down to) zero active products -- see GribManager's
+      // own per-category default. Still unreachable for Mrms/Rtma, which
+      // keep the original "always at least one" behavior.
       section.statusLabel->setText(tr("(no products active)"));
       return;
    }
@@ -581,10 +606,12 @@ void GribDockWidget::Impl::RefreshSection(CategorySection& section)
    // The primary (CurrentProductIndex()) product's valid time --
    // GribProductLayer only ever renders that one today, so its status is
    // what's actually meaningful to show here; the other active products
-   // are fetching/decoding, just not drawn on the map yet.
+   // are fetching/decoding, just not drawn on the map yet. activeNames
+   // being non-empty (just checked above) guarantees CurrentProductIndex()
+   // resolves to a real value here.
    const std::string validTime =
       map::ReadGribFrameValidTime(map::GetGribFramePath(
-         section.category, section.gribManager->CurrentProductIndex()));
+         section.category, *section.gribManager->CurrentProductIndex()));
 
    std::string statusText =
       "Primary: " + section.gribManager->CurrentProductName();
