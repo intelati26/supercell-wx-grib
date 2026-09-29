@@ -1,6 +1,7 @@
 #include <scwx/qt/manager/hodograph_manager.hpp>
 
 #include <chrono>
+#include <format>
 #include <fstream>
 #include <thread>
 
@@ -33,7 +34,11 @@ TEST(HodographManagerTest, CycleForecastHourSelection)
 
    auto hodographManager = HodographManager::Instance();
 
-   const auto fixedCycle = sys_days {2026y / September / 25d} + 12h;
+   // NOAA only keeps roughly a day of cycles: newest 6-hourly cycle at
+   // least 8 hours old (fully published, still retained).
+   const auto t = floor<hours>(system_clock::now() - hours {8});
+   const auto fixedCycle =
+      t - hours {duration_cast<hours>(t - floor<days>(t)).count() % 6};
    hodographManager->SetCycle(fixedCycle);
    hodographManager->SetForecastHour(0);
 
@@ -57,7 +62,8 @@ TEST(HodographManagerTest, CycleForecastHourSelection)
       if (in.is_open())
       {
          std::getline(in, header);
-         if (header.find(R"("validTime":"2026-09-25T12:00:00Z")") !=
+         if (header.find(std::format(R"("validTime":"{:%Y-%m-%dT%H:%M:%SZ}")",
+                                 floor<seconds>(fixedCycle))) !=
              std::string::npos)
          {
             found = true;

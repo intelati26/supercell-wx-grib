@@ -1,4 +1,6 @@
 #include <scwx/provider/rrfs_data_provider.hpp>
+#include <chrono>
+#include <format>
 
 #include <gtest/gtest.h>
 
@@ -239,6 +241,17 @@ TEST(RrfsDataProvider, FindKeyNow)
    }
 }
 
+// NOAA's bucket only keeps roughly a day of cycles, so a hard-coded date
+// ages out. Newest 6-hourly (84-hour) cycle that is at least 8 hours old:
+// old enough to be fully published, recent enough to still be retained.
+static std::chrono::system_clock::time_point RecentFixedCycle()
+{
+   using namespace std::chrono;
+   const auto t = floor<hours>(system_clock::now() - hours {8});
+   const auto h = duration_cast<hours>(t - floor<days>(t)).count();
+   return t - hours {h % 6};
+}
+
 // Same known-real historical cycle/hour as FindKeyFixedCycle below, just
 // with SetFileFamily(PressureLevel) -- confirmed live via a direct S3
 // listing while building this feature (same verification standard
@@ -250,7 +263,7 @@ TEST(RrfsDataProvider, FindKeyFixedCyclePrslev)
 
    RrfsDataProvider provider;
    provider.SetFileFamily(RrfsFileFamily::PressureLevel);
-   provider.SetCycle(sys_days {2026y / September / 25d} + 12h);
+   provider.SetCycle(RecentFixedCycle());
    provider.SetForecastHour(3);
 
    provider.Refresh();
@@ -267,15 +280,14 @@ TEST(RrfsDataProvider, FindKeyFixedCyclePrslev)
 // known-real key (confirmed live via a direct S3 listing while building
 // this feature), not a lag-based guess, so a hard assertion is
 // appropriate. If NOAA's retention window ever ages this particular
-// cycle out, replace the fixed date with a more recent one rather than
-// loosening the assertion.
+// cycle out, RecentFixedCycle() already tracks the retention window.
 TEST(RrfsDataProvider, FindKeyFixedCycle)
 {
    using namespace std::chrono;
    using sys_days = time_point<system_clock, days>;
 
    RrfsDataProvider provider;
-   provider.SetCycle(sys_days {2026y / September / 25d} + 12h);
+   provider.SetCycle(RecentFixedCycle());
    provider.SetForecastHour(3);
 
    EXPECT_FALSE(provider.IsUsingLatestCycle());
@@ -285,7 +297,12 @@ TEST(RrfsDataProvider, FindKeyFixedCycle)
    provider.Refresh();
    std::string key = provider.FindKey(provider.CurrentCycle() + hours {3});
 
-   EXPECT_NE(key.find("rrfs.20260925/12/rrfs.t12z.2dfld.3km.f003.conus"),
+   ASSERT_FALSE(key.empty());
+   EXPECT_NE(key.find(std::format("rrfs.{:%Y%m%d}/{:%H}/rrfs.t{:%H}z.2dfld.3km."
+                                  "f003.conus",
+                                  RecentFixedCycle(),
+                                  RecentFixedCycle(),
+                                  RecentFixedCycle())),
              std::string::npos);
 }
 
