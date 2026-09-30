@@ -10,6 +10,8 @@
 
 #include <boost/json.hpp>
 #include <QObject>
+#include <algorithm>
+
 #include <gtest/gtest.h>
 
 namespace scwx::qt::model
@@ -178,6 +180,65 @@ TEST_F(LayerModelOpacityTest, ExistingProfilesGainNewBuiltInDataLayers)
                           "Custom Models";
    }
    EXPECT_TRUE(found) << "Custom Models was not added to the old profile";
+}
+
+namespace
+{
+
+types::LayerInfo DataLayerWithDisplay(types::DataLayer layer, bool shown)
+{
+   types::LayerInfo info;
+   info.type_        = types::LayerType::Data;
+   info.description_ = layer;
+   info.displayed_.fill(shown);
+   return info;
+}
+
+bool AllShown(const types::LayerInfo& info)
+{
+   return std::all_of(info.displayed_.cbegin(),
+                      info.displayed_.cend(),
+                      [](bool shown) { return shown; });
+}
+
+bool AnyShown(const types::LayerInfo& info)
+{
+   return std::any_of(info.displayed_.cbegin(),
+                      info.displayed_.cend(),
+                      [](bool shown) { return shown; });
+}
+
+} // namespace
+
+// Hodographs are switched on by picking them in the RRFS product list; the
+// layer row only places them. A profile that hid the row to keep hodographs
+// away (it used to be the switch) would show nothing when the product is
+// picked, so migrating such a profile shows the row again, leaving every
+// other layer exactly as the user set it.
+TEST(LayerModelMigrationTest, OldProfilesGetTheHodographRowShown)
+{
+   types::LayerVector layers;
+   layers.push_back(DataLayerWithDisplay(types::DataLayer::Hodograph, false));
+   layers.push_back(DataLayerWithDisplay(types::DataLayer::GribRtma, false));
+   layers.push_back(DataLayerWithDisplay(types::DataLayer::WindBarbs, true));
+
+   LayerModel::MigrateLayers(layers, 0);
+
+   EXPECT_TRUE(AllShown(layers[0])) << "the Hodograph row should be shown";
+   EXPECT_FALSE(AnyShown(layers[1])) << "other layers are left alone";
+   EXPECT_TRUE(AllShown(layers[2]));
+}
+
+// ...but only once: a profile already at the current version has been through
+// this, so a user who hid the row afterwards keeps it hidden.
+TEST(LayerModelMigrationTest, CurrentProfilesKeepTheirHodographRowChoice)
+{
+   types::LayerVector layers;
+   layers.push_back(DataLayerWithDisplay(types::DataLayer::Hodograph, false));
+
+   LayerModel::MigrateLayers(layers, LayerModel::kLayerSchemaVersion);
+
+   EXPECT_FALSE(AnyShown(layers[0]));
 }
 
 } // namespace scwx::qt::model

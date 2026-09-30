@@ -1,6 +1,7 @@
 #include <scwx/qt/ui/grib_dock_widget.hpp>
 #include <scwx/qt/manager/grib_manager.hpp>
 #include <scwx/qt/manager/hodograph_manager.hpp>
+#include <scwx/qt/manager/hodograph_selection.hpp>
 #include <scwx/qt/manager/user_model_registry.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
 #include <scwx/qt/map/visible_grib_layers.hpp>
@@ -80,6 +81,11 @@ constexpr int kRrfsCycleHistoryHours_ = 24;
 // cycle's own max) takes ~42s at this pace, fast enough to actually watch
 // evolve without being so fast the frame-by-frame detail blurs together.
 constexpr int kRrfsAnimationIntervalMs_ = 500;
+
+// The RRFS product list's last entry. Not a GribManager product (it is a
+// composite plot drawn from many fields, see HodographManager) but picked like
+// one, and the only way to turn hodographs on -- see HodographSelection.
+const std::string kHodographProduct_ = "Gridded Hodograph";
 
 // Rough size of one RRFS hour's prslev object (see GribManager's
 // PrefetchRrfsForecastHourRange doc) -- only used to tell the user what a
@@ -308,7 +314,12 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
    }
 
    section.comboBox = new CheckableComboBox(groupBox);
-   section.comboBox->SetItems(section.gribManager->ProductNames());
+   std::vector<std::string> productNames = section.gribManager->ProductNames();
+   if (category == map::GribCategory::Rrfs)
+   {
+      productNames.push_back(kHodographProduct_);
+   }
+   section.comboBox->SetItems(productNames);
    for (const auto& name : section.gribManager->ActiveProductNames())
    {
       section.comboBox->SetChecked(name, true);
@@ -460,6 +471,12 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
               {
                  stored.gribManager->SetProductActive(
                     name, stored.comboBox->IsChecked(name));
+              }
+
+              if (category == map::GribCategory::Rrfs)
+              {
+                 manager::HodographSelection::Instance().SetEnabled(
+                    stored.comboBox->IsChecked(kHodographProduct_));
               }
 
               // Rrfs/Nbm start with no product active (see GribManager's

@@ -105,6 +105,20 @@ public:
 
    static std::shared_ptr<LayerModel> Instance();
 
+   // Version of the conventions a saved layers.json follows, kept in a small
+   // file beside it (layers.json.version; absent = 0) so the layer file's own
+   // format is unchanged. Bumped whenever a built-in layer's default changes
+   // in a way saved profiles would otherwise never pick up: a profile keeps
+   // the state it saved, so a new default only reaches profiles created after.
+   static constexpr int kLayerSchemaVersion {1};
+
+   // Brings layers saved under `fromVersion` up to kLayerSchemaVersion:
+   //   1: Hodograph is now switched on by picking it in the RRFS product list,
+   //      so its layer row is shown everywhere. Older profiles may have it
+   //      hidden: it used to be switched on by the row, and the row was
+   //      unticked to stop the hodographs appearing.
+   static void MigrateLayers(types::LayerVector& layers, int fromVersion);
+
 signals:
    void LayerDisplayChanged(types::LayerInfo layer);
 

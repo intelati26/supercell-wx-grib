@@ -45,6 +45,7 @@ set(SRC_QT_MAIN_TESTS source/scwx/qt/main/application_paths.test.cpp
                       source/scwx/qt/main/theme.test.cpp)
 set(SRC_QT_MANAGER_TESTS source/scwx/qt/manager/grib_manager.test.cpp
                          source/scwx/qt/manager/hodograph_manager.test.cpp
+                         source/scwx/qt/manager/hodograph_selection.test.cpp
                          source/scwx/qt/manager/product_datastore.test.cpp
                          source/scwx/qt/manager/radar_product_manager.test.cpp
                          source/scwx/qt/manager/user_model_grib_manager.test.cpp
@@ -53,6 +54,7 @@ set(SRC_QT_MANAGER_TESTS source/scwx/qt/manager/grib_manager.test.cpp
                          source/scwx/qt/manager/status_manager.test.cpp
                          source/scwx/qt/manager/update_manager.test.cpp)
 set(SRC_QT_MAP_TESTS source/scwx/qt/map/grib_frame_info.test.cpp
+                     source/scwx/qt/map/hodograph_zoom.test.cpp
                      source/scwx/qt/map/map_annotation_layer.test.cpp
                      source/scwx/qt/map/map_annotation_model.test.cpp
                      source/scwx/qt/map/map_provider.test.cpp

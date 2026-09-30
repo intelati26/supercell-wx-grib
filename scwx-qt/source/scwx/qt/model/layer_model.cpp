@@ -8,6 +8,7 @@
 #include <scwx/util/logger.hpp>
 
 #include <filesystem>
+#include <fstream>
 #include <set>
 
 #include <QApplication>
@@ -151,14 +152,13 @@ static const std::vector<types::LayerInfo> kDefaultLayers_ {
     .movable_     = true},
    // Same "point glyphs read poorly buried under a color-fill layer"
    // reasoning as WindBarbs -- placed alongside it, above the three GRIB
-   // fill layers. Off in every pane by default, unlike the other data
-   // layers: while it is displayed and zoomed in it downloads a ~320MB RRFS
-   // file and decodes 35 grids in the background, which nobody should get
-   // without asking for it.
+   // fill layers. Shown like any other layer, but it draws nothing until the
+   // user picks "Gridded Hodograph" in the RRFS product list (see
+   // HodographSelection): once picked and zoomed in it downloads a ~320MB
+   // RRFS file and decodes 35 grids, which nobody should get without asking.
    {.type_        = types::LayerType::Data,
     .description_ = types::DataLayer::Hodograph,
-    .movable_     = true,
-    .displayed_   = {false}},
+    .movable_     = true},
    {.type_        = types::LayerType::Data,
     .description_ = types::DataLayer::GribMrms,
     .movable_     = true},
@@ -215,6 +215,8 @@ public:
    void HandlePlacefileUpdate(const std::string& name, Column column);
    void InitializeLayerSettings();
    void ReadLayerSettings();
+   [[nodiscard]] int ReadSchemaVersion() const;
+   void WriteSchemaVersion() const;
    void SaveLayerSettings();
    void SynchronizePlacefileLayers();
 
@@ -313,9 +315,65 @@ void LayerModel::Impl::ReadLayerSettings()
       layerJson = util::json::ReadJsonFile(layerSettingsPath_);
    }
 
+   const bool hadFile = layerJson != nullptr;
+
    ApplyLayerSettings(layerJson);
 
    fileRead_ = true;
+
+   // A profile saved by an older version gets the default changes made since.
+   // A first run has nothing to migrate: it starts from the current defaults.
+   const int savedVersion = ReadSchemaVersion();
+   if (hadFile && savedVersion < kLayerSchemaVersion)
+   {
+      logger_->info("Migrating layer settings from version {} to {}",
+                    savedVersion,
+                    kLayerSchemaVersion);
+      MigrateLayers(layers_, savedVersion);
+      SaveLayerSettings();
+   }
+   if (savedVersion != kLayerSchemaVersion)
+   {
+      WriteSchemaVersion();
+   }
+}
+
+int LayerModel::Impl::ReadSchemaVersion() const
+{
+   std::ifstream file(layerSettingsPath_ + ".version");
+   int           version = 0;
+   if (!(file >> version) || version < 0)
+   {
+      return 0;
+   }
+   return version;
+}
+
+void LayerModel::Impl::WriteSchemaVersion() const
+{
+   std::ofstream file(layerSettingsPath_ + ".version", std::ios::trunc);
+   file << kLayerSchemaVersion << '\n';
+   if (!file)
+   {
+      logger_->warn("Unable to record the layer settings version");
+   }
+}
+
+void LayerModel::MigrateLayers(types::LayerVector& layers, int fromVersion)
+{
+   if (fromVersion < 1)
+   {
+      for (auto& layer : layers)
+      {
+         if (layer.type_ == types::LayerType::Data &&
+             std::holds_alternative<types::DataLayer>(layer.description_) &&
+             std::get<types::DataLayer>(layer.description_) ==
+                types::DataLayer::Hodograph)
+         {
+            layer.displayed_.fill(true);
+         }
+      }
+   }
 }
 
 void LayerModel::ReadLayerSettings(std::istream& is)

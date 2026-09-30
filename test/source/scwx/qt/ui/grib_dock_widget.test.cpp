@@ -1,3 +1,4 @@
+#include <scwx/qt/manager/hodograph_selection.hpp>
 #include <scwx/qt/manager/user_model_registry.hpp>
 #include <scwx/qt/ui/checkable_combo_box.hpp>
 #include <scwx/qt/ui/grib_dock_widget.hpp>
@@ -280,6 +281,54 @@ TEST_F(GribDockWidgetTest, OnlyRrfsOffersALoopExportAndEveryoneCanExportAnImage)
    // slider reads as 0, and moving it is a harmless no-op.
    dock.SetForecastHour(map::GribCategory::Mrms, 5);
    EXPECT_EQ(dock.ForecastHour(map::GribCategory::Mrms), 0);
+}
+
+// The gridded hodograph is a product in the RRFS list and nowhere else: picking
+// it is what turns hodographs on, and it starts unpicked.
+TEST_F(GribDockWidgetTest, HodographIsAnRrfsProductThatStartsUnpicked)
+{
+   auto& selection = manager::HodographSelection::Instance();
+   selection.SetEnabled(false);
+
+   GribDockWidget dock;
+   dock.resize(420, 1500);
+
+   for (const char* title : {"MRMS", "RTMA", "NBM", "Custom Models"})
+   {
+      auto* group = FindGroup(dock, title);
+      ASSERT_NE(group, nullptr) << title;
+      auto* products = group->findChild<CheckableComboBox*>();
+      ASSERT_NE(products, nullptr) << title;
+      auto* itemModel = qobject_cast<QStandardItemModel*>(products->model());
+      ASSERT_NE(itemModel, nullptr) << title;
+      for (int row = 0; row < itemModel->rowCount(); ++row)
+      {
+         EXPECT_NE(itemModel->item(row)->text(), "Gridded Hodograph") << title;
+      }
+   }
+
+   auto* rrfs = FindGroup(dock, "RRFS");
+   ASSERT_NE(rrfs, nullptr);
+   auto* products = rrfs->findChild<CheckableComboBox*>();
+   ASSERT_NE(products, nullptr);
+   auto* itemModel = qobject_cast<QStandardItemModel*>(products->model());
+   ASSERT_NE(itemModel, nullptr);
+   ASSERT_GT(itemModel->rowCount(), 1);
+   EXPECT_EQ(itemModel->item(itemModel->rowCount() - 1)->text(),
+             "Gridded Hodograph");
+
+   EXPECT_FALSE(products->IsChecked("Gridded Hodograph"));
+   EXPECT_FALSE(selection.IsEnabled());
+
+   // SetChecked() only sets the item; a user's click also announces the
+   // change, which is what the dock listens to.
+   products->SetChecked("Gridded Hodograph", true);
+   products->CheckedItemsChanged();
+   EXPECT_TRUE(selection.IsEnabled());
+
+   products->SetChecked("Gridded Hodograph", false);
+   products->CheckedItemsChanged();
+   EXPECT_FALSE(selection.IsEnabled());
 }
 
 } // namespace scwx::qt::ui

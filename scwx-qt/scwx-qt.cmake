@@ -120,6 +120,7 @@ set(HDR_MANAGER source/scwx/qt/manager/alert_manager.hpp
                 source/scwx/qt/manager/font_manager.hpp
                 source/scwx/qt/manager/grib_manager.hpp
                 source/scwx/qt/manager/hodograph_manager.hpp
+                source/scwx/qt/manager/hodograph_selection.hpp
                 source/scwx/qt/manager/hotkey_manager.hpp
                 source/scwx/qt/manager/log_manager.hpp
                 source/scwx/qt/manager/marker_manager.hpp
@@ -148,6 +149,7 @@ set(SRC_MANAGER source/scwx/qt/manager/alert_manager.cpp
                 source/scwx/qt/manager/font_manager.cpp
                 source/scwx/qt/manager/grib_manager.cpp
                 source/scwx/qt/manager/hodograph_manager.cpp
+                source/scwx/qt/manager/hodograph_selection.cpp
                 source/scwx/qt/manager/hotkey_manager.cpp
                 source/scwx/qt/manager/log_manager.cpp
                 source/scwx/qt/manager/marker_manager.cpp
@@ -180,6 +182,7 @@ set(HDR_MAP source/scwx/qt/map/alert_layer.hpp
             source/scwx/qt/map/visible_grib_layers.hpp
             source/scwx/qt/map/grib_product_layer.hpp
             source/scwx/qt/map/hodograph_layer.hpp
+            source/scwx/qt/map/hodograph_zoom.hpp
             source/scwx/qt/map/layer_wrapper.hpp
             source/scwx/qt/map/map_annotation_layer.hpp
             source/scwx/qt/map/map_annotation_model.hpp

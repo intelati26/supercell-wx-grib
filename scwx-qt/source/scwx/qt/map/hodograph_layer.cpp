@@ -1,8 +1,10 @@
 #include <scwx/qt/map/hodograph_layer.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
+#include <scwx/qt/map/hodograph_zoom.hpp>
 #include <scwx/qt/map/viewport_bounds.hpp>
 #include <scwx/qt/gl/draw/geo_lines.hpp>
 #include <scwx/qt/manager/hodograph_manager.hpp>
+#include <scwx/qt/manager/hodograph_selection.hpp>
 #include <scwx/qt/settings/hodograph_settings.hpp>
 #include <scwx/qt/util/geographic_lib.hpp>
 #include <scwx/util/logger.hpp>
@@ -23,6 +25,10 @@
 namespace scwx::qt::map
 {
 
+using hodograph_zoom::TierForZoom;
+using hodograph_zoom::ZoomTier;
+
+
 static const std::string logPrefix_ = "scwx::qt::map::hodograph_layer";
 static const auto        logger_    = scwx::util::Logger::Create(logPrefix_);
 
@@ -34,11 +40,6 @@ static constexpr double kMetersPerSecondToKnots_ = 1.9438445;
 namespace
 {
 
-// Every decimation stride TierForZoom() below can return -- the only grid
-// rows/columns this layer ever reads (see SelectHodographPoints()), so the
-// only ones ParseFrame() keeps in memory.
-constexpr std::array<long, 3> kTierStrides_ {30, 14, 6};
-
 // Maps a full-grid row/column index to its slot in a ParsedFrame's
 // compacted values, or -1 for an index no tier ever samples.
 std::vector<long> SampledAxisSlots(long size)
@@ -47,7 +48,7 @@ std::vector<long> SampledAxisSlots(long size)
    long              next = 0;
    for (long index = 0; index < size; ++index)
    {
-      for (const long stride : kTierStrides_)
+      for (const long stride : hodograph_zoom::kTierStrides)
       {
          if (index % stride == 0)
          {
@@ -60,7 +61,7 @@ std::vector<long> SampledAxisSlots(long size)
 }
 
 // One decoded field's Lambert grid geometry plus its values -- but only at
-// the rows/columns some zoom tier actually samples (see kTierStrides_),
+// the rows/columns some zoom tier actually samples (see hodograph_zoom::kTierStrides),
 // not the whole grid. The layer holds 34 levels x (u, v) plus terrain at
 // once; at RRFS's full ~1800 x 1060 grid that was ~0.5GB of floats, nearly
 // all of it never read. Keeping just the sampled rows/columns is ~5% of
@@ -295,62 +296,9 @@ SelectHodographPoints(const GridIndexBox& window, long stride)
    return points;
 }
 
-// Decimation stride and geographic scale for one zoom band.
-//
-// stride: hodographs are visually busier than barbs (a whole polyline
-// per point, not one glyph) -- sparser at every comparable zoom level
-// than WindBarbLayer's own tiers, tuned by eye as a first guess, not
-// reused from there (see the plan doc's own "decimation density" open
-// question).
-//
-// metersPerMs: unlike WindBarbLayer's icons (a fixed *pixel* size via
-// GeoIcons' screen-space offset mechanism), a hodograph drawn through
-// GeoLines is sized in real geographic *metres* (its endpoints are real
-// lat/lon coordinates -- see this class's own header comment). This is
-// metres of on-map offset per 1 m/s of wind, tuned per tier so a ~30 m/s
-// (~60kt) vector -- strong, not extreme -- reads as a legible but not
-// overwhelming size at that tier's typical viewing distance. A genuinely
-// fixed-pixel-size hodograph would need computing metres-per-pixel from
-// the current view and isn't attempted here -- see the plan doc's own
-// "on-screen size" open question.
-//
-// visible: below zoom 6 (CONUS/regional), any real geographic size this
-// primitive can draw is an imperceptible speck -- rather than pick an
-// arbitrarily huge metersPerMs to compensate (which would then be
-// wildly oversized at the next tier up), hodographs simply aren't drawn
-// at all below this zoom.
 // How much larger than the visible view the built area is. 2.0 lets the view
 // pan by roughly half its own size before geometry is rebuilt.
 constexpr double kBuildMargin_ = 2.0;
-
-struct ZoomTier
-{
-   long   stride;
-   double metersPerMs;
-   bool   visible;
-
-   bool operator==(const ZoomTier&) const = default;
-};
-
-ZoomTier TierForZoom(double zoom)
-{
-   if (zoom < 6.0)
-   {
-      return {0, 0.0, false};
-   }
-   else if (zoom < 7.5)
-   {
-      return {kTierStrides_[0], 90.0, true};
-   }
-   else if (zoom < 9.0)
-   {
-      return {kTierStrides_[1], 140.0, true};
-   }
-   else
-   {
-      return {kTierStrides_[2], 220.0, true};
-   }
-}
 
 // Reads manager::HodographManager::BandForHeight()'s own shared table
 // (not a locally-hardcoded one) specifically so this and
@@ -439,6 +387,19 @@ public:
                        &manager::HodographManager::HodographDataReady,
                        self_,
                        [this]() { ReloadHodographs(); });
+
+      // Picking or dropping the gridded hodograph product in the RRFS list
+      // starts or stops everything here: re-evaluate what is being drawn.
+      QObject::connect(&manager::HodographSelection::Instance(),
+                       &manager::HodographSelection::EnabledChanged,
+                       self_,
+                       [this]()
+                       {
+                          if (lastTier_.visible)
+                          {
+                             RebuildLines(lastTier_, builtBounds_);
+                          }
+                       });
    }
    ~Impl() { hodographManager_->SetDrawing(this, false); }
 
@@ -534,7 +495,10 @@ void HodographLayer::Impl::ReloadHodographs()
 
 void HodographLayer::Impl::RebuildLines(ZoomTier tier, const GeoBounds& bounds)
 {
-   const bool drawing = tier.visible && tier.stride >= 1;
+   // Hodographs exist only while the user has picked them as a product (see
+   // HodographSelection) and the view is zoomed in far enough to read them.
+   const bool drawing = tier.visible && tier.stride >= 1 &&
+                        manager::HodographSelection::Instance().IsEnabled();
 
    // Tells the manager whether anything needs its data: it only downloads
    // and decodes while some layer is actually drawing.
