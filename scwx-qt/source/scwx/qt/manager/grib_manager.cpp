@@ -1107,6 +1107,19 @@ MakeProvider(map::GribCategory category, const ProductConfig& product)
 namespace
 {
 
+// providers_ holds the common AwsNexradDataProvider base, but each
+// category only ever constructs one concrete type (see MakeProvider()), so
+// every fetch path has to get that concrete type back. One checked cast
+// here instead of a hand-written static_cast at each of ~15 call sites:
+// clang-tidy flagged those (cppcoreguidelines-pro-type-static-cast-
+// downcast), and a mismatched category would have been silent undefined
+// behavior -- this throws std::bad_cast instead.
+template<typename Derived>
+Derived& ProviderAs(provider::AwsNexradDataProvider& base)
+{
+   return dynamic_cast<Derived&>(base);
+}
+
 void EnsureDateListed(provider::AwsNexradDataProvider&      provider,
                       std::chrono::system_clock::time_point date)
 {
@@ -1673,7 +1686,7 @@ std::vector<std::string> GribManager::ActiveProductNames() const
 void GribManager::SyncRrfsProviderState(
    provider::AwsNexradDataProvider& provider) const
 {
-   auto& rrfsProvider = static_cast<provider::RrfsDataProvider&>(provider);
+   auto& rrfsProvider = ProviderAs<provider::RrfsDataProvider>(provider);
 
    if (p->rrfsUseLatestCycle_)
    {
@@ -1701,7 +1714,7 @@ void GribManager::FetchRrfsSelection()
    }
 
    auto& rrfsProvider =
-      static_cast<provider::RrfsDataProvider&>(*p->providers_.at(*index));
+      ProviderAs<provider::RrfsDataProvider>(*p->providers_.at(*index));
 
    const auto time =
       rrfsProvider.CurrentCycle() + hours {rrfsProvider.ForecastHour()};
@@ -1766,7 +1779,7 @@ std::chrono::system_clock::time_point GribManager::CurrentRrfsCycle() const
       return {};
    }
 
-   return static_cast<provider::RrfsDataProvider&>(*p->providers_.at(*index))
+   return ProviderAs<provider::RrfsDataProvider>(*p->providers_.at(*index))
       .CurrentCycle();
 }
 
@@ -2151,7 +2164,7 @@ bool GribManager::FetchArchiveFrameForProduct(
       // which file this selection wants needs no network call at all
       // (only downloading it does, and RequestFrame()/QueueDownload()
       // already handle a file that turns out not to exist gracefully).
-      auto& rrfsProvider = static_cast<provider::RrfsDataProvider&>(*provider);
+      auto& rrfsProvider = ProviderAs<provider::RrfsDataProvider>(*provider);
       const auto family  = Products(p->category_)[productIndex].rrfsFileFamily;
       key                = provider::RrfsDataProvider::BuildKey(
          rrfsProvider.CurrentCycle(), rrfsProvider.ForecastHour(), family);
@@ -2220,7 +2233,7 @@ bool GribManager::FetchArchiveFrameForProduct(
 void GribManager::FetchShipSelection(std::size_t productIndex)
 {
    auto& rrfsProvider =
-      static_cast<provider::RrfsDataProvider&>(*p->providers_.at(productIndex));
+      ProviderAs<provider::RrfsDataProvider>(*p->providers_.at(productIndex));
 
    const auto key2dfld =
       provider::RrfsDataProvider::BuildKey(rrfsProvider.CurrentCycle(),
@@ -2266,7 +2279,7 @@ void GribManager::FetchShipSelection(std::size_t productIndex)
 void GribManager::ApplyShipIfReady(std::size_t productIndex)
 {
    auto& rrfsProvider =
-      static_cast<provider::RrfsDataProvider&>(*p->providers_.at(productIndex));
+      ProviderAs<provider::RrfsDataProvider>(*p->providers_.at(productIndex));
 
    const auto key2dfld =
       provider::RrfsDataProvider::BuildKey(rrfsProvider.CurrentCycle(),
@@ -2345,7 +2358,7 @@ void GribManager::QueueShipInput(std::size_t        productIndex,
          };
 
          auto& rrfsProvider =
-            static_cast<provider::RrfsDataProvider&>(*provider);
+            ProviderAs<provider::RrfsDataProvider>(*provider);
          auto downloaded =
             rrfsProvider.DownloadRaw(key, cachedPath, progressCallback);
          statusManager->ReportComplete(statusId);
@@ -2432,7 +2445,7 @@ bool GribManager::ApplyShipDownload(std::size_t        productIndex,
 void GribManager::SyncNbmProviderState(
    provider::AwsNexradDataProvider& provider) const
 {
-   auto& nbmProvider = static_cast<provider::NbmDataProvider&>(provider);
+   auto& nbmProvider = ProviderAs<provider::NbmDataProvider>(provider);
 
    if (p->nbmUseLatestCycle_)
    {
@@ -2458,7 +2471,7 @@ void GribManager::FetchNbmSelection()
    }
 
    auto& nbmProvider =
-      static_cast<provider::NbmDataProvider&>(*p->providers_.at(*index));
+      ProviderAs<provider::NbmDataProvider>(*p->providers_.at(*index));
 
    // FetchArchiveFrameForProduct()'s own Nbm branch ignores this `time`
    // argument entirely, resolving each product's key from its own
@@ -2482,7 +2495,7 @@ void GribManager::FetchNbmSelection()
 void GribManager::FetchNbmSelectionForProduct(std::size_t productIndex)
 {
    auto& nbmProvider =
-      static_cast<provider::NbmDataProvider&>(*p->providers_.at(productIndex));
+      ProviderAs<provider::NbmDataProvider>(*p->providers_.at(productIndex));
 
    const std::string key = provider::NbmDataProvider::BuildKey(
       nbmProvider.CurrentCycle(), nbmProvider.ForecastHour());
@@ -2570,7 +2583,7 @@ void GribManager::QueueNbmDownload(std::size_t        productIndex,
          };
 
          auto downloaded =
-            static_cast<provider::NbmDataProvider&>(*provider).FetchField(
+            ProviderAs<provider::NbmDataProvider>(*provider).FetchField(
                key,
                product.nbmParameter,
                product.nbmLevel,
@@ -2679,7 +2692,7 @@ std::chrono::system_clock::time_point GribManager::CurrentNbmCycle() const
       return {};
    }
 
-   return static_cast<provider::NbmDataProvider&>(*p->providers_.at(*index))
+   return ProviderAs<provider::NbmDataProvider>(*p->providers_.at(*index))
       .CurrentCycle();
 }
 
@@ -2822,18 +2835,18 @@ void GribManager::QueueDownload(std::size_t        productIndex,
          {
          case map::GribCategory::Mrms:
             downloaded =
-               static_cast<provider::MrmsDataProvider&>(*provider)
+               ProviderAs<provider::MrmsDataProvider>(*provider)
                   .DownloadAndDecompress(key, cachedPath, progressCallback);
             break;
          case map::GribCategory::Rrfs:
             downloaded =
-               static_cast<provider::RrfsDataProvider&>(*provider).DownloadRaw(
+               ProviderAs<provider::RrfsDataProvider>(*provider).DownloadRaw(
                   key, cachedPath, progressCallback);
             break;
          case map::GribCategory::Rtma:
          default:
             downloaded =
-               static_cast<provider::RtmaDataProvider&>(*provider).DownloadRaw(
+               ProviderAs<provider::RtmaDataProvider>(*provider).DownloadRaw(
                   key, cachedPath, progressCallback);
             break;
          }

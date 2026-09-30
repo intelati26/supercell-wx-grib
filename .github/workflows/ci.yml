@@ -145,8 +145,6 @@ jobs:
                              wayland-protocols \
                              libwayland-dev \
                              libwayland-egl-backend-dev \
-                             flatpak \
-                             flatpak-builder \
                              ${{ matrix.compiler_packages }}
         # Remove unneeded items to free disk space
         sudo apt-get clean
@@ -443,53 +441,6 @@ jobs:
       with:
         name: supercell-wx-appimage-${{ matrix.artifact_suffix }}
         path: ${{ github.workspace }}/*-${{ matrix.appimage_arch }}.AppImage*
-
-    - name: Build FlatPak (Linux)
-      # Ubuntu 22.04 ships flatpak-builder < 1.4, which still runs appstream-compose
-      # inside the SDK. Freedesktop 25.08 removed that tool; 24.04+ builder uses
-      # host appstreamcli compose instead. Publish only consumes gcc-13 artifacts.
-      if: ${{ startsWith(matrix.os, 'ubuntu') && matrix.os != 'ubuntu-22.04' }}
-      env:
-        INSTALL_DIR: ${{ github.workspace }}/supercell-wx/
-        FLATPAK_DIR: ${{ github.workspace }}/supercell-wx-flatpak/
-        # CI always builds the nightly branch. Stable is assigned later by the
-        # Flatpak repo publish job when a GitHub Release is published (tags
-        # are often created after this workflow has already finished).
-        FLATPAK_DEFAULT_BRANCH: nightly
-      shell: bash
-      run: |
-        cp -r ${{ env.INSTALL_DIR }} ${{ env.FLATPAK_DIR }}
-        # Stage generated AppStream metainfo into the Flatpak source dir
-        cp "${{ github.workspace }}/build/scwx-qt/res/linux/net.supercellwx.app.metainfo.xml" \
-           "${{ env.FLATPAK_DIR }}/"
-        # Copy krb5 libraries to flatpak
-        cp -a /usr/lib/*/libkrb5.so* \
-              /usr/lib/*/libkrb5support.so* \
-              /usr/lib/*/libgssapi_krb5.so* \
-              /usr/lib/*/libk5crypto.so* \
-              /usr/lib/*/libkeyutils.so* \
-              ${{ env.FLATPAK_DIR }}/lib
-        # Copy GLU library to flatpak
-        cp -a /usr/lib/*/libGLU.so* \
-              ${{ env.FLATPAK_DIR }}/lib
-
-        flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-        flatpak-builder --force-clean \
-            --user \
-            --install-deps-from=flathub \
-            --default-branch="${FLATPAK_DEFAULT_BRANCH}" \
-            --repo=flatpak-repo \
-            --install flatpak-build \
-            ${{ github.workspace }}/source/tools/net.supercellwx.app.yml
-        flatpak build-bundle flatpak-repo supercell-wx.flatpak \
-            net.supercellwx.app "${FLATPAK_DEFAULT_BRANCH}"
-
-    - name: Upload FlatPak (Linux)
-      if: ${{ startsWith(matrix.os, 'ubuntu') && matrix.os != 'ubuntu-22.04' }}
-      uses: actions/upload-artifact@v7
-      with:
-        name: supercell-wx-flatpak-${{ matrix.artifact_suffix }}
-        path: ${{ github.workspace }}/supercell-wx.flatpak
 
     - name: Build Disk Image (macOS)
       if: ${{ startsWith(matrix.os, 'macos') }}

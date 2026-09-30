@@ -829,12 +829,16 @@ void GribDockWidget::Impl::RefreshSection(CategorySection& section)
    // The primary (CurrentProductIndex()) product's valid time --
    // GribProductLayer only ever renders that one today, so its status is
    // what's actually meaningful to show here; the other active products
-   // are fetching/decoding, just not drawn on the map yet. activeNames
-   // being non-empty (just checked above) guarantees CurrentProductIndex()
-   // resolves to a real value here.
-   const std::string validTime =
-      map::ReadGribFrameValidTime(map::GetGribFramePath(
-         section.category, *section.gribManager->CurrentProductIndex()));
+   // are fetching/decoding, just not drawn on the map yet.
+   const auto primaryIndex = section.gribManager->CurrentProductIndex();
+   if (!primaryIndex)
+   {
+      section.statusLabel->setText(tr("(no products active)"));
+      return;
+   }
+
+   const std::string validTime = map::ReadGribFrameValidTime(
+      map::GetGribFramePath(section.category, *primaryIndex));
 
    std::string statusText =
       "Primary: " + section.gribManager->CurrentProductName();
