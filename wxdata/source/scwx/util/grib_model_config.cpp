@@ -48,7 +48,7 @@ std::string RangeText(const NumericField& f)
 struct DisplayProblem
 {
    const char* field;
-   const char* message;
+   std::string message;
 };
 
 // Cross-field rules shared by both front ends.
@@ -57,6 +57,17 @@ std::optional<DisplayProblem> CheckDisplay(const DisplaySpec& d)
    if (d.type != "fill" && d.type != "contour")
    {
       return DisplayProblem {"type", "must be \"fill\" or \"contour\""};
+   }
+   if (std::find(kQuantityNames.begin(), kQuantityNames.end(), d.quantity) ==
+       kQuantityNames.end())
+   {
+      std::string allowed;
+      for (const auto name : kQuantityNames)
+      {
+         allowed += (allowed.empty() ? "" : ", ");
+         allowed += "\"" + std::string(name) + "\"";
+      }
+      return DisplayProblem {"quantity", "must be one of " + allowed};
    }
    if (d.type == "contour" && d.contourInterval <= 0.0f)
    {

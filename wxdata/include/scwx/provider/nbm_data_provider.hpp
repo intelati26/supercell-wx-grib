@@ -85,6 +85,8 @@ public:
    [[nodiscard]] std::string
    BuildKeyFor(std::chrono::system_clock::time_point cycle,
                int                                    hour) const override;
+   [[nodiscard]] bool
+   RunsCycleAt(std::chrono::system_clock::time_point cycle) const override;
    [[nodiscard]] int MinForecastHourFor() const override;
    [[nodiscard]] int MaxForecastHourFor(
       std::chrono::system_clock::time_point cycle) const override;

@@ -364,4 +364,28 @@ TEST(GribModelConfig, SourceSettingsAreValidatedBeforeTheyReachTheNetwork)
    }
 }
 
+TEST(GribModelConfig, UnknownQuantityIsRejectedWithTheAllowedList)
+{
+   const auto bad = ParseModelSettings(R"({
+      "model": {"name": "M"},
+      "source": {"bucket": "some-bucket", "key_pattern": "a/{hh}",
+                 "cycle_hours": [0], "max_forecast_hour": 6},
+      "defaults": {"quantity": "furlongs_per_fortnight"}})");
+   EXPECT_FALSE(bad.config);
+   ASSERT_FALSE(bad.errors.empty());
+   EXPECT_NE(bad.errors[0].find("temperature_kelvin"), std::string::npos)
+      << bad.errors[0];
+
+   for (const auto name : kQuantityNames)
+   {
+      const auto ok = ParseModelSettings(
+         std::string(R"({"model": {"name": "M"},
+            "source": {"bucket": "some-bucket", "key_pattern": "a/{hh}",
+                       "cycle_hours": [0], "max_forecast_hour": 6},
+            "defaults": {"quantity": ")") +
+         std::string(name) + R"("}})");
+      EXPECT_TRUE(ok.config) << name;
+   }
+}
+
 } // namespace scwx::util::grib_model_config

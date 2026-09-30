@@ -140,6 +140,12 @@ NbmDataProvider::BuildKeyFor(std::chrono::system_clock::time_point cycle,
    return BuildKey(cycle, hour);
 }
 
+bool NbmDataProvider::RunsCycleAt(
+   std::chrono::system_clock::time_point /* cycle */) const
+{
+   return true; // NBM publishes every hour
+}
+
 int NbmDataProvider::MinForecastHourFor() const
 {
    return kMinForecastHour_;

@@ -134,6 +134,17 @@ std::string ConfiguredIdxProvider::BuildKeyFor(
    return BuildKey(p->source_, cycle, hour);
 }
 
+bool ConfiguredIdxProvider::RunsCycleAt(
+   std::chrono::system_clock::time_point cycle) const
+{
+   using namespace std::chrono;
+   const int hour = static_cast<int>(
+      duration_cast<hours>(cycle - floor<days>(cycle)).count());
+   return std::find(p->source_.cycleHours.begin(),
+                    p->source_.cycleHours.end(),
+                    hour) != p->source_.cycleHours.end();
+}
+
 int ConfiguredIdxProvider::MinForecastHourFor() const
 {
    return p->source_.minForecastHour;

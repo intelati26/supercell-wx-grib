@@ -37,6 +37,11 @@ public:
    [[nodiscard]] virtual std::string
    BuildKeyFor(std::chrono::system_clock::time_point cycle, int hour) const = 0;
 
+   // Whether the model runs a cycle at this (whole-hour) UTC time -- NBM runs
+   // every hour, a 6-hourly model only at 00/06/12/18z.
+   [[nodiscard]] virtual bool
+   RunsCycleAt(std::chrono::system_clock::time_point cycle) const = 0;
+
    // First and last forecast hour that exist for `cycle`.
    [[nodiscard]] virtual int MinForecastHourFor() const = 0;
    [[nodiscard]] virtual int

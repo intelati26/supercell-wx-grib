@@ -105,6 +105,11 @@ TEST(ConfiguredIdxProviderTest, ProviderTracksSelectionAndAnswersRules)
    EXPECT_EQ(provider.MaxForecastHourFor({}), 24);
    EXPECT_EQ(provider.SnapForecastHourFor({}, 5), 6);
 
+   const auto day = sys_days {std::chrono::year {2026} / 9 / 28};
+   EXPECT_TRUE(provider.RunsCycleAt(day + 6h));
+   EXPECT_FALSE(provider.RunsCycleAt(day + 7h));
+   EXPECT_TRUE(NbmDataProvider().RunsCycleAt(day + 7h));
+
    const auto cycle = sys_days {std::chrono::year {2026} / 9 / 28} + 12h;
    provider.SetCycle(cycle + 25min); // floored to the hour
    EXPECT_FALSE(provider.IsUsingLatestCycle());

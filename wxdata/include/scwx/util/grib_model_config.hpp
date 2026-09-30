@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -29,6 +30,16 @@ struct IndexSpec
    std::string level;     // e.g. "2 m above ground"
    std::string qualifier; // e.g. "ens std dev"; empty = unqualified only
 };
+
+// The values DisplaySpec::quantity may take; the qt layer maps each onto its
+// unit-conversion category (see qt::manager::PhysicalQuantity). "none" shows
+// the raw value with DisplaySpec::units as-is.
+inline constexpr std::array<std::string_view, 5> kQuantityNames {
+   "none",
+   "temperature_kelvin",
+   "speed_meters_per_second",
+   "accumulation_millimeters",
+   "pressure_pascals"};
 
 // How to draw a decoded field. Mirrors the display half of the built-in
 // qt::manager ProductConfig table.
