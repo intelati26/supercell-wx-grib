@@ -198,6 +198,30 @@ LatLonBox ViewportLatLonBox(double centerLat,
                             double heightPx,
                             double scale);
 
+// Whether a frame's values can be stored in a 16-bit float GPU texture
+// (GL_R16F) instead of 32-bit without visibly changing what's drawn --
+// halving the texture's GPU memory (~98MB -> ~49MB for an MRMS CONUS
+// grid). Decided per frame from its own values:
+// - contour products (contourInterval > 0) always stay 32-bit: their
+//   isolines are drawn from fine value differences half precision would
+//   make jagged;
+// - every value that gets drawn (>= noDataThreshold) must fit half
+//   precision's range (|v| < 65504) -- MSLP in Pa doesn't;
+// - rounding to half precision (about 3 significant digits) must move a
+//   value by at most half of one of the color ramp's 256 steps
+//   (|colorScale| / 512), so no pixel shifts visibly in color.
+// Values below noDataThreshold (e.g. MRMS's -999 sentinel) are discarded
+// by the shader either way, so their precision doesn't matter. Nor does
+// that of `missingValue` (the frame header's eccodes missing-data marker,
+// often 9999) when it's drawn: it only needs to stay in range, since it
+// lands at the top of the color ramp regardless of rounding.
+bool FitsHalfFloatTexture(const float* values,
+                          std::size_t  count,
+                          float        noDataThreshold,
+                          float        colorScale,
+                          float        contourInterval,
+                          double       missingValue);
+
 // An inclusive range of grid indices, i in [iMin, iMax], j in [jMin, jMax].
 struct GridIndexBox
 {

@@ -1,5 +1,8 @@
 #include <scwx/qt/map/grib_frame_info.hpp>
 
+#include <limits>
+#include <vector>
+
 #include <gtest/gtest.h>
 
 namespace scwx::qt::map
@@ -126,6 +129,74 @@ TEST(GribFrameInfo, LambertGridIndexBoxWholeAndEmpty)
                           kRtmaNy,
                           ViewportLatLonBox(51.5, 0.0, 9.0, 1920, 1080, 1.0))
          .IsEmpty());
+}
+
+TEST(GribFrameInfo, HalfFloatForReflectivity)
+{
+   // dBZ with MRMS's -999 "no coverage" sentinel below the cutoff.
+   const std::vector<float> values {-999.0f, -20.0f, 12.5f, 47.3f, 75.0f};
+   EXPECT_TRUE(FitsHalfFloatTexture(
+      values.data(), values.size(), -30.0f, 95.0f, 0.0f, 9999.0));
+}
+
+TEST(GribFrameInfo, HalfFloatForTemperature)
+{
+   // Kelvin: ~300K rounds by at most 0.125K, under half a color step of
+   // RTMA's 65K range (65 / 512 = ~0.127K). 9999 is eccodes' missing
+   // marker -- drawn (it's above the cutoff), but its precision doesn't
+   // matter.
+   const std::vector<float> values {9999.0f, 255.3f, 288.9f, 318.2f};
+   EXPECT_TRUE(FitsHalfFloatTexture(
+      values.data(), values.size(), -999.0f, 65.0f, 0.0f, 9999.0));
+
+   // The same 9999, if it weren't the frame's missing marker, is a real
+   // drawn value that rounds too coarsely for this color range.
+   EXPECT_FALSE(FitsHalfFloatTexture(
+      values.data(), values.size(), -999.0f, 65.0f, 0.0f, -9999.0));
+}
+
+TEST(GribFrameInfo, NoHalfFloatBeyondRange)
+{
+   // Mean sea level pressure in Pa exceeds half precision's 65504 max.
+   const std::vector<float> values {-999.0f, 98500.0f, 101325.0f};
+   EXPECT_FALSE(FitsHalfFloatTexture(
+      values.data(), values.size(), -999.0f, 10000.0f, 0.0f, 9999.0));
+
+   // A drawn missing marker must still fit the range.
+   const std::vector<float> marker {10.0f, 1.0e20f};
+   EXPECT_FALSE(FitsHalfFloatTexture(
+      marker.data(), marker.size(), 0.0f, 50.0f, 0.0f, 1.0e20));
+}
+
+TEST(GribFrameInfo, NoHalfFloatWhenRoundingIsVisible)
+{
+   // Values near 3000 round by up to 1, more than half a step of a
+   // 100-wide color range (100 / 512 = ~0.2).
+   const std::vector<float> values {2950.0f, 3010.0f};
+   EXPECT_FALSE(FitsHalfFloatTexture(
+      values.data(), values.size(), -999.0f, 100.0f, 0.0f, 9999.0));
+}
+
+TEST(GribFrameInfo, NoHalfFloatForContours)
+{
+   const std::vector<float> values {5400.0f, 5700.0f};
+   EXPECT_FALSE(FitsHalfFloatTexture(
+      values.data(), values.size(), -999.0f, 1200.0f, 60.0f, 9999.0));
+}
+
+TEST(GribFrameInfo, HalfFloatIgnoresUndrawnValues)
+{
+   // Huge or NaN values below the cutoff are never drawn.
+   const std::vector<float> values {
+      -1.0e9f, std::numeric_limits<float>::quiet_NaN(), 10.0f};
+   EXPECT_TRUE(FitsHalfFloatTexture(
+      values.data(), values.size(), 0.0f, 50.0f, 0.0f, 9999.0));
+
+   // ...but an infinite value that would be drawn rules it out.
+   const std::vector<float> infinite {10.0f,
+                                      std::numeric_limits<float>::infinity()};
+   EXPECT_FALSE(FitsHalfFloatTexture(
+      infinite.data(), infinite.size(), 0.0f, 50.0f, 0.0f, 9999.0));
 }
 
 } // namespace scwx::qt::map

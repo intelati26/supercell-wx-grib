@@ -28,6 +28,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -523,6 +524,8 @@ void GribProductLayer::LoadFrame()
          static_cast<float>(ExtractNumberOr(header, "contourInterval", 0.0));
       const auto byteLength =
          static_cast<size_t>(ExtractNumber(header, "byteLength"));
+      const double missingValue = ExtractNumberOr(
+         header, "missingValue", std::numeric_limits<double>::quiet_NaN());
 
       // Only held for the GL upload below -- see framePath_'s comment.
       // make_unique_for_overwrite skips zero-filling a buffer that's about
@@ -543,11 +546,22 @@ void GribProductLayer::LoadFrame()
          return;
       }
 
+      // 16-bit when this frame's values allow it without a visible change
+      // (see FitsHalfFloatTexture), halving the texture's GPU memory; GL
+      // converts the 32-bit upload itself. The tooltip is unaffected --
+      // it reads full-precision values back from the frame file.
+      const bool halfFloat = FitsHalfFloatTexture(values.get(),
+                                                  valueCount,
+                                                  p->noDataThreshold_,
+                                                  p->colorScale_,
+                                                  p->contourInterval_,
+                                                  missingValue);
+
       glActiveTexture(GL_TEXTURE0);
       glBindTexture(GL_TEXTURE_2D, p->dataTexture_);
       glTexImage2D(GL_TEXTURE_2D,
                    0,
-                   GL_R32F,
+                   halfFloat ? GL_R16F : GL_R32F,
                    static_cast<GLsizei>(p->nx_),
                    static_cast<GLsizei>(p->ny_),
                    0,
@@ -731,13 +745,17 @@ void GribProductLayer::LoadFrame()
       p->frameLoaded_ = true;
 
       logger_->info(
-         "Loaded GRIB frame: {} valid {} ({} x {} grid, origin ({}, {}))",
+         "Loaded GRIB frame: {} valid {} ({} x {} grid, origin "
+         "({}, {}), {}-bit texture, {:.1f} MB)",
          p->productLabel_,
          p->validTime_,
          p->nx_,
          p->ny_,
          p->lat1_,
-         p->lon1_);
+         p->lon1_,
+         halfFloat ? 16 : 32,
+         static_cast<double>(valueCount) * (halfFloat ? 2 : 4) /
+            (1024.0 * 1024.0));
    }
    catch (const std::exception& e)
    {

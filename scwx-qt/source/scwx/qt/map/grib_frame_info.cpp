@@ -220,6 +220,59 @@ glm::dvec2 LambertGridToLatLon(const LambertGrid& grid, double i, double j)
    return LambertInverse(grid, c, x, y);
 }
 
+bool FitsHalfFloatTexture(const float* values,
+                          std::size_t  count,
+                          float        noDataThreshold,
+                          float        colorScale,
+                          float        contourInterval,
+                          double       missingValue)
+{
+   // Largest finite half-precision value.
+   constexpr float kHalfMax = 65504.0f;
+
+   if (contourInterval > 0.0f || !(std::abs(colorScale) > 0.0f))
+   {
+      return false;
+   }
+
+   float maxAbs = 0.0f;
+   for (std::size_t i = 0; i < count; ++i)
+   {
+      const float v = values[i];
+      if (!(v >= noDataThreshold))
+      {
+         continue; // not drawn (below the cutoff, or NaN)
+      }
+      if (static_cast<double>(v) == missingValue)
+      {
+         if (!(std::abs(v) < kHalfMax))
+         {
+            return false; // would become infinity
+         }
+         continue; // drawn, but its exact value doesn't matter
+      }
+      maxAbs = std::max(maxAbs, std::abs(v));
+   }
+
+   if (!(maxAbs < kHalfMax)) // also catches +/-infinity
+   {
+      return false;
+   }
+   if (maxAbs == 0.0f)
+   {
+      return true;
+   }
+
+   // Half precision has a 10-bit mantissa, so values in [2^e, 2^(e+1))
+   // are spaced 2^(e-10) apart and round by at most half that. The largest
+   // drawn value has the coarsest spacing of any of them.
+   int exponent = 0;
+   std::frexp(maxAbs, &exponent); // maxAbs = m * 2^exponent, m in [0.5, 1)
+   const float maxRoundingError = std::ldexp(1.0f, (exponent - 1) - 11);
+
+   return maxRoundingError <= std::abs(colorScale) / 512.0f;
+}
+
 bool LatLonBox::Contains(const LatLonBox& other) const
 {
    return other.south >= south && other.north <= north && other.west >= west &&
