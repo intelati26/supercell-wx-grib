@@ -31,6 +31,7 @@
 #include <scwx/qt/types/unit_types.hpp>
 #include <scwx/qt/ui/edit_marker_dialog.hpp>
 #include <scwx/qt/util/file.hpp>
+#include <scwx/qt/util/image_export.hpp>
 #include <scwx/qt/util/maplibre.hpp>
 #include <scwx/qt/util/tooltip.hpp>
 #include <scwx/qt/view/overlay_product_view.hpp>
@@ -61,6 +62,7 @@
 #include <fmt/format.h>
 #include <imgui.h>
 #include <re2/re2.h>
+#include <atomic>
 #include <QApplication>
 #include <QClipboard>
 #include <QColor>
@@ -71,10 +73,12 @@
 #include <QIcon>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QResizeEvent>
 #include <QPinchGesture>
+#include <QPointer>
 #include <QPixmap>
 #include <QString>
 #include <QStyleHints>
@@ -3286,9 +3290,12 @@ void MapWidgetImpl::ScreenCaptureSaveImage()
       timestamp   = radarProductView->selected_time();
    }
 
+   const QPointer<MapWidget> widget {widget_};
+
    boost::asio::post(
       threadPool_,
-      [image,
+      [widget,
+       image,
        size,
        radarSiteId,
        productName,
@@ -3333,14 +3340,44 @@ void MapWidgetImpl::ScreenCaptureSaveImage()
             fmt::arg("width", size.width()),
             fmt::arg("height", size.height()));
 
-         // Format path
-         const std::string path = fmt::format(
-            "{}/{}.png", screenCaptureFolder, screenCaptureFilename);
+         // Format path. A name that ends in ".webp" (or ".png") picks the
+         // format; anything else is saved as PNG as before.
+         const bool hasExtension = screenCaptureFilename.ends_with(".png") ||
+                                   screenCaptureFilename.ends_with(".webp");
+         const std::string path  = fmt::format("{}/{}{}",
+                                               screenCaptureFolder,
+                                               screenCaptureFilename,
+                                               hasExtension ? "" : ".png");
 
          // Save image
-         if (!image.save(QString::fromStdString(path)))
+         QString error;
+         if (!util::image_export::SaveImage(
+                image, QString::fromStdString(path), error))
          {
-            logger_->error("Unable to save image: {}", path);
+            logger_->error(
+               "Unable to save image: {}: {}", path, error.toStdString());
+
+            // Nothing else tells the user a capture did not happen (e.g. a
+            // ".webp" name without cwebp installed) -- say so, but only once
+            // per run: screen capture on refresh would otherwise open a
+            // dialog on every refresh.
+            static std::atomic<bool> errorShown {false};
+            if (!errorShown.exchange(true) && widget != nullptr)
+            {
+               QMetaObject::invokeMethod(
+                  widget.data(),
+                  [widget, error]()
+                  {
+                     QMessageBox::warning(
+                        widget.data(),
+                        QObject::tr("Screen Capture"),
+                        QObject::tr("The screen capture could not be saved: "
+                                    "%1\n\nFurther failures are only written "
+                                    "to the log.")
+                           .arg(error));
+                  },
+                  Qt::QueuedConnection);
+            }
          }
          else
          {

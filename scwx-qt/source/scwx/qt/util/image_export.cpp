@@ -71,11 +71,17 @@ QString FramePath(int index)
 
 QString FindTool(const QString& name)
 {
-   QString found = QStandardPaths::findExecutable(name);
+   // Beside the program first (where the release packages put them, like
+   // decode_grib), then a "tools" folder there, then PATH.
+   const QString appDir = QCoreApplication::applicationDirPath();
+   QString       found  = QStandardPaths::findExecutable(name, {appDir});
    if (found.isEmpty())
    {
-      found = QStandardPaths::findExecutable(
-         name, {QCoreApplication::applicationDirPath() + "/tools"});
+      found = QStandardPaths::findExecutable(name, {appDir + "/tools"});
+   }
+   if (found.isEmpty())
+   {
+      found = QStandardPaths::findExecutable(name);
    }
    return found;
 }

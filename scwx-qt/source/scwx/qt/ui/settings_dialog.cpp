@@ -878,6 +878,10 @@ void SettingsDialogImpl::SetupGeneralTab()
    screenCaptureName_.SetSettingsVariable(
       generalSettings.screen_capture_name());
    screenCaptureName_.SetEditWidget(self_->ui->screenCaptureNameLineEdit);
+   self_->ui->screenCaptureNameLineEdit->setToolTip(QObject::tr(
+      "File name for saved captures. End it with .webp to save lossless "
+      "WebP (needs cwebp from libwebp's command-line tools); otherwise "
+      "captures are saved as PNG."));
    screenCaptureName_.SetResetButton(self_->ui->resetScreenCaptureNameButton);
 
    defaultAlertAction_.SetSettingsVariable(

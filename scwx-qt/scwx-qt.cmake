@@ -986,6 +986,29 @@ else()
     set(_scwx_runtime_dependencies)
 endif()
 
+# Optional WebP tools, installed next to the program where
+# util::image_export::FindTool looks first. CI points SCWX_WEBP_TOOLS_DIR at
+# vcpkg's static builds on Windows; elsewhere the system ones are used.
+set(SCWX_WEBP_TOOLS_DIR
+    ""
+    CACHE PATH "Folder holding cwebp and img2webp to ship with the program")
+if(SCWX_WEBP_TOOLS_DIR)
+    find_program(SCWX_CWEBP cwebp PATHS "${SCWX_WEBP_TOOLS_DIR}" NO_DEFAULT_PATH)
+    find_program(SCWX_IMG2WEBP img2webp PATHS "${SCWX_WEBP_TOOLS_DIR}" NO_DEFAULT_PATH)
+else()
+    find_program(SCWX_CWEBP cwebp)
+    find_program(SCWX_IMG2WEBP img2webp)
+endif()
+if(SCWX_CWEBP AND SCWX_IMG2WEBP)
+    message(STATUS "WebP tools: ${SCWX_CWEBP}, ${SCWX_IMG2WEBP}")
+    install(PROGRAMS "${SCWX_CWEBP}" "${SCWX_IMG2WEBP}"
+            DESTINATION bin
+            COMPONENT supercell-wx)
+else()
+    message(STATUS
+        "cwebp/img2webp not found: WebP export will ask the user to install them")
+endif()
+
 install(TARGETS supercell-wx
                 MLNQtCore # QMapLibre::Core
         ${_scwx_runtime_dependencies}
