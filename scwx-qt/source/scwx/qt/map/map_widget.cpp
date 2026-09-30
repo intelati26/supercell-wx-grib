@@ -3256,6 +3256,9 @@ QImage MapWidget::CaptureImage()
    return grabFramebuffer();
 }
 
+std::vector<VisibleGribLayer> MapWidget::VisibleGribLayers() const
+{ return map::VisibleGribLayers(p->layerModel_->GetLayers(), p->id_); }
+
 void MapWidgetImpl::ScreenCaptureCopy()
 {
    const QImage image     = widget_->grabFramebuffer();

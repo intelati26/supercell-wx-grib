@@ -177,6 +177,7 @@ set(HDR_MAP source/scwx/qt/map/alert_layer.hpp
             source/scwx/qt/map/draw_layer.hpp
             source/scwx/qt/map/generic_layer.hpp
             source/scwx/qt/map/grib_frame_info.hpp
+            source/scwx/qt/map/visible_grib_layers.hpp
             source/scwx/qt/map/grib_product_layer.hpp
             source/scwx/qt/map/hodograph_layer.hpp
             source/scwx/qt/map/layer_wrapper.hpp
@@ -206,6 +207,7 @@ set(SRC_MAP source/scwx/qt/map/alert_layer.cpp
             source/scwx/qt/map/draw_layer.cpp
             source/scwx/qt/map/generic_layer.cpp
             source/scwx/qt/map/grib_frame_info.cpp
+            source/scwx/qt/map/visible_grib_layers.cpp
             source/scwx/qt/map/grib_product_layer.cpp
             source/scwx/qt/map/hodograph_layer.cpp
             source/scwx/qt/map/layer_wrapper.cpp

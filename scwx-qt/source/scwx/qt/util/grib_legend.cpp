@@ -9,6 +9,8 @@
 #include <QFontMetrics>
 #include <QPainter>
 
+#include <fmt/format.h>
+
 namespace scwx::qt::util::grib_legend
 {
 
@@ -38,6 +40,23 @@ constexpr int kMargin     = 16;
 constexpr int kBarWidth   = 320;
 constexpr int kBarHeight  = 18;
 constexpr int kLineHeight = 18;
+// A panel holds, above the bar, a title line and a valid-time line, and below
+// it the min/max value labels -- the labels must be inside the dark backdrop
+// or they run into the next panel (and off the bottom of the image).
+constexpr int kAboveBar     = 2 * kLineHeight + 12;
+constexpr int kBelowBar     = kBarHeight + 20;
+constexpr int kPanelHeight  = kAboveBar + kBelowBar;
+constexpr int kPanelWidth   = kBarWidth + 16;
+constexpr int kPanelSpacing = 8;
+
+// One product's legend, ready to draw
+struct Panel
+{
+   const Source*            source;
+   std::size_t              productIndex;
+   std::string              validTime;
+   map::GribFrameColorRange colorRange;
+};
 
 std::shared_ptr<common::ColorTable> LoadPalette()
 {
@@ -72,16 +91,80 @@ std::shared_ptr<common::ColorTable> LoadPalette()
 
 } // namespace
 
-void DrawLegend(QImage&               image,
-                manager::GribManager& gribManager,
-                map::GribCategory     category,
-                const std::string&    categoryLabel)
+std::vector<std::optional<PanelPlacement>> LayoutPanels(QSize       imageSize,
+                                                        std::size_t panelCount)
 {
-   const auto activeIndices = gribManager.ActiveProductIndices();
-   if (activeIndices.empty())
+   std::vector<std::optional<PanelPlacement>> placements(panelCount);
+
+   // Rows a column holds: each panel needs its height plus the gap above it
+   const int usableHeight = imageSize.height() - 2 * kMargin;
+   const int rows =
+      (usableHeight + kPanelSpacing) / (kPanelHeight + kPanelSpacing);
+   if (rows < 1)
    {
-      // Rrfs/Nbm with nothing checked -- nothing to show.
-      logger_->info("No product active for {}, skipping legend", categoryLabel);
+      return placements;
+   }
+
+   for (std::size_t i = 0; i < panelCount; ++i)
+   {
+      // Slot 0 is the bottom of the first column; the list's last panel goes
+      // there and the first panel ends up highest (or furthest right).
+      const std::size_t slot   = panelCount - 1 - i;
+      const int         column = static_cast<int>(slot / rows);
+      const int         row    = static_cast<int>(slot % rows);
+
+      const int barX = kMargin + column * (kPanelWidth + kPanelSpacing);
+      if (barX + kPanelWidth > imageSize.width())
+      {
+         continue; // no room for another column
+      }
+
+      placements[i] = PanelPlacement {barX,
+                                      imageSize.height() - kMargin - kBelowBar -
+                                         row * (kPanelHeight + kPanelSpacing)};
+   }
+
+   return placements;
+}
+
+void DrawLegends(QImage& image, const std::vector<Source>& sources)
+{
+   // Only the products that have something to show
+   std::vector<Panel> panels;
+   for (const auto& source : sources)
+   {
+      const auto activeIndices = source.gribManager->ActiveProductIndices();
+      if (activeIndices.empty())
+      {
+         // Rrfs/Nbm with nothing checked -- nothing to show.
+         logger_->info("No product active for {}, skipping legend",
+                       source.label);
+         continue;
+      }
+
+      for (const std::size_t productIndex : activeIndices)
+      {
+         const std::string framePath =
+            map::GetGribFramePath(source.category, productIndex);
+
+         const auto colorRange = map::ReadGribFrameColorRange(framePath);
+         if (colorRange.colorScale == 0.0f)
+         {
+            logger_->info("No decoded frame yet for {} {}, skipping its legend",
+                          source.label,
+                          source.gribManager->ProductName(productIndex));
+            continue;
+         }
+
+         panels.push_back({&source,
+                           productIndex,
+                           map::ReadGribFrameValidTime(framePath),
+                           colorRange});
+      }
+   }
+
+   if (panels.empty())
+   {
       return;
    }
 
@@ -92,35 +175,32 @@ void DrawLegend(QImage&               image,
       return;
    }
 
+   const auto placements = LayoutPanels(image.size(), panels.size());
+
    QPainter painter(&image);
    painter.setRenderHint(QPainter::Antialiasing, true);
 
-   // One panel per drawn product, stacked upward from the bottom-left
-   // corner in product order.
-   constexpr int kPanelHeight  = 2 * kLineHeight + kBarHeight + 20;
-   constexpr int kPanelSpacing = 8;
-   int           barY          = image.height() - kMargin - kBarHeight;
-
-   for (const std::size_t productIndex : activeIndices)
+   for (std::size_t i = 0; i < panels.size(); ++i)
    {
-      const std::string framePath =
-         map::GetGribFramePath(category, productIndex);
-
-      const auto colorRange = map::ReadGribFrameColorRange(framePath);
-      if (colorRange.colorScale == 0.0f)
+      if (!placements[i].has_value())
       {
-         logger_->info("No decoded frame yet for {} {}, skipping its legend",
-                       categoryLabel,
-                       gribManager.ProductName(productIndex));
+         logger_->info(
+            "No room on the image for the {} {} legend",
+            panels[i].source->label,
+            panels[i].source->gribManager->ProductName(panels[i].productIndex));
          continue;
       }
 
-      const std::string validTime = map::ReadGribFrameValidTime(framePath);
-      const int         barX      = kMargin;
+      const auto&       panel        = panels[i];
+      const auto&       gribManager  = *panel.source->gribManager;
+      const auto&       colorRange   = panel.colorRange;
+      const std::size_t productIndex = panel.productIndex;
+      const int         barX         = placements[i]->barX;
+      const int         barY         = placements[i]->barY;
 
       // Background panel so the legend stays legible over any map content.
       const QRect panelRect(
-         barX - 8, barY - 2 * kLineHeight - 12, kBarWidth + 16, kPanelHeight);
+         barX - 8, barY - kAboveBar, kPanelWidth, kPanelHeight);
       painter.fillRect(panelRect, QColor(0, 0, 0, 160));
 
       // Gradient bar -- one column per pixel, reproducing the exact
@@ -162,19 +242,23 @@ void DrawLegend(QImage&               image,
       QFont titleFont = font;
       titleFont.setBold(true);
       painter.setFont(titleFont);
-      const std::string title =
-         categoryLabel + " " + gribManager.ProductName(productIndex);
+      std::string title =
+         panel.source->label + " " + gribManager.ProductName(productIndex);
+      if (panel.source->opacity < 1.0f)
+      {
+         title +=
+            fmt::format(" ({:.0f}% opacity)", panel.source->opacity * 100.0f);
+      }
       painter.drawText(
          barX, barY - kLineHeight - 6, QString::fromStdString(title));
 
       painter.setFont(font);
-      if (!validTime.empty())
+      if (!panel.validTime.empty())
       {
-         painter.drawText(
-            barX, barY - 6, QString::fromStdString("Valid: " + validTime));
+         painter.drawText(barX,
+                          barY - 6,
+                          QString::fromStdString("Valid: " + panel.validTime));
       }
-
-      barY -= kPanelHeight + kPanelSpacing;
    }
 }
 

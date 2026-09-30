@@ -309,8 +309,7 @@ public:
    void ExportGribLoop(map::GribCategory       category,
                        const QString&          categoryLabel,
                        const std::vector<int>& hours);
-   [[nodiscard]] QImage CaptureGribImage(map::GribCategory category,
-                                         const QString&    categoryLabel);
+   [[nodiscard]] QImage CaptureGribImage();
    void HandleMapPaneLinkViewToggled(std::size_t     mapIndex,
                                      map::MapWidget* map,
                                      bool            linked);
@@ -3517,14 +3516,21 @@ void MainWindowImpl::ApplyStoredColorTableThreshold(map::MapWidget* mapWidget)
    mapWidget->SetColorTableThreshold(threshold);
 }
 
-QImage MainWindowImpl::CaptureGribImage(map::GribCategory category,
-                                        const QString&    categoryLabel)
+QImage MainWindowImpl::CaptureGribImage()
 {
    QImage image = activeMap_->CaptureImage();
 
-   auto gribManager = manager::GribManager::Instance(category);
-   qt::util::grib_legend::DrawLegend(
-      image, *gribManager, category, categoryLabel.toStdString());
+   // A legend for every GRIB product visible in this pane, not just the
+   // section whose button was pressed: the picture shows them all.
+   std::vector<qt::util::grib_legend::Source> sources;
+   for (const auto& visible : activeMap_->VisibleGribLayers())
+   {
+      sources.push_back({manager::GribManager::Instance(visible.category),
+                         visible.category,
+                         map::GribCategoryDisplayName(visible.category),
+                         visible.opacity});
+   }
+   qt::util::grib_legend::DrawLegends(image, sources);
 
    return image;
 }
@@ -3537,7 +3543,7 @@ void MainWindowImpl::ExportGribSnapshot(map::GribCategory category,
       return;
    }
 
-   const QImage image = CaptureGribImage(category, categoryLabel);
+   const QImage image = CaptureGribImage();
 
    auto gribManager = manager::GribManager::Instance(category);
 
@@ -3752,7 +3758,7 @@ void MainWindowImpl::ExportGribLoop(map::GribCategory       category,
          break;
       }
 
-      frames.push_back(CaptureGribImage(category, categoryLabel));
+      frames.push_back(CaptureGribImage());
    }
 
    gribDockWidget_->SetForecastHour(category, originalHour);

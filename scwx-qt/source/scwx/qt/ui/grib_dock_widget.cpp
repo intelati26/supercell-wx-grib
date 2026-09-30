@@ -3,6 +3,7 @@
 #include <scwx/qt/manager/hodograph_manager.hpp>
 #include <scwx/qt/manager/user_model_registry.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
+#include <scwx/qt/map/visible_grib_layers.hpp>
 #include <scwx/qt/ui/checkable_combo_box.hpp>
 #include <scwx/qt/ui/widgets/focused_spin_box.hpp>
 #include <scwx/provider/nbm_data_provider.hpp>
@@ -40,24 +41,6 @@ namespace scwx::qt::ui
 
 namespace
 {
-
-std::string CategoryDisplayName(map::GribCategory category)
-{
-   switch (category)
-   {
-   case map::GribCategory::Mrms:
-      return "MRMS";
-   case map::GribCategory::Rtma:
-      return "RTMA";
-   case map::GribCategory::Rrfs:
-      return "RRFS";
-   case map::GribCategory::User:
-      return "Custom Models";
-   case map::GribCategory::Nbm:
-   default:
-      return "NBM";
-   }
-}
 
 // Sections whose fields come through an idx sidecar and so share the cycle
 // picker and forecast-hour slider (see GribManager's Idx* API).
@@ -293,7 +276,8 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
    section.gribManager = manager::GribManager::Instance(category);
 
    auto* groupBox = new QGroupBox(
-      QString::fromStdString(CategoryDisplayName(category)), dockContents);
+      QString::fromStdString(map::GribCategoryDisplayName(category)),
+      dockContents);
    auto* groupLayout = new QVBoxLayout(groupBox);
 
    section.statusLabel = new QLabel(tr("(no frame loaded)"), groupBox);
@@ -502,14 +486,16 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
               }
            });
 
-   connect(stored.exportButton,
-           &QPushButton::clicked,
-           self_,
-           [this, category]()
-           {
-              Q_EMIT self_->ExportSnapshotRequested(
-                 category, QString::fromStdString(CategoryDisplayName(category)));
-           });
+   connect(
+      stored.exportButton,
+      &QPushButton::clicked,
+      self_,
+      [this, category]()
+      {
+         Q_EMIT self_->ExportSnapshotRequested(
+            category,
+            QString::fromStdString(map::GribCategoryDisplayName(category)));
+      });
 
    if (stored.exportLoopButton != nullptr)
    {
@@ -540,7 +526,8 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
 
                  Q_EMIT self_->ExportLoopRequested(
                     category,
-                    QString::fromStdString(CategoryDisplayName(category)),
+                    QString::fromStdString(
+                       map::GribCategoryDisplayName(category)),
                     hours);
               });
    }

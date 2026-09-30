@@ -3,6 +3,7 @@
 #include <scwx/common/geographic.hpp>
 #include <scwx/common/products.hpp>
 #include <scwx/qt/config/radar_site.hpp>
+#include <scwx/qt/map/visible_grib_layers.hpp>
 #include <scwx/qt/gl/gl.hpp>
 #include <scwx/qt/types/capture_types.hpp>
 #include <scwx/qt/types/map_types.hpp>
@@ -86,6 +87,10 @@ public:
     * saved/copied automatically.
     */
    [[nodiscard]] QImage CaptureImage();
+
+   // The GRIB fill layers visible in this pane, top-most first (see
+   // map::VisibleGribLayers()) -- what an exported image's legend lists.
+   [[nodiscard]] std::vector<VisibleGribLayer> VisibleGribLayers() const;
 
    void SelectElevation(float elevation);
 

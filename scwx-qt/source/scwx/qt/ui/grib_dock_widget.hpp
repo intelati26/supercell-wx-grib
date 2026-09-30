@@ -45,8 +45,7 @@ signals:
 
    // Emitted by a category section's "Export image" button. `categoryLabel`
    // is that section's own display name (e.g. "RRFS") -- passed through
-   // rather than recomputed on the receiving end, since CategoryDisplayName()
-   // is file-local to grib_dock_widget.cpp.
+   // rather than recomputed on the receiving end.
    void ExportSnapshotRequested(map::GribCategory category,
                                 QString            categoryLabel);
 
