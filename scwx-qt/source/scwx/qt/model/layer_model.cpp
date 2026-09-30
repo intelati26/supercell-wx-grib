@@ -174,6 +174,12 @@ static const std::vector<types::LayerInfo> kDefaultLayers_ {
    {.type_        = types::LayerType::Data,
     .description_ = types::DataLayer::GribNbm,
     .movable_     = true},
+   // User-imported models (see UserModelRegistry). Below NBM for the same
+   // reason NBM is below RRFS: a forecast background. Inert until a model is
+   // imported and one of its products is checked, so it costs nothing on.
+   {.type_        = types::LayerType::Data,
+    .description_ = types::DataLayer::GribUser,
+    .movable_     = true},
 };
 
 static const std::vector<types::LayerInfo> kImmovableLayers_ {
