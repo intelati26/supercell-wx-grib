@@ -7,7 +7,9 @@
 #include <scwx/util/logger.hpp>
 
 #include <cmath>
+#include <cstdint>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <vector>
@@ -51,13 +53,49 @@ namespace
 // its own per-product palette/color state this layer has no use for -- but
 // it does go through the same shared ExtractNumber/LambertGrid grib_frame_
 // info.hpp helpers that extraction promoted, rather than re-deriving them.
+// Values are kept as 16-bit fixed point, hundredths of a unit (0.01 degree
+// of direction, 0.01 m/s of speed) -- far finer than the whole-knot,
+// whole-degree hover text or the 5kt barb buckets can show, at half the
+// memory of 32-bit floats (the three full RTMA grids this layer holds were
+// ~45MB as floats). kMissingValue_ marks a point with no usable value:
+// non-finite, negative, past the encodable range (655.34), or the frame's
+// own eccodes missing-data marker (often 9999, which as a float used to be
+// drawn as a real 100+ kt barb).
+constexpr float         kFixedPointScale_ = 100.0f;
+constexpr std::uint16_t kMissingValue_    = 0xFFFF;
+
+std::uint16_t EncodeValue(float value, double missingValue)
+{
+   if (!std::isfinite(value) || value < 0.0f ||
+       static_cast<double>(value) == missingValue)
+   {
+      return kMissingValue_;
+   }
+
+   const float scaled = std::round(value * kFixedPointScale_);
+   if (scaled >= static_cast<float>(kMissingValue_))
+   {
+      return kMissingValue_;
+   }
+   return static_cast<std::uint16_t>(scaled);
+}
+
+std::optional<float> DecodeValue(std::uint16_t encoded)
+{
+   if (encoded == kMissingValue_)
+   {
+      return std::nullopt;
+   }
+   return static_cast<float>(encoded) / kFixedPointScale_;
+}
+
 struct ParsedFrame
 {
-   long               grid_nx {};
-   long               grid_ny {};
-   LambertGrid        grid {};
-   std::string        validTime;
-   std::vector<float> values;
+   long                       grid_nx {};
+   long                       grid_ny {};
+   LambertGrid                grid {};
+   std::string                validTime;
+   std::vector<std::uint16_t> values; // see EncodeValue()
 };
 
 std::optional<ParsedFrame> ParseFrame(const std::string& path)
@@ -87,16 +125,38 @@ std::optional<ParsedFrame> ParseFrame(const std::string& path)
       frame.grid.radius = ExtractNumberOr(header, "radius", 0.0);
       frame.validTime   = ExtractStringOr(header, "validTime", {});
 
+      const double missingValue = ExtractNumberOr(
+         header, "missingValue", std::numeric_limits<double>::quiet_NaN());
+
       const auto byteLength =
          static_cast<std::size_t>(ExtractNumber(header, "byteLength"));
-      frame.values.resize(byteLength / sizeof(float));
-      in.read(reinterpret_cast<char*>(frame.values.data()),
-              static_cast<std::streamsize>(byteLength));
-
-      if (!in || frame.values.size() !=
-                    static_cast<std::size_t>(frame.grid_nx * frame.grid_ny))
+      if (frame.grid_nx <= 0 || frame.grid_ny <= 0 ||
+          byteLength != static_cast<std::size_t>(frame.grid_nx) *
+                           static_cast<std::size_t>(frame.grid_ny) *
+                           sizeof(float))
       {
          return std::nullopt;
+      }
+
+      // Read and encode one row at a time, so the full 32-bit grid is
+      // never in memory at once.
+      const auto         nx = static_cast<std::size_t>(frame.grid_nx);
+      std::vector<float> row(nx);
+      frame.values.reserve(nx * static_cast<std::size_t>(frame.grid_ny));
+
+      for (long j = 0; j < frame.grid_ny; ++j)
+      {
+         in.read(reinterpret_cast<char*>(row.data()),
+                 static_cast<std::streamsize>(nx * sizeof(float)));
+         if (!in)
+         {
+            return std::nullopt;
+         }
+
+         for (const float value : row)
+         {
+            frame.values.push_back(EncodeValue(value, missingValue));
+         }
       }
 
       return frame;
@@ -334,18 +394,21 @@ void WindBarbLayer::Impl::RebuildIcons(ZoomTier tier)
          continue;
       }
 
-      const float directionDeg = dirFrame_->values[index];
-      const float speedMs      = speedFrame_->values[index];
-      const float gustMs       = gustFrame_->values[index];
-      if (!std::isfinite(directionDeg) || !std::isfinite(speedMs) ||
-          speedMs < 0.0f)
+      const std::optional<float> direction =
+         DecodeValue(dirFrame_->values[index]);
+      const std::optional<float> speedMs =
+         DecodeValue(speedFrame_->values[index]);
+      const std::optional<float> gustMs =
+         DecodeValue(gustFrame_->values[index]);
+      if (!direction.has_value() || !speedMs.has_value())
       {
          continue;
       }
 
-      const double speedKnots = speedMs * kMetersPerSecondToKnots_;
+      const float  directionDeg = *direction;
+      const double speedKnots   = *speedMs * kMetersPerSecondToKnots_;
       const double gustKnots =
-         std::isfinite(gustMs) ? gustMs * kMetersPerSecondToKnots_ : 0.0;
+         gustMs.has_value() ? *gustMs * kMetersPerSecondToKnots_ : 0.0;
 
       const glm::dvec2 latLon = LambertGridToLatLon(
          dirFrame_->grid, static_cast<double>(i), static_cast<double>(j));

@@ -12,6 +12,7 @@
 #include <scwx/util/time.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -705,9 +706,25 @@ static constexpr int kPollIntervalMs_ = 4 * 60 * 1000;
 // headroom to complete plus room for MRMS/RTMA's own loop ranges
 // alongside it, while still being a real, finite bound rather than
 // unbounded growth across a long-running session. Oldest-by-mtime entries
-// are evicted first once the total exceeds this.
+// are evicted first once the total exceeds this -- or the smaller budget
+// free disk space allows, see DownloadCacheBudgetBytes().
 static constexpr std::uintmax_t kMaxCacheSizeBytes_ =
    40ULL * 1024 * 1024 * 1024;
+
+// Floor for that budget on a nearly-full disk: still room for a few RRFS
+// files plus MRMS/RTMA loops, so the cache keeps working at all (a download
+// that doesn't fit then fails on its own rather than evicting everything).
+static constexpr std::uintmax_t kMinCacheSizeBytes_ = 2ULL * 1024 * 1024 * 1024;
+
+// Free space the cache leaves on its disk -- the larger of this and 10% of
+// the disk.
+static constexpr std::uintmax_t kMinFreeDiskBytes_ = 5ULL * 1024 * 1024 * 1024;
+
+// How often NoteCachedDownload() re-walks the whole cache even when its
+// running estimate says it's under budget -- the estimate drifts (files
+// overwritten in place, other processes) and the budget moves with free
+// disk space.
+static constexpr auto kCacheRescanInterval_ = std::chrono::minutes {15};
 
 // Mrms/Rtma/RrfsDataProvider share every method GribManager's Poll()/
 // FetchArchiveFrame() paths need (Refresh/FindLatestKey/FindKey/
@@ -775,7 +792,39 @@ std::string CachedDownloadPath(const std::string& key)
    return CacheDir() + "/" + path;
 }
 
-void PruneDownloadCache()
+// Shared by every manager downloading into CacheDir() (GribManager,
+// HodographManager, WindBarbManager -- see GribManager::
+// NoteCachedDownload()), so one running estimate covers the whole cache.
+struct DownloadCacheState
+{
+   std::mutex                            mutex;
+   bool                                  scanned {false};
+   std::uintmax_t                        estimatedBytes {0};
+   std::chrono::steady_clock::time_point lastScan {};
+};
+
+DownloadCacheState& CacheState()
+{
+   static DownloadCacheState state;
+   return state;
+}
+
+std::uintmax_t CurrentCacheBudgetBytes(std::uintmax_t cacheBytes)
+{
+   std::error_code ec;
+   const auto      space = std::filesystem::space(CacheDir(), ec);
+   if (ec)
+   {
+      return kMaxCacheSizeBytes_;
+   }
+   return GribManager::DownloadCacheBudgetBytes(
+      cacheBytes, space.available, space.capacity);
+}
+
+// Walks the whole cache, evicts oldest-first down to the current budget,
+// and resets the running estimate to what's actually left. Caller holds
+// state.mutex.
+void PruneDownloadCacheLocked(DownloadCacheState& state)
 {
    namespace fs = std::filesystem;
 
@@ -797,7 +846,12 @@ void PruneDownloadCache()
       return;
    }
 
-   if (totalSize <= kMaxCacheSizeBytes_)
+   state.scanned        = true;
+   state.lastScan       = std::chrono::steady_clock::now();
+   state.estimatedBytes = totalSize;
+
+   const std::uintmax_t budget = CurrentCacheBudgetBytes(totalSize);
+   if (totalSize <= budget)
    {
       return;
    }
@@ -807,13 +861,13 @@ void PruneDownloadCache()
              [](const auto& a, const auto& b)
              { return a.last_write_time() < b.last_write_time(); });
 
-   // Remove oldest-first until back under the cap, rather than a fixed
+   // Remove oldest-first until back under the budget, rather than a fixed
    // eviction count -- how many files that takes depends entirely on
    // which mix (many small MRMS frames vs. a few huge RRFS ones) is
    // actually over the line.
    for (const auto& entry : entries)
    {
-      if (totalSize <= kMaxCacheSizeBytes_)
+      if (totalSize <= budget)
       {
          break;
       }
@@ -825,6 +879,11 @@ void PruneDownloadCache()
          totalSize -= size;
       }
    }
+
+   state.estimatedBytes = totalSize;
+   logger_->info("Download cache pruned to {:.1f} GB (budget {:.1f} GB)",
+                 static_cast<double>(totalSize) / (1024.0 * 1024 * 1024),
+                 static_cast<double>(budget) / (1024.0 * 1024 * 1024));
 }
 
 // Mrms/Rtma keep this class's original "always exactly one active
@@ -1074,6 +1133,48 @@ GribManager::GribManager(map::GribCategory category) :
 }
 
 GribManager::~GribManager() = default;
+
+std::uintmax_t
+GribManager::DownloadCacheBudgetBytes(std::uintmax_t cacheBytes,
+                                      std::uintmax_t availableBytes,
+                                      std::uintmax_t capacityBytes)
+{
+   const std::uintmax_t reserve =
+      std::max(kMinFreeDiskBytes_, capacityBytes / 10);
+
+   // What the cache could grow to while still leaving `reserve` free: its
+   // own current size (freeing it is always possible) plus free space.
+   const std::uintmax_t reachable = cacheBytes + availableBytes;
+   const std::uintmax_t allowed = reachable > reserve ? reachable - reserve : 0;
+
+   return std::clamp(allowed, kMinCacheSizeBytes_, kMaxCacheSizeBytes_);
+}
+
+void GribManager::NoteCachedDownload(const std::string& path)
+{
+   std::error_code      ec;
+   const std::uintmax_t size = std::filesystem::file_size(path, ec);
+
+   auto&           state = CacheState();
+   std::lock_guard lock(state.mutex);
+
+   if (!ec)
+   {
+      state.estimatedBytes += size;
+   }
+
+   // A full walk of the cache (thousands of files once MRMS loops pile
+   // up) used to run after every single download. Now only when the
+   // running estimate says it's over budget, on the first download of a
+   // session, or every kCacheRescanInterval_ to correct the estimate.
+   if (!state.scanned ||
+       std::chrono::steady_clock::now() - state.lastScan >=
+          kCacheRescanInterval_ ||
+       state.estimatedBytes > CurrentCacheBudgetBytes(state.estimatedBytes))
+   {
+      PruneDownloadCacheLocked(state);
+   }
+}
 
 std::shared_ptr<GribManager> GribManager::Instance(map::GribCategory category)
 {
@@ -2072,7 +2173,7 @@ void GribManager::QueueShipInput(std::size_t        productIndex,
             return;
          }
 
-         PruneDownloadCache();
+         NoteCachedDownload(cachedPath);
 
          ApplyShipIfReady(productIndex, provider);
       });
@@ -2284,7 +2385,7 @@ void GribManager::QueueNbmDownload(std::size_t        productIndex,
             return;
          }
 
-         PruneDownloadCache();
+         NoteCachedDownload(cachedPath);
 
          bool stillWanted;
          {
@@ -2564,7 +2665,7 @@ void GribManager::QueueDownload(
             return;
          }
 
-         PruneDownloadCache();
+         NoteCachedDownload(cachedPath);
 
          // Only apply this to the display if it's still what's wanted --
          // otherwise playback/scrubbing has moved on since this was

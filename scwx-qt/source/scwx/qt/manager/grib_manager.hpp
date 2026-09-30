@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -86,6 +87,25 @@ public:
    GribManager& operator=(GribManager&&)      = delete;
 
    static std::shared_ptr<GribManager> Instance(map::GribCategory category);
+
+   // Records a newly-downloaded file in the shared GRIB download cache
+   // (the "cache" directory under map::GetGribDataDirectory(), which
+   // HodographManager/WindBarbManager download into too) and evicts the
+   // oldest files if that pushes the cache over its budget (see
+   // DownloadCacheBudgetBytes()). Every manager downloading into that
+   // cache must call this after each download -- otherwise its downloads
+   // are never pruned. Thread-safe.
+   static void NoteCachedDownload(const std::string& path);
+
+   // How large the download cache may grow: at most 40GB, but never so
+   // large that its disk ends up with less than max(5GB, 10% of the disk)
+   // free, and never under a 2GB floor. `cacheBytes` is the cache's
+   // current size (counted as reclaimable), the other two are its disk's
+   // free space and total size.
+   [[nodiscard]] static std::uintmax_t
+   DownloadCacheBudgetBytes(std::uintmax_t cacheBytes,
+                            std::uintmax_t availableBytes,
+                            std::uintmax_t capacityBytes);
 
    // Display names for this instance's category's curated product list,
    // in display order -- what GribDockWidget's checkable dropdown
@@ -208,12 +228,14 @@ public:
    //
    // Real cost, not silently absorbed: each hour is its own ~320MB object,
    // so a full 6-hourly cycle's *unbounded* 84-hour range is up to ~27GB
-   // queued at once -- PruneDownloadCache()'s eviction cap is sized (see
-   // its own kMaxCacheSizeBytes_ doc) with headroom above this exact worst
-   // case. SetRrfsLoopRange() exists specifically so this worst case is
-   // opt-in, not the only option -- a bounded loop (e.g. 0-6h) costs
-   // proportionally less. Current product only, same documented scoping
-   // limitation as PrefetchLoopRange().
+   // queued at once -- the download cache's 40GB ceiling (see
+   // DownloadCacheBudgetBytes()) has headroom above this exact worst case,
+   // though a disk with less free space gets a smaller budget, and a
+   // prefetch that outgrows it evicts its own earliest hours.
+   // SetRrfsLoopRange() exists specifically so this worst case is opt-in,
+   // not the only option -- GribDockWidget defaults the loop to 0-18h
+   // (~6GB), and a narrower one costs proportionally less. Current product
+   // only, same documented scoping limitation as PrefetchLoopRange().
    void PrefetchRrfsForecastHourRange();
 
    // Nbm-only cycle/forecast-hour selection -- same shape and reasoning as
