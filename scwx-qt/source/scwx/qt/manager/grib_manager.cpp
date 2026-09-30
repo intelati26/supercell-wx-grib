@@ -1,6 +1,7 @@
 #include <scwx/qt/manager/grib_manager.hpp>
 #include <scwx/qt/manager/status_manager.hpp>
 #include <scwx/qt/manager/timeline_manager.hpp>
+#include <scwx/qt/util/file.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
 #include <scwx/qt/settings/unit_settings.hpp>
 #include <scwx/qt/types/unit_types.hpp>
@@ -2434,7 +2435,7 @@ bool GribManager::ApplyShipDownload(std::size_t        productIndex,
    }
 
    std::error_code ec;
-   std::filesystem::rename(
+   util::ReplaceFileWithRetry(
       tmpFramePath, map::GetGribFramePath(p->category_, productIndex), ec);
 
    if (ec)
@@ -3010,7 +3011,7 @@ bool GribManager::ApplyCachedDownload(std::size_t        productIndex,
    }
 
    std::error_code ec;
-   std::filesystem::rename(
+   util::ReplaceFileWithRetry(
       tmpFramePath, map::GetGribFramePath(p->category_, productIndex), ec);
 
    if (ec)

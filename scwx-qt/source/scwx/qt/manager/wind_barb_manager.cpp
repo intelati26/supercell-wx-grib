@@ -1,6 +1,7 @@
 #include <scwx/qt/manager/wind_barb_manager.hpp>
 #include <scwx/qt/manager/status_manager.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
+#include <scwx/qt/util/file.hpp>
 #include <scwx/provider/rtma_data_provider.hpp>
 #include <scwx/util/logger.hpp>
 
@@ -267,7 +268,7 @@ bool WindBarbManager::ApplyCachedDownload(const std::string& key)
       }
 
       std::error_code ec;
-      std::filesystem::rename(tmpPath, outputPath, ec);
+      util::ReplaceFileWithRetry(tmpPath, outputPath, ec);
       if (ec)
       {
          logger_->warn("Could not replace {}: {}", outputPath, ec.message());
