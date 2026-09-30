@@ -726,6 +726,11 @@ static constexpr std::uintmax_t kMinFreeDiskBytes_ = 5ULL * 1024 * 1024 * 1024;
 // disk space.
 static constexpr auto kCacheRescanInterval_ = std::chrono::minutes {15};
 
+// Files downloaded or used more recently than this are never evicted (see
+// GribManager::DownloadCacheEvictions()). Long enough to cover a SHIP
+// input waiting on its partner's multi-hundred-MB download on a slow link.
+static constexpr auto kMinEvictionAge_ = std::chrono::minutes {15};
+
 // Mrms/Rtma/RrfsDataProvider share every method GribManager's Poll()/
 // FetchArchiveFrame() paths need (Refresh/FindLatestKey/FindKey/
 // IsDateCached/GetTimePointsByDate all come from AwsNexradDataProvider),
@@ -856,27 +861,31 @@ void PruneDownloadCacheLocked(DownloadCacheState& state)
       return;
    }
 
-   std::sort(entries.begin(),
-             entries.end(),
-             [](const auto& a, const auto& b)
-             { return a.last_write_time() < b.last_write_time(); });
+   const auto now = fs::file_time_type::clock::now();
 
-   // Remove oldest-first until back under the budget, rather than a fixed
-   // eviction count -- how many files that takes depends entirely on
-   // which mix (many small MRMS frames vs. a few huge RRFS ones) is
-   // actually over the line.
+   std::vector<GribManager::CachedFile> files;
+   files.reserve(entries.size());
    for (const auto& entry : entries)
    {
-      if (totalSize <= budget)
-      {
-         break;
-      }
+      std::error_code timeEc;
+      const auto      written = entry.last_write_time(timeEc);
+      files.push_back(
+         {entry.file_size(),
+          timeEc ?
+             std::chrono::seconds::max() :
+             std::chrono::duration_cast<std::chrono::seconds>(now - written)});
+   }
 
-      const std::uintmax_t size = entry.file_size();
-      fs::remove(entry.path(), ec);
+   for (const std::size_t index : GribManager::DownloadCacheEvictions(
+           files,
+           totalSize,
+           budget,
+           std::chrono::duration_cast<std::chrono::seconds>(kMinEvictionAge_)))
+   {
+      fs::remove(entries[index].path(), ec);
       if (!ec)
       {
-         totalSize -= size;
+         totalSize -= files[index].sizeBytes;
       }
    }
 
@@ -1139,6 +1148,53 @@ GribManager::GribManager(map::GribCategory category) :
 }
 
 GribManager::~GribManager() = default;
+
+bool GribManager::UseCachedDownload(const std::string& path)
+{
+   std::error_code ec;
+   if (!std::filesystem::exists(path, ec))
+   {
+      return false;
+   }
+
+   // Best effort: a failure just leaves the file looking older than it is.
+   std::filesystem::last_write_time(
+      path, std::filesystem::file_time_type::clock::now(), ec);
+   return true;
+}
+
+std::vector<std::size_t>
+GribManager::DownloadCacheEvictions(const std::vector<CachedFile>& files,
+                                    std::uintmax_t                 totalBytes,
+                                    std::uintmax_t                 budgetBytes,
+                                    std::chrono::seconds           minAge)
+{
+   std::vector<std::size_t> order(files.size());
+   for (std::size_t i = 0; i < order.size(); ++i)
+   {
+      order[i] = i;
+   }
+   // Least recently used (oldest) first.
+   std::stable_sort(order.begin(),
+                    order.end(),
+                    [&files](std::size_t a, std::size_t b)
+                    { return files[a].age > files[b].age; });
+
+   // Remove oldest-first until back under the budget, rather than a fixed
+   // eviction count -- how many files that takes depends entirely on which
+   // mix (many small MRMS frames vs. a few huge RRFS ones) is over the line.
+   std::vector<std::size_t> evictions;
+   for (const std::size_t index : order)
+   {
+      if (totalBytes <= budgetBytes || files[index].age < minAge)
+      {
+         break; // under budget, or only recently used files remain
+      }
+      evictions.push_back(index);
+      totalBytes -= std::min(totalBytes, files[index].sizeBytes);
+   }
+   return evictions;
+}
 
 std::uintmax_t
 GribManager::DownloadCacheBudgetBytes(std::uintmax_t cacheBytes,
@@ -2090,11 +2146,13 @@ void GribManager::FetchShipSelection(std::size_t productIndex)
       p->lastRequestedKeys_[productIndex] = key2dfld + "|" + keyPrslev;
    }
 
-   if (!std::filesystem::exists(CachedDownloadPath(key2dfld)))
+   // UseCachedDownload() also marks an already-cached input as in use, so
+   // cache eviction leaves it alone while its partner downloads.
+   if (!UseCachedDownload(CachedDownloadPath(key2dfld)))
    {
       QueueShipInput(productIndex, key2dfld);
    }
-   if (!std::filesystem::exists(CachedDownloadPath(keyPrslev)))
+   if (!UseCachedDownload(CachedDownloadPath(keyPrslev)))
    {
       QueueShipInput(productIndex, keyPrslev);
    }
@@ -2135,8 +2193,8 @@ void GribManager::ApplyShipIfReady(
       rrfsProvider.ForecastHour(),
       provider::RrfsFileFamily::PressureLevel);
 
-   if (!std::filesystem::exists(CachedDownloadPath(key2dfld)) ||
-       !std::filesystem::exists(CachedDownloadPath(keyPrslev)))
+   if (!UseCachedDownload(CachedDownloadPath(key2dfld)) ||
+       !UseCachedDownload(CachedDownloadPath(keyPrslev)))
    {
       return; // not both ready yet
    }
@@ -2354,7 +2412,7 @@ void GribManager::FetchNbmSelectionForProduct(std::size_t productIndex)
       p->lastRequestedKeys_[productIndex] = cacheKey;
    }
 
-   if (std::filesystem::exists(CachedDownloadPath(cacheKey)))
+   if (UseCachedDownload(CachedDownloadPath(cacheKey)))
    {
       QueueCachedDecode(productIndex, cacheKey);
       return;
@@ -2572,7 +2630,7 @@ void GribManager::RequestFrame(
       p->lastRequestedKeys_[productIndex] = key;
    }
 
-   if (std::filesystem::exists(CachedDownloadPath(key)))
+   if (UseCachedDownload(CachedDownloadPath(key)))
    {
       // Already on disk (a prior fetch, or a prefetch that's since
       // completed) -- just decode it. This is the "show when ready" path:

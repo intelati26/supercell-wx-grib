@@ -103,6 +103,35 @@ public:
    // free, and never under a 2GB floor. `cacheBytes` is the cache's
    // current size (counted as reclaimable), the other two are its disk's
    // free space and total size.
+   // Whether `path` (a file in the shared GRIB download cache) exists and,
+   // if so, marks it as just used -- its modification time is what cache
+   // eviction goes by (see DownloadCacheEvictions()), so a file that's
+   // re-used without being re-downloaded must be touched or it looks as
+   // old as its first download. Use it in place of a plain exists() check
+   // before re-using a cached download. Thread-safe.
+   static bool UseCachedDownload(const std::string& path);
+
+   // One cached file, as DownloadCacheEvictions() sees it: its size, and
+   // how long ago it was last downloaded or used.
+   struct CachedFile
+   {
+      std::uintmax_t       sizeBytes {};
+      std::chrono::seconds age {};
+   };
+
+   // Which of `files` (indices) to delete to bring `totalBytes` down to
+   // `budgetBytes`: least recently used first, but never one used within
+   // the last `minAge` -- it's likely an input still needed (e.g. one of
+   // SHIP's two files while the other downloads, or the next frame of a
+   // loop), and evicting it would just force a re-download or, worse,
+   // strand a decode waiting on it. May stop short of the budget if only
+   // recent files remain.
+   [[nodiscard]] static std::vector<std::size_t>
+   DownloadCacheEvictions(const std::vector<CachedFile>& files,
+                          std::uintmax_t                 totalBytes,
+                          std::uintmax_t                 budgetBytes,
+                          std::chrono::seconds           minAge);
+
    [[nodiscard]] static std::uintmax_t
    DownloadCacheBudgetBytes(std::uintmax_t cacheBytes,
                             std::uintmax_t availableBytes,
