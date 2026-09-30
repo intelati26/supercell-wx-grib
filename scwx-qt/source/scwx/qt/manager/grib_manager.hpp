@@ -290,13 +290,17 @@ private:
    // Re-checks whether SHIP's *current* selection (recomputed fresh from
    // the provider's own live cycle/forecast-hour state, not trusted from
    // whatever triggered this call) has both its inputs on disk yet and,
-   // if so, decodes via ApplyShipDownload(). Called once synchronously
-   // from FetchShipSelection() (covers "both were already cached") and
-   // again from each QueueShipInput() job's own completion -- a stale
+   // if so, decodes via ApplyShipDownload(). Called once on the decode
+   // pool from FetchShipSelection() (covers "both were already cached")
+   // and again from each QueueShipInput() job's own completion -- a stale
    // completion (the selection moved on while a download was in flight)
    // naturally finds the *new* combination still incomplete and applies
-   // nothing.
-   void ApplyShipIfReady(std::size_t productIndex);
+   // nothing. Always runs off the GUI thread, so it takes the product's
+   // provider as captured when the work was queued rather than reading
+   // Impl::providers_ (which the GUI thread mutates).
+   void ApplyShipIfReady(
+      std::size_t                                             productIndex,
+      const std::shared_ptr<provider::AwsNexradDataProvider>& provider);
 
    // Downloads one of SHIP's two inputs on the background thread pool if
    // not already in flight, then calls ApplyShipIfReady() once done.
@@ -356,7 +360,10 @@ private:
    // current animation loop range will need, in the background, ahead of
    // playback reaching it -- see class comment. Only the current (primary)
    // product for now, not every active one -- prefetching the full active
-   // set is a reasonable follow-up, not done here.
+   // set is a reasonable follow-up, not done here. Mrms/Rtma only: RRFS
+   // has its own forecast-hour prefetch (PrefetchRrfsForecastHourRange()),
+   // and NBM/SHIP don't download through QueueDownload() at all. The
+   // listing and key search run on the lookup pool, not the GUI thread.
    void PrefetchLoopRange();
 
    // Applies this instance's own stored RRFS cycle/forecast-hour selection
@@ -378,12 +385,34 @@ private:
    void FetchRrfsSelection();
 
    // Records `key` as the frame `productIndex` currently wants. If it's
-   // already cached on disk, applies it immediately (decode is cheap,
-   // done synchronously right here); otherwise queues a background
-   // download and returns without blocking -- whatever's currently
-   // displayed for this product stays up until the download completes
-   // and ApplyCachedDownload() runs.
-   void RequestFrame(std::size_t productIndex, const std::string& key);
+   // already cached on disk, queues its decode (see QueueCachedDecode());
+   // otherwise queues a background download. Never blocks -- whatever's
+   // currently displayed for this product stays up until the new frame
+   // is decoded. Safe to call from any thread: everything it needs from
+   // the product's provider is passed in rather than read from
+   // Impl::providers_.
+   void RequestFrame(
+      std::size_t                                             productIndex,
+      const std::string&                                      key,
+      const std::shared_ptr<provider::AwsNexradDataProvider>& provider);
+
+   // Decodes an already-downloaded `key` on the decode pool, if it's still
+   // what productIndex wants by the time the job runs -- keeps even a
+   // cheap decode (and a slow one, like SHIP's) off the GUI thread.
+   void QueueCachedDecode(std::size_t productIndex, const std::string& key);
+
+   // Resolves which S3 key productIndex should show -- the latest one
+   // (`time` unset, the live poll) or the one nearest `time` (archive
+   // mode) -- on the lookup pool, then RequestFrame()s it. The S3 listing
+   // this needs is blocking network I/O, which used to run on the GUI
+   // thread (every poll tick, every product toggle, every archive scrub
+   // step). A lookup superseded by a newer one for the same product, or
+   // whose product was deactivated in the meantime, is dropped. Archive
+   // lookups are MRMS/RTMA only (RRFS/NBM/SHIP resolve archive keys
+   // without a listing); the live poll uses it for RRFS too.
+   void QueueLookup(std::size_t productIndex,
+                    std::shared_ptr<provider::AwsNexradDataProvider> provider,
+                    std::optional<std::chrono::system_clock::time_point> time);
 
    // Downloads `key` on the background thread pool if this (productIndex,
    // key) pair isn't already in flight. Products sharing a category
@@ -397,7 +426,11 @@ private:
    // request may have been superseded by further playback/scrubbing
    // while this was in-flight) -- otherwise leaves it cached on disk for
    // potential reuse without disrupting whatever's currently displayed.
-   void QueueDownload(std::size_t productIndex, const std::string& key);
+   // Safe to call from any thread, same as RequestFrame().
+   void
+   QueueDownload(std::size_t                                      productIndex,
+                 const std::string&                               key,
+                 std::shared_ptr<provider::AwsNexradDataProvider> provider);
 
    // Decodes an already-downloaded (cached) GRIB2 payload for `key` using
    // the given color range/shortName (a snapshot of the ProductConfig this
@@ -418,6 +451,15 @@ private:
                             long               bottomLevel,
                             long               startStep,
                             long               lengthOfTimeRange);
+
+   // Renames a finished decode's `tmpFramePath` over `framePath` and
+   // records `key` as displayed -- but only if productIndex is still
+   // active and `key` is still what it last requested; otherwise discards
+   // the temporary file. Returns whether the frame was applied.
+   bool CommitDecodedFrame(std::size_t        productIndex,
+                           const std::string& key,
+                           const std::string& tmpFramePath,
+                           const std::string& framePath);
 
    class Impl;
    std::unique_ptr<Impl> p;

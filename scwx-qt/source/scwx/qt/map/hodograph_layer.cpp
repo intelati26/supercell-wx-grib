@@ -44,7 +44,7 @@ constexpr std::array<long, 3> kTierStrides_ {30, 14, 6};
 // compacted values, or -1 for an index no tier ever samples.
 std::vector<long> SampledAxisSlots(long size)
 {
-   std::vector<long> slots(static_cast<std::size_t>(std::max(size, 0L)), -1);
+   std::vector<long> slotOf(static_cast<std::size_t>(std::max(size, 0L)), -1);
    long              next = 0;
    for (long index = 0; index < size; ++index)
    {
@@ -52,12 +52,12 @@ std::vector<long> SampledAxisSlots(long size)
       {
          if (index % stride == 0)
          {
-            slots[static_cast<std::size_t>(index)] = next++;
+            slotOf[static_cast<std::size_t>(index)] = next++;
             break;
          }
       }
    }
-   return slots;
+   return slotOf;
 }
 
 // One decoded field's Lambert grid geometry plus its values -- but only at

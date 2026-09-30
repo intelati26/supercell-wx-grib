@@ -125,6 +125,11 @@ size_t AwsNexradDataProvider::cache_size() const
 std::shared_ptr<Aws::S3::S3Client> AwsNexradDataProvider::client()
 { return p->client_; }
 
+bool AwsNexradDataProvider::IsRunning() const
+{
+   return p->running_.load();
+}
+
 std::chrono::seconds AwsNexradDataProvider::update_period() const
 { return p->updatePeriod_; }
 

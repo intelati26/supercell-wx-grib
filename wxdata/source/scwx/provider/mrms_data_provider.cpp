@@ -148,6 +148,11 @@ std::optional<std::string> MrmsDataProvider::DownloadAndDecompress(
    request.SetBucket(p->bucketName_);
    request.SetKey(key);
 
+   // Stop mid-download once the app starts shutting down, same as the base
+   // class's own downloads.
+   request.SetContinueRequestHandler([this](const Aws::Http::HttpRequest*)
+                                     { return IsRunning(); });
+
    // Same progress-reporting idiom as AwsNexradDataProvider::
    // DownloadObject() (which this doesn't call directly -- that helper
    // writes the raw response straight to a file, but this method needs
@@ -187,8 +192,15 @@ std::optional<std::string> MrmsDataProvider::DownloadAndDecompress(
 
    if (!outcome.IsSuccess())
    {
-      logger_->warn(
-         "Failed to download {}: {}", key, outcome.GetError().GetMessage());
+      if (IsRunning())
+      {
+         logger_->warn(
+            "Failed to download {}: {}", key, outcome.GetError().GetMessage());
+      }
+      else
+      {
+         logger_->debug("Download cancelled for key: {}", key);
+      }
       return std::nullopt;
    }
 

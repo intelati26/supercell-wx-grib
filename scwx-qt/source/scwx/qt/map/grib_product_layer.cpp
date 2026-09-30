@@ -28,6 +28,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -149,11 +150,15 @@ public:
    double dy_ {};
    double radius_ {};
 
-   // Raw decoded grid, row-major (index = row * nx_ + col, i.e. column
-   // fastest), kept around after the GL upload specifically so
-   // RunMousePicking can look up the value under the cursor for the
-   // Shift-hover data tooltip -- see ValueAt().
-   std::vector<float> values_;
+   // Where the loaded frame came from, and its header line exactly as
+   // read -- the decoded grid itself isn't kept in memory after the GL
+   // upload (up to ~98MB for an MRMS CONUS grid, used only by the
+   // Shift-hover tooltip). ValueAt() reads the one value it needs back
+   // from the file instead, and uses the header to make sure the file
+   // still holds the frame on screen (a newer one may have been renamed
+   // into place and not reloaded yet).
+   std::string framePath_;
+   std::string frameHeader_;
 
    // Derived from the MRMS filename by grib-helper, since eccodes has no
    // usable product name for MRMS's local GRIB2 table (see
@@ -519,21 +524,21 @@ void GribProductLayer::LoadFrame()
       const auto byteLength =
          static_cast<size_t>(ExtractNumber(header, "byteLength"));
 
-      // Kept on Impl (not a local, discarded after the GL upload) so
-      // RunMousePicking can look up the actual value under the cursor for
-      // the Shift-hover data tooltip -- mirrors RadarProductView keeping
-      // its own decoded moments around for GetDataValue().
-      p->values_.resize(byteLength / sizeof(float));
-      in.read(reinterpret_cast<char*>(p->values_.data()),
+      // Only held for the GL upload below -- see framePath_'s comment.
+      // make_unique_for_overwrite skips zero-filling a buffer that's about
+      // to be overwritten anyway.
+      const std::size_t valueCount = byteLength / sizeof(float);
+      auto values = std::make_unique_for_overwrite<float[]>(valueCount);
+      in.read(reinterpret_cast<char*>(values.get()),
               static_cast<std::streamsize>(byteLength));
 
-      if (!in || p->values_.size() != static_cast<size_t>(p->nx_ * p->ny_))
+      if (!in || valueCount != static_cast<size_t>(p->nx_ * p->ny_))
       {
          logger_->warn("Frame payload size mismatch, expected {} got {}",
                        p->nx_ * p->ny_,
-                       p->values_.size());
-         // values_/nx_/ny_ no longer describe the texture still on the GPU,
-         // so the hover tooltip would read the wrong cells -- drop both.
+                       valueCount);
+         // nx_/ny_ no longer describe the texture still on the GPU, so the
+         // hover tooltip would read the wrong cells -- drop both.
          ClearFrame();
          return;
       }
@@ -548,7 +553,11 @@ void GribProductLayer::LoadFrame()
                    0,
                    GL_RED,
                    GL_FLOAT,
-                   p->values_.data());
+                   values.get());
+      values.reset();
+
+      p->framePath_   = framePath;
+      p->frameHeader_ = header;
 
       // NEAREST for every fill-mode product -- load-bearing, not just a
       // style choice: MRMS's -999 "no coverage" sentinel (and any other
@@ -740,9 +749,8 @@ void GribProductLayer::ClearFrame()
 {
    p->frameLoaded_ = false;
 
-   // Release the CPU copy (up to ~98MB for an MRMS CONUS grid), not just
-   // its contents -- clear() alone keeps the capacity.
-   std::vector<float>().swap(p->values_);
+   p->framePath_.clear();
+   p->frameHeader_.clear();
    p->nx_ = 0;
    p->ny_ = 0;
    p->productLabel_.clear();
@@ -846,7 +854,7 @@ void GribProductLayer::Deinitialize()
 
 std::optional<float> GribProductLayer::ValueAt(double lat, double lon) const
 {
-   if (p->values_.empty() || p->nx_ <= 0 || p->ny_ <= 0)
+   if (p->framePath_.empty() || p->nx_ <= 0 || p->ny_ <= 0)
    {
       return std::nullopt;
    }
@@ -890,9 +898,28 @@ std::optional<float> GribProductLayer::ValueAt(double lat, double lon) const
       return std::nullopt;
    }
 
-   const float value =
-      p->values_[static_cast<size_t>(gj) * static_cast<size_t>(p->nx_) +
-                 static_cast<size_t>(gi)];
+   // Read just this one value back from the frame file -- see
+   // framePath_'s comment. Opened per lookup rather than held open, since
+   // Windows won't let GribManager rename a newer frame over an open file.
+   std::ifstream in(p->framePath_, std::ios::binary);
+   std::string   header;
+   if (!in || !std::getline(in, header) || header != p->frameHeader_)
+   {
+      // Gone, or already replaced by a frame this layer hasn't loaded yet.
+      return std::nullopt;
+   }
+
+   const auto index =
+      static_cast<std::streamoff>(gj) * static_cast<std::streamoff>(p->nx_) +
+      static_cast<std::streamoff>(gi);
+   in.seekg(index * static_cast<std::streamoff>(sizeof(float)), std::ios::cur);
+
+   float value = 0.0f;
+   in.read(reinterpret_cast<char*>(&value), sizeof(value));
+   if (!in)
+   {
+      return std::nullopt;
+   }
 
    // Same comparison the fragment shader itself uses to discard (see
    // grib.frag) -- keeps the tooltip in agreement with what's actually
