@@ -16,6 +16,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <system_error>
 #include <utility>
 
 #include <boost/asio/post.hpp>
@@ -1157,10 +1158,21 @@ void GribManager::SetProductActive(const std::string& displayName, bool active)
             p->lastKeys_.erase(i);
             p->lastRequestedKeys_.erase(i);
          }
+
+         // Drop this product's decoded frame too, so re-activating it later
+         // (possibly in a later session -- frame files persist) never
+         // briefly shows a frame that's hours old while the fresh one is
+         // fetched. lastKeys_ was just cleared, so the next request
+         // re-decodes from the download cache rather than assuming this
+         // file is still current.
+         std::error_code ec;
+         std::filesystem::remove(map::GetGribFramePath(p->category_, i), ec);
       }
 
       logger_->info(
          "Product {} now {}", displayName, active ? "active" : "inactive");
+
+      Q_EMIT ActiveProductsChanged();
 
       if (active)
       {

@@ -11,8 +11,10 @@
 #   pragma warning(pop)
 #endif
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <system_error>
 
@@ -216,6 +218,119 @@ glm::dvec2 LambertGridToLatLon(const LambertGrid& grid, double i, double j)
    const double     y      = origin.y + j * grid.dy;
 
    return LambertInverse(grid, c, x, y);
+}
+
+bool LatLonBox::Contains(const LatLonBox& other) const
+{
+   return other.south >= south && other.north <= north && other.west >= west &&
+          other.east <= east;
+}
+
+LatLonBox ViewportLatLonBox(double centerLat,
+                            double centerLon,
+                            double zoom,
+                            double widthPx,
+                            double heightPx,
+                            double scale)
+{
+   // Same constants MapLibre uses (mbgl::util::tileSize_D/LATITUDE_MAX),
+   // restated here so this stays free of MapLibre/Qt headers.
+   static constexpr double kTileSize    = 512.0;
+   static constexpr double kLatitudeMax = 85.051128779806604;
+
+   // Web Mercator x/y in "degrees" (x = longitude; y = the Mercator
+   // ordinate scaled to the same units), so one pixel is the same size in
+   // both at a given zoom.
+   auto toMercatorY = [](double latDeg)
+   {
+      const double phi =
+         glm::radians(std::clamp(latDeg, -kLatitudeMax, kLatitudeMax));
+      return glm::degrees(
+         std::log(std::tan(glm::quarter_pi<double>() + phi / 2.0)));
+   };
+   auto fromMercatorY = [](double y)
+   {
+      return glm::degrees(2.0 * std::atan(std::exp(glm::radians(y))) -
+                          glm::half_pi<double>());
+   };
+
+   const double pixelsPerDegree = std::pow(2.0, zoom) * kTileSize / 360.0;
+   const double halfExtent =
+      std::hypot(widthPx, heightPx) / 2.0 / pixelsPerDegree * scale;
+
+   const double centerY = toMercatorY(centerLat);
+
+   LatLonBox box;
+   box.south = std::max(fromMercatorY(centerY - halfExtent), -kLatitudeMax);
+   box.north = std::min(fromMercatorY(centerY + halfExtent), kLatitudeMax);
+   box.west  = std::max(centerLon - halfExtent, -180.0);
+   box.east  = std::min(centerLon + halfExtent, 180.0);
+   return box;
+}
+
+GridIndexBox LambertGridIndexBox(const LambertGrid& grid,
+                                 long               nx,
+                                 long               ny,
+                                 const LatLonBox&   box)
+{
+   if (nx <= 0 || ny <= 0 || grid.dx == 0.0 || grid.dy == 0.0)
+   {
+      return {};
+   }
+
+   const GridIndexBox wholeGrid {0, nx - 1, 0, ny - 1};
+
+   if (box.east - box.west > 90.0)
+   {
+      return wholeGrid;
+   }
+
+   const LambertConstants c = ComputeLambertConstants(grid);
+   const glm::dvec2 origin  = LambertForward(grid, c, grid.lat1, grid.lon1);
+
+   // The projection is continuous and one-to-one over a box this size, so
+   // the box's image is bounded by the image of its edges -- sampling the
+   // perimeter finely enough to follow the edges' curvature bounds the
+   // whole interior without projecting it.
+   constexpr int kSamplesPerEdge = 16;
+
+   double iMin = std::numeric_limits<double>::max();
+   double iMax = std::numeric_limits<double>::lowest();
+   double jMin = std::numeric_limits<double>::max();
+   double jMax = std::numeric_limits<double>::lowest();
+
+   auto include = [&](double lat, double lon)
+   {
+      // Measure longitude on the same side of the cone as the grid, so a
+      // grid described in 0-360 degrees still lines up with a -180-180 box.
+      lon = grid.lov + std::remainder(lon - grid.lov, 360.0);
+
+      const glm::dvec2 xy = LambertForward(grid, c, lat, lon);
+      const double     i  = (xy.x - origin.x) / grid.dx;
+      const double     j  = (xy.y - origin.y) / grid.dy;
+      iMin                = std::min(iMin, i);
+      iMax                = std::max(iMax, i);
+      jMin                = std::min(jMin, j);
+      jMax                = std::max(jMax, j);
+   };
+
+   for (int s = 0; s <= kSamplesPerEdge; ++s)
+   {
+      const double f   = static_cast<double>(s) / kSamplesPerEdge;
+      const double lat = box.south + f * (box.north - box.south);
+      const double lon = box.west + f * (box.east - box.west);
+      include(box.south, lon);
+      include(box.north, lon);
+      include(lat, box.west);
+      include(lat, box.east);
+   }
+
+   GridIndexBox result;
+   result.iMin = std::max(static_cast<long>(std::floor(iMin)), 0L);
+   result.iMax = std::min(static_cast<long>(std::ceil(iMax)), nx - 1);
+   result.jMin = std::max(static_cast<long>(std::floor(jMin)), 0L);
+   result.jMax = std::min(static_cast<long>(std::ceil(jMax)), ny - 1);
+   return result;
 }
 
 } // namespace scwx::qt::map

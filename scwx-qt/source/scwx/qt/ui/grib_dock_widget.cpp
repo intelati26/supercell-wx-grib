@@ -355,6 +355,14 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
            self_,
            [this, &stored](std::size_t) { RefreshSection(stored); });
 
+   // Toggling a product changes the primary product (or leaves none)
+   // before any new frame arrives -- refresh now rather than leaving the
+   // previous primary's name/valid time up until the next FrameReady.
+   connect(stored.gribManager.get(),
+           &manager::GribManager::ActiveProductsChanged,
+           self_,
+           [this, &stored]() { RefreshSection(stored); });
+
    if (category == map::GribCategory::Rrfs)
    {
       // Reselecting a cycle re-ranges the hour slider too -- a 3-hourly
@@ -615,8 +623,7 @@ void GribDockWidget::Impl::RefreshSection(CategorySection& section)
 
    std::string statusText =
       "Primary: " + section.gribManager->CurrentProductName();
-   statusText +=
-      validTime.empty() ? "\n(no frame loaded)" : "\nValid: " + validTime;
+   statusText += validTime.empty() ? "\n(loading...)" : "\nValid: " + validTime;
 
    if (activeNames.size() > 1)
    {

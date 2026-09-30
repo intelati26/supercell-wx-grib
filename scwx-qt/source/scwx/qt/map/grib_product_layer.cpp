@@ -199,6 +199,10 @@ public:
    // Deinitialize() leaving two live connections, same reasoning as
    // reloadTimer_'s delete-before-new guard).
    QMetaObject::Connection frameReadyConnection_;
+
+   // Same lifecycle as frameReadyConnection_ -- see
+   // GribManager::ActiveProductsChanged.
+   QMetaObject::Connection activeProductsConnection_;
 };
 
 GribProductLayer::GribProductLayer(std::shared_ptr<gl::GlContext> glContext,
@@ -307,6 +311,20 @@ void GribProductLayer::Initialize(
                     p->frameNeedsReload_ = true;
                     Q_EMIT NeedsRendering();
                  }
+              });
+
+   // A product being checked/unchecked can change which frame this layer
+   // should show (or leave it with none at all) without any FrameReady --
+   // reload now rather than leaving the old product's frame on the map.
+   QObject::disconnect(p->activeProductsConnection_);
+   p->activeProductsConnection_ =
+      connect(p->gribManager_.get(),
+              &manager::GribManager::ActiveProductsChanged,
+              this,
+              [this]()
+              {
+                 p->frameNeedsReload_ = true;
+                 Q_EMIT NeedsRendering();
               });
 
    // Fallback safety net only -- see reloadTimer_'s comment. Kept slow
@@ -426,9 +444,10 @@ void GribProductLayer::LoadFrame()
    const auto currentIndex = p->gribManager_->CurrentProductIndex();
    if (!currentIndex)
    {
-      // Rrfs/Nbm with nothing checked yet -- nothing to load. Whatever
-      // was rendered before (if anything) just stays as-is, same as the
-      // "frame file missing" case just below already does.
+      // Rrfs/Nbm with nothing checked (any more) -- nothing to show, and
+      // whatever was shown before belongs to a product the user just
+      // unchecked.
+      ClearFrame();
       return;
    }
 
@@ -438,7 +457,13 @@ void GribProductLayer::LoadFrame()
    std::ifstream in(framePath, std::ios::binary);
    if (!in)
    {
-      logger_->warn("Could not open frame file: {}", framePath);
+      // No frame for the current product yet (just activated, or its
+      // frame was dropped on deactivation -- see GribManager::
+      // SetProductActive). Clear rather than keep showing a different
+      // product's frame under this product's name; FrameReady reloads
+      // once it arrives.
+      logger_->debug("No frame file yet: {}", framePath);
+      ClearFrame();
       return;
    }
 
@@ -507,6 +532,9 @@ void GribProductLayer::LoadFrame()
          logger_->warn("Frame payload size mismatch, expected {} got {}",
                        p->nx_ * p->ny_,
                        p->values_.size());
+         // values_/nx_/ny_ no longer describe the texture still on the GPU,
+         // so the hover tooltip would read the wrong cells -- drop both.
+         ClearFrame();
          return;
       }
 
@@ -708,6 +736,30 @@ void GribProductLayer::LoadFrame()
    }
 }
 
+void GribProductLayer::ClearFrame()
+{
+   p->frameLoaded_ = false;
+
+   // Release the CPU copy (up to ~98MB for an MRMS CONUS grid), not just
+   // its contents -- clear() alone keeps the capacity.
+   std::vector<float>().swap(p->values_);
+   p->nx_ = 0;
+   p->ny_ = 0;
+   p->productLabel_.clear();
+   p->validTime_.clear();
+
+   // Same for the GPU copy, when there's a texture to release it from
+   // (only ever called with this layer's GL context current: from
+   // LoadFrame(), itself only called from Initialize()/Render()).
+   if (p->dataTexture_ != GL_INVALID_INDEX)
+   {
+      glActiveTexture(GL_TEXTURE0);
+      glBindTexture(GL_TEXTURE_2D, p->dataTexture_);
+      glTexImage2D(
+         GL_TEXTURE_2D, 0, GL_R32F, 0, 0, 0, GL_RED, GL_FLOAT, nullptr);
+   }
+}
+
 void GribProductLayer::Render(
    const std::shared_ptr<MapContext>& /* mapContext */,
    const QMapLibre::CustomLayerRenderParameters& params)
@@ -782,8 +834,14 @@ void GribProductLayer::Deinitialize()
    p->vbo_            = GL_INVALID_INDEX;
    p->dataTexture_    = GL_INVALID_INDEX;
    p->paletteTexture_ = GL_INVALID_INDEX;
-   p->frameLoaded_    = false;
    p->numVertices_    = 0;
+
+   // Initialize() reloads the frame from disk anyway -- don't hold the CPU
+   // copy while deinitialized.
+   ClearFrame();
+
+   QObject::disconnect(p->frameReadyConnection_);
+   QObject::disconnect(p->activeProductsConnection_);
 }
 
 std::optional<float> GribProductLayer::ValueAt(double lat, double lon) const

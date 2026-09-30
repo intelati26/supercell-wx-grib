@@ -6,17 +6,23 @@
 #include <scwx/wsr88d/nexrad_file_factory.hpp>
 
 #include <atomic>
+#include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <shared_mutex>
 #include <sstream>
+#include <system_error>
 
 #include <aws/core/auth/AWSCredentials.h>
 #include <aws/core/http/HttpRequest.h>
 #include <aws/core/http/HttpResponse.h>
+#include <aws/core/utils/memory/AWSMemory.h>
+#include <aws/core/utils/memory/stl/AWSStreamFwd.h>
 #include <aws/s3/S3Client.h>
 #include <aws/s3/model/GetObjectRequest.h>
 #include <aws/s3/model/ListObjectsV2Request.h>
 #include <fmt/chrono.h>
+#include <fmt/format.h>
 
 namespace scwx::provider
 {
@@ -502,31 +508,72 @@ std::optional<std::string> AwsNexradDataProvider::DownloadObjectImpl(
          });
    }
 
-   auto outcome = p->client_->GetObject(request);
+   // Stream the response body straight to disk rather than letting the SDK
+   // buffer it in memory first (its default response stream is an
+   // Aws::StringStream) -- an RRFS object is ~320MB, and the fetch pool runs
+   // two downloads at once. Written under a unique partial name, then renamed
+   // into place, so a cancelled/failed download never leaves a truncated file
+   // at outputPath that a later cache check would mistake for a complete one
+   // (and so two concurrent downloads of the same key can't interleave).
+   static std::atomic<std::uint64_t> partialCounter {0};
+   const std::string                 partialPath =
+      fmt::format("{}.{}.part", outputPath, partialCounter.fetch_add(1));
 
-   if (!outcome.IsSuccess())
-   {
-      if (p->running_)
+   request.SetResponseStreamFactory(
+      [partialPath]()
       {
-         logger_->warn(
-            "Failed to download {}: {}", key, outcome.GetError().GetMessage());
+         return Aws::New<Aws::FStream>(Aws::S3::S3Client::GetAllocationTag(),
+                                       partialPath,
+                                       std::ios_base::out | std::ios_base::in |
+                                          std::ios_base::binary |
+                                          std::ios_base::trunc);
+      });
+
+   bool written = false;
+   {
+      auto outcome = p->client_->GetObject(request);
+
+      if (!outcome.IsSuccess())
+      {
+         if (p->running_)
+         {
+            logger_->warn("Failed to download {}: {}",
+                          key,
+                          outcome.GetError().GetMessage());
+         }
+         else
+         {
+            logger_->debug("Download cancelled for key: {}", key);
+         }
       }
       else
       {
-         logger_->debug("Download cancelled for key: {}", key);
+         auto& body = outcome.GetResult().GetBody();
+         body.flush();
+         written = !body.fail();
+
+         if (!written)
+         {
+            logger_->warn("Could not write {}", partialPath);
+         }
       }
-      return std::nullopt;
-   }
+   } // outcome (and the file stream it owns) is closed here, before rename
 
-   auto& body = outcome.GetResultWithOwnership().GetBody();
-
-   std::ofstream out(outputPath, std::ios::binary);
-   if (!out)
+   std::error_code ec;
+   if (!written)
    {
-      logger_->warn("Could not open {} for writing", outputPath);
+      std::filesystem::remove(partialPath, ec);
       return std::nullopt;
    }
-   out << body.rdbuf();
+
+   std::filesystem::rename(partialPath, outputPath, ec);
+   if (ec)
+   {
+      logger_->warn(
+         "Could not move {} into place: {}", outputPath, ec.message());
+      std::filesystem::remove(partialPath, ec);
+      return std::nullopt;
+   }
 
    return outputPath;
 }

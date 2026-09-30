@@ -252,6 +252,13 @@ signals:
    // its existing palette-changed handling.
    void FrameReady(std::size_t productIndex);
 
+   // Emitted on the calling (GUI) thread whenever SetProductActive()
+   // actually changes which products are active -- which can change
+   // CurrentProductIndex() without any new frame arriving (e.g. the
+   // primary product was unchecked, or the last Rrfs/Nbm product was), so
+   // GribProductLayer can't rely on FrameReady alone to notice.
+   void ActiveProductsChanged();
+
 private:
    void Poll();
    void HandleLiveStateUpdated(bool isLive);

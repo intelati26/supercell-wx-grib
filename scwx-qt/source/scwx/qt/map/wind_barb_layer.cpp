@@ -37,6 +37,11 @@ static constexpr int kWindBarbSheetCount_ = 21;
 static constexpr std::int32_t kBarbHotX_ = 32;
 static constexpr std::int32_t kBarbHotY_ = 56;
 
+// How far past the viewport barbs are built, as a multiple of the
+// viewport's own extent (see ViewportLatLonBox) -- enough slack that
+// ordinary panning doesn't trigger a rebuild every frame.
+static constexpr double kBuildBoxScale_ = 2.0;
+
 namespace
 {
 
@@ -103,26 +108,33 @@ std::optional<ParsedFrame> ParseFrame(const std::string& path)
    }
 }
 
-// Picks which grid points get a barb: every `stride`-th row and column.
-// RTMA's full 2.5km CONUS grid (~2345 x 1597) is far too dense to plot one
-// icon per point, so the caller picks `stride` based on how zoomed in the
-// view currently is -- see StrideForZoom below.
-std::vector<std::pair<long, long>>
-SelectBarbPoints(long nx, long ny, long stride)
+// Picks which grid points get a barb: every `stride`-th row and column
+// within `window`. RTMA's full 2.5km CONUS grid (~2345 x 1597) is far too
+// dense to plot one icon per point, so the caller picks `stride` based on
+// how zoomed in the view currently is -- see TierForZoom below -- and
+// limits `window` to the area around the viewport. Points stay on
+// multiples of `stride` in whole-grid terms, so panning (which moves the
+// window) never shifts which points get a barb.
+std::vector<std::pair<long, long>> SelectBarbPoints(const GridIndexBox& window,
+                                                    long                stride)
 {
    std::vector<std::pair<long, long>> points;
 
-   if (stride < 1)
+   if (stride < 1 || window.IsEmpty())
    {
       return points;
    }
 
-   points.reserve(
-      static_cast<std::size_t>((nx / stride + 1) * (ny / stride + 1)));
+   const long iStart = (window.iMin + stride - 1) / stride * stride;
+   const long jStart = (window.jMin + stride - 1) / stride * stride;
 
-   for (long j = 0; j < ny; j += stride)
+   points.reserve(
+      static_cast<std::size_t>(((window.iMax - iStart) / stride + 1) *
+                               ((window.jMax - jStart) / stride + 1)));
+
+   for (long j = jStart; j <= window.jMax; j += stride)
    {
-      for (long i = 0; i < nx; i += stride)
+      for (long i = iStart; i <= window.iMax; i += stride)
       {
          points.emplace_back(i, j);
       }
@@ -226,6 +238,14 @@ public:
    // rebuild + GPU buffer upload. {0, 0.0f} never matches a real computed
    // tier, guaranteeing the first Render() call rebuilds.
    ZoomTier lastTier_ {0, 0.0f};
+
+   // Area geoIcons_ was last built for -- a padded box around the viewport
+   // (see Render()), not the whole grid: at the closest zoom tier the full
+   // CONUS grid is several hundred thousand barbs (each with its own hover
+   // string and GPU vertices), nearly all of them off screen. Render()
+   // rebuilds once the viewport leaves this box. Unset until the first
+   // Render(), which leaves RebuildIcons() building nothing before then.
+   std::optional<LatLonBox> builtBox_;
 };
 
 void WindBarbLayer::Impl::SetIconSheets()
@@ -295,8 +315,14 @@ void WindBarbLayer::Impl::RebuildIcons(ZoomTier tier)
 
    geoIcons_->StartIcons();
 
-   for (const auto& [i, j] :
-        SelectBarbPoints(dirFrame_->grid_nx, dirFrame_->grid_ny, tier.stride))
+   const GridIndexBox window = builtBox_.has_value() ?
+                                  LambertGridIndexBox(dirFrame_->grid,
+                                                      dirFrame_->grid_nx,
+                                                      dirFrame_->grid_ny,
+                                                      *builtBox_) :
+                                  GridIndexBox {};
+
+   for (const auto& [i, j] : SelectBarbPoints(window, tier.stride))
    {
       const auto index = static_cast<std::size_t>(j) *
                             static_cast<std::size_t>(dirFrame_->grid_nx) +
@@ -424,8 +450,22 @@ void WindBarbLayer::Render(const std::shared_ptr<MapContext>& mapContext,
          1, static_cast<long>(std::floor(baseTier.stride / densityScale))),
       baseTier.iconScale * static_cast<float>(iconScaleFactor)};
 
-   if (tier != p->lastTier_)
+   const LatLonBox visibleBox = ViewportLatLonBox(params.latitude,
+                                                  params.longitude,
+                                                  params.zoom,
+                                                  params.width,
+                                                  params.height,
+                                                  1.0);
+
+   if (tier != p->lastTier_ || !p->builtBox_.has_value() ||
+       !p->builtBox_->Contains(visibleBox))
    {
+      p->builtBox_ = ViewportLatLonBox(params.latitude,
+                                       params.longitude,
+                                       params.zoom,
+                                       params.width,
+                                       params.height,
+                                       kBuildBoxScale_);
       p->RebuildIcons(tier);
    }
 

@@ -48,6 +48,7 @@ public:
 
 private:
    void LoadFrame();
+   void ClearFrame();
    void BuildPalette();
 
    // Looks up the raw decoded value nearest (lat, lon), or nullopt if
