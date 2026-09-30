@@ -1,6 +1,7 @@
 #include <scwx/qt/manager/hodograph_manager.hpp>
 #include <scwx/qt/manager/status_manager.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
+#include <scwx/qt/util/file.hpp>
 #include <scwx/provider/rrfs_data_provider.hpp>
 #include <scwx/util/logger.hpp>
 
@@ -397,7 +398,7 @@ bool HodographManager::ApplyCachedDownload(const std::string& key)
       }
 
       std::error_code ec;
-      std::filesystem::rename(tmpPath, outputPath, ec);
+      util::ReplaceFileWithRetry(tmpPath, outputPath, ec);
       if (ec)
       {
          logger_->warn("Could not replace {}: {}", outputPath, ec.message());
@@ -448,7 +449,7 @@ bool HodographManager::ApplyCachedDownload(const std::string& key)
       else
       {
          std::error_code ec;
-         std::filesystem::rename(tmpPath, TerrainFramePath(), ec);
+         util::ReplaceFileWithRetry(tmpPath, TerrainFramePath(), ec);
          if (ec)
          {
             logger_->warn(

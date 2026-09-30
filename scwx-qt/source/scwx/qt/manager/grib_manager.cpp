@@ -2,6 +2,7 @@
 #include <scwx/qt/manager/status_manager.hpp>
 #include <scwx/qt/manager/timeline_manager.hpp>
 #include <scwx/qt/manager/user_model_registry.hpp>
+#include <scwx/qt/util/file.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
 #include <scwx/qt/settings/unit_settings.hpp>
 #include <scwx/qt/types/unit_types.hpp>
@@ -1212,7 +1213,8 @@ MakeProvider(map::GribCategory category, const ProductConfig& product)
       const auto model =
          manager::UserModelRegistry::Instance()->SelectedModel();
       return std::make_shared<provider::ConfiguredIdxProvider>(
-         model ? model->config.source : util::grib_model_config::SourceSpec {});
+         model ? model->config.source :
+                 scwx::util::grib_model_config::SourceSpec {});
    }
    case map::GribCategory::Rtma:
    default:
@@ -2579,7 +2581,7 @@ bool GribManager::ApplyShipDownload(std::size_t        productIndex,
    }
 
    std::error_code ec;
-   std::filesystem::rename(
+   util::ReplaceFileWithRetry(
       tmpFramePath, map::GetGribFramePath(p->category_, productIndex), ec);
 
    if (ec)
@@ -3236,7 +3238,7 @@ bool GribManager::ApplyCachedDownload(std::size_t        productIndex,
    }
 
    std::error_code ec;
-   std::filesystem::rename(
+   util::ReplaceFileWithRetry(
       tmpFramePath, map::GetGribFramePath(p->category_, productIndex), ec);
 
    if (ec)

@@ -2,6 +2,7 @@
 #include <scwx/qt/manager/placefile_manager.hpp>
 #include <scwx/qt/manager/status_manager.hpp>
 #include <scwx/qt/main/application_paths.hpp>
+#include <scwx/qt/util/file.hpp>
 #include <scwx/qt/util/network.hpp>
 #include <scwx/gr/outlook_placefile.hpp>
 #include <scwx/network/cpr.hpp>
@@ -229,7 +230,7 @@ void PostFetch(boost::asio::thread_pool& pool, const OutlookSource& source)
          }
 
          std::error_code ec;
-         std::filesystem::rename(tmpPath, cachePath, ec);
+         util::ReplaceFileWithRetry(tmpPath, cachePath, ec);
          if (ec)
          {
             logger_->warn(

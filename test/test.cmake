@@ -66,7 +66,8 @@ set(SRC_QT_SETTINGS_TESTS source/scwx/qt/settings/settings_container.test.cpp
                           source/scwx/qt/settings/settings_variable.test.cpp
                           source/scwx/qt/settings/ui_settings.test.cpp
                           source/scwx/qt/settings/unit_settings.test.cpp)
-set(SRC_QT_UTIL_TESTS source/scwx/qt/util/q_file_input_stream.test.cpp
+set(SRC_QT_UTIL_TESTS source/scwx/qt/util/file.test.cpp
+                      source/scwx/qt/util/q_file_input_stream.test.cpp
                       source/scwx/qt/util/geographic_lib.test.cpp
                       source/scwx/qt/util/line_simplification.test.cpp
                       source/scwx/qt/util/network.test.cpp)
