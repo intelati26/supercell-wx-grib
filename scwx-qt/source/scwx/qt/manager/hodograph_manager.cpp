@@ -306,7 +306,7 @@ void HodographManager::Poll()
    logger_->info("New RRFS file for hodographs: {}", latestKey);
 
    const std::string cachedPath = CachedDownloadPath(latestKey);
-   if (std::filesystem::exists(cachedPath))
+   if (GribManager::UseCachedDownload(cachedPath))
    {
       // Already cached, quite possibly by GribManager(Rrfs) fetching the
       // exact same file -- decode is cheap, do it right here rather than

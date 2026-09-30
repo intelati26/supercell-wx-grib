@@ -187,7 +187,7 @@ void WindBarbManager::Poll()
    logger_->info("New RTMA file for wind barbs: {}", latestKey);
 
    const std::string cachedPath = CachedDownloadPath(latestKey);
-   if (std::filesystem::exists(cachedPath))
+   if (GribManager::UseCachedDownload(cachedPath))
    {
       // Already cached, quite possibly by GribManager(Models) fetching
       // the exact same file -- decode is cheap, do it right here rather
