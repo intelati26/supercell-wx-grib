@@ -6,7 +6,9 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <sstream>
 
+#include <boost/json.hpp>
 #include <QObject>
 #include <gtest/gtest.h>
 
@@ -139,6 +141,43 @@ TEST_F(LayerModelOpacityTest, ResetRestoresDefaultOpacity)
    const types::LayerInfo info =
       model_->GetLayerInfo(types::LayerType::Radar, std::monostate {});
    EXPECT_FLOAT_EQ(info.opacity_, 1.0f);
+}
+
+// A profile saved before a built-in data layer existed has no entry for it.
+// Loading it must add the layer, or the layer could never be shown for anyone
+// with existing settings (Custom Models arrived after most profiles were made).
+TEST_F(LayerModelOpacityTest, ExistingProfilesGainNewBuiltInDataLayers)
+{
+   std::ostringstream defaults;
+   model_->WriteLayerSettings(defaults);
+   const auto saved = boost::json::parse(defaults.str()).as_array();
+
+   boost::json::array withoutCustomModels;
+   for (const auto& layer : saved)
+   {
+      if (layer.as_object().at("description").as_string() != "Custom Models")
+      {
+         withoutCustomModels.push_back(layer);
+      }
+   }
+   ASSERT_LT(withoutCustomModels.size(), saved.size())
+      << "the default layers should include Custom Models";
+
+   std::istringstream oldProfile(boost::json::serialize(withoutCustomModels));
+   model_->ReadLayerSettings(oldProfile);
+
+   std::ostringstream reloaded;
+   model_->WriteLayerSettings(reloaded);
+   const auto after = boost::json::parse(reloaded.str()).as_array();
+
+   EXPECT_EQ(after.size(), saved.size());
+   bool found = false;
+   for (const auto& layer : after)
+   {
+      found = found || layer.as_object().at("description").as_string() ==
+                          "Custom Models";
+   }
+   EXPECT_TRUE(found) << "Custom Models was not added to the old profile";
 }
 
 } // namespace scwx::qt::model
