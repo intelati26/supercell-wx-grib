@@ -258,7 +258,7 @@ TEST(GribManagerTest, ProductsActiveByDefault)
       EXPECT_FALSE(gribManager->CurrentProductIndex().has_value());
       EXPECT_EQ(gribManager->CurrentProductName(), "");
       EXPECT_EQ(gribManager->MaxRrfsForecastHour(), 0);
-      EXPECT_EQ(gribManager->MaxNbmForecastHour(), 0);
+      EXPECT_EQ(gribManager->MaxIdxForecastHour(), 0);
    }
 
    for (auto category : {map::GribCategory::Mrms, map::GribCategory::Rtma})
@@ -350,12 +350,12 @@ TEST(GribManagerTest, RrfsSelectionNoOpForOtherCategories)
    EXPECT_EQ(gribManager->RrfsForecastHour(), 0);
 }
 
-// Real S3 access below (SetNbmCycle()/SetNbmForecastHour()/
-// UseLatestNbmCycle() all fetch immediately, see FetchNbmSelection() in
+// Real S3 access below (SetIdxCycle()/SetIdxForecastHour()/
+// UseLatestIdxCycle() all fetch immediately, see FetchIdxSelection() in
 // grib_manager.cpp) -- same reasoning and category-singleton caveat as
 // RrfsForecastHourSelection above, but for map::GribCategory::Nbm. Uses a
 // non-6-hourly-multiple forecast hour (70) specifically to exercise the
-// snap-to-valid-hour behavior SetNbmForecastHour() has that
+// snap-to-valid-hour behavior SetIdxForecastHour() has that
 // SetRrfsForecastHour() doesn't need (RRFS's own step is uniform; NBM's
 // isn't beyond F069 for an extended cycle -- see
 // NbmDataProvider::SnapForecastHour()'s own doc).
@@ -366,44 +366,44 @@ TEST(GribManagerTest, NbmForecastHourSelection)
 
    auto gribManager = GribManager::Instance(map::GribCategory::Nbm);
 
-   // Nbm starts with no product active -- CurrentNbmCycle()/
-   // MaxNbmForecastHour() below need one to resolve against. Which one
+   // Nbm starts with no product active -- CurrentIdxCycle()/
+   // MaxIdxForecastHour() below need one to resolve against. Which one
    // doesn't matter (no decoded value is checked here).
    gribManager->SetProductActive(gribManager->ProductNames().front(), true);
 
-   EXPECT_TRUE(gribManager->IsUsingLatestNbmCycle());
+   EXPECT_TRUE(gribManager->IsUsingLatestIdxCycle());
    // 1, not 0 -- NBM has no F000 file at all (see NbmDataProvider's own
    // kMinForecastHour_ comment).
-   EXPECT_EQ(gribManager->NbmForecastHour(), 1);
+   EXPECT_EQ(gribManager->IdxForecastHour(), 1);
 
    // A fixed, extended (6-hourly) cycle -- 264h max.
    const auto fixedCycle = sys_days {2026y / September / 25d} + 12h;
-   gribManager->SetNbmCycle(fixedCycle);
-   EXPECT_FALSE(gribManager->IsUsingLatestNbmCycle());
-   EXPECT_EQ(gribManager->CurrentNbmCycle(), fixedCycle);
-   EXPECT_EQ(gribManager->MaxNbmForecastHour(), 264);
+   gribManager->SetIdxCycle(fixedCycle);
+   EXPECT_FALSE(gribManager->IsUsingLatestIdxCycle());
+   EXPECT_EQ(gribManager->CurrentIdxCycle(), fixedCycle);
+   EXPECT_EQ(gribManager->MaxIdxForecastHour(), 264);
 
    // F070 doesn't exist for an extended cycle (confirmed live 2026-09-26
    // -- see NbmDataProvider's own class comment) -- snapped up to the
    // next real hour, F072, rather than stored as asked.
-   gribManager->SetNbmForecastHour(70);
-   EXPECT_EQ(gribManager->NbmForecastHour(), 72);
+   gribManager->SetIdxForecastHour(70);
+   EXPECT_EQ(gribManager->IdxForecastHour(), 72);
 
    // A short (non-extended) cycle -- 36h max, uniformly hourly throughout,
    // so no snapping needed for an in-range hour.
-   gribManager->SetNbmCycle(sys_days {2026y / September / 25d} + 9h);
-   EXPECT_EQ(gribManager->MaxNbmForecastHour(), 36);
-   gribManager->SetNbmForecastHour(20);
-   EXPECT_EQ(gribManager->NbmForecastHour(), 20);
+   gribManager->SetIdxCycle(sys_days {2026y / September / 25d} + 9h);
+   EXPECT_EQ(gribManager->MaxIdxForecastHour(), 36);
+   gribManager->SetIdxForecastHour(20);
+   EXPECT_EQ(gribManager->IdxForecastHour(), 20);
 
-   gribManager->UseLatestNbmCycle();
-   EXPECT_TRUE(gribManager->IsUsingLatestNbmCycle());
+   gribManager->UseLatestIdxCycle();
+   EXPECT_TRUE(gribManager->IsUsingLatestIdxCycle());
 
    gribManager->SetProductActive(gribManager->ProductNames().front(), false);
 }
 
-// Confirms the whole Nbm chain -- FetchNbmSelectionForProduct()/
-// QueueNbmDownload()/NbmDataProvider::FetchField() (the idx-based range
+// Confirms the whole Nbm chain -- FetchIdxSelectionForProduct()/
+// QueueIdxDownload()/NbmDataProvider::FetchField() (the idx-based range
 // fetch) -- reaches a correctly-targeted real decode end to end, not just
 // that it compiles. Real S3 access: a small (~1-2MB) range fetch plus
 // decode, so this runs far faster than the whole-file RRFS tests above.
@@ -422,8 +422,8 @@ TEST(GribManagerTest, NbmProductDecodesRealFile)
       static_cast<std::size_t>(std::distance(names.begin(), it));
 
    gribManager->SetProductActive("2m Temperature", true);
-   gribManager->SetNbmCycle(sys_days {2026y / September / 25d} + 12h);
-   gribManager->SetNbmForecastHour(24);
+   gribManager->SetIdxCycle(sys_days {2026y / September / 25d} + 12h);
+   gribManager->SetIdxForecastHour(24);
 
    // Checks the decoded field's own mean, not header metadata -- same
    // lesson as PrslevProductDecodesRealFile's own comment on
@@ -474,7 +474,7 @@ TEST(GribManagerTest, NbmProductDecodesRealFile)
                       << " (expected ~" << kExpectedMean << ")";
 
    gribManager->SetProductActive("2m Temperature", false);
-   gribManager->UseLatestNbmCycle();
+   gribManager->UseLatestIdxCycle();
 }
 
 } // namespace manager

@@ -30,10 +30,11 @@ enum class DataLayer
 {
    OverlayProduct,
    RadarRange,
-   GribMrms, // MRMS radar mosaic products
-   GribRtma, // RTMA rolling surface analysis
-   GribRrfs, // RRFS forecast model
-   GribNbm,  // NBM (National Blend of Models) forecast
+   GribMrms,  // MRMS radar mosaic products
+   GribRtma,  // RTMA rolling surface analysis
+   GribRrfs,  // RRFS forecast model
+   GribNbm,   // NBM (National Blend of Models) forecast
+   GribUser,  // whichever user-imported model is selected
    WindBarbs, // RTMA 10m wind barbs
    Hodograph, // RRFS gridded hodograph
    Unknown

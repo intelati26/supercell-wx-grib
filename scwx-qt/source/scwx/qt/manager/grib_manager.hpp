@@ -299,22 +299,48 @@ public:
    // the cache-budget pressure a whole RRFS forecast-hour prefetch
    // creates, so there's been no need for one yet.
    //
-   // SetNbmForecastHour() snaps `hour` to the nearest real, fetchable
+   // SetIdxForecastHour() snaps `hour` to the nearest real, fetchable
    // hour for the currently-targeted cycle before storing it (see
    // NbmDataProvider::SnapForecastHour()) -- NBM's own forecast-hour step
    // is non-uniform (hourly, then 3-hourly, then 6-hourly) for the
    // 6-hourly "extended" cycles, unlike RRFS's uniform step, so a caller
    // driving this from a linear slider needs the snap to land on
    // something that actually exists.
-   void SetNbmCycle(std::chrono::system_clock::time_point cycleTime);
-   void UseLatestNbmCycle();
-   [[nodiscard]] bool IsUsingLatestNbmCycle() const;
-   [[nodiscard]] std::chrono::system_clock::time_point CurrentNbmCycle() const;
-   void              SetNbmForecastHour(int hour);
-   [[nodiscard]] int NbmForecastHour() const;
-   [[nodiscard]] int MaxNbmForecastHour() const;
+   void SetIdxCycle(std::chrono::system_clock::time_point cycleTime);
+   void UseLatestIdxCycle();
+   [[nodiscard]] bool IsUsingLatestIdxCycle() const;
+   [[nodiscard]] std::chrono::system_clock::time_point CurrentIdxCycle() const;
+   void              SetIdxForecastHour(int hour);
+   [[nodiscard]] int IdxForecastHour() const;
+   [[nodiscard]] int MaxIdxForecastHour() const;
 
+   // First forecast hour that exists for this model (NBM has no F000).
+   [[nodiscard]] int MinIdxForecastHour() const;
+
+   // GribCategory::User only. Point this manager at whichever model
+   // UserModelRegistry currently has selected: deactivates every product,
+   // resets the cycle/hour selection to the new model's defaults, rebuilds
+   // the product table and emits ProductsChanged(). Call after
+   // UserModelRegistry::SetSelectedModel() or Import().
+   void ReloadUserModel();
+
+   // The model this manager currently serves; empty for any other category or
+   // when no model is installed.
+   [[nodiscard]] std::string UserModelName() const;
+
+   // The cycles a picker should offer, newest first, stepping back
+   // `historyHours` hours from now and keeping only those the model actually
+   // runs; and the last forecast hour that exists for one of them.
+   [[nodiscard]] std::vector<std::chrono::system_clock::time_point>
+   IdxCycleChoices(int historyHours) const;
+   [[nodiscard]] int
+   MaxIdxForecastHourFor(std::chrono::system_clock::time_point cycle) const;
 signals:
+   // The product table itself changed (GribCategory::User, when a different
+   // model is selected) -- ProductNames() is different now and every earlier
+   // product index is meaningless.
+   void ProductsChanged();
+
    // Emitted once a requested frame has actually been decoded and applied
    // to GetGribFramePath(category, productIndex) -- may fire from a
    // background fetch thread (Qt's queued cross-thread delivery makes
@@ -399,14 +425,14 @@ private:
    // Applies this instance's own stored Nbm cycle/forecast-hour selection
    // to one provider -- same shape and reason as SyncRrfsProviderState().
    // Nbm-only; caller must already know category_ == Nbm.
-   void SyncNbmProviderState(provider::AwsNexradDataProvider& provider) const;
+   void SyncIdxProviderState(provider::AwsNexradDataProvider& provider) const;
 
-   // SetNbmCycle()/SetNbmForecastHour()/UseLatestNbmCycle()'s shared "now
+   // SetIdxCycle()/SetIdxForecastHour()/UseLatestIdxCycle()'s shared "now
    // go fetch that" tail -- same shape as FetchRrfsSelection(), calling
    // FetchArchiveFrame() (whose per-product dispatch, for Nbm, ignores the
    // time argument and resolves each product's own key from its own
-   // provider state instead -- see FetchNbmSelectionForProduct()).
-   void FetchNbmSelection();
+   // provider state instead -- see FetchIdxSelectionForProduct()).
+   void FetchIdxSelection();
 
    // Nbm's own per-product dispatch -- FetchArchiveFrameForProduct()
    // routes here instead of its normal listing-based path whenever
@@ -415,8 +441,8 @@ private:
    // ProductConfig::nbmParameter/nbmLevel/nbmQualifier's own doc).
    // Resolves the current key, checks whether this product's own
    // per-field cache entry already exists, and either applies it
-   // synchronously or queues a download (see QueueNbmDownload()).
-   void FetchNbmSelectionForProduct(std::size_t productIndex);
+   // synchronously or queues a download (see QueueIdxDownload()).
+   void FetchIdxSelectionForProduct(std::size_t productIndex);
 
    // Downloads one Nbm product's own field on the background thread pool
    // (if not already in flight) via NbmDataProvider::FetchField() (the
@@ -429,9 +455,9 @@ private:
    // suffixed with this product's own shortName (what CachedDownloadPath()
    // uses -- several products share one `key`, so the plain key alone
    // can't be the cache path).
-   void QueueNbmDownload(std::size_t        productIndex,
-                        const std::string& key,
-                        const std::string& cacheKey);
+   void QueueIdxDownload(std::size_t        productIndex,
+                         const std::string& key,
+                         const std::string& cacheKey);
 
    // Downloads (if not already cached on disk) and decodes everything the
    // current animation loop range will need, in the background, ahead of

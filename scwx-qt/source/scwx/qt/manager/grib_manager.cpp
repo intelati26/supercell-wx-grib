@@ -1,11 +1,14 @@
 #include <scwx/qt/manager/grib_manager.hpp>
 #include <scwx/qt/manager/status_manager.hpp>
 #include <scwx/qt/manager/timeline_manager.hpp>
+#include <scwx/qt/manager/user_model_registry.hpp>
 #include <scwx/qt/util/file.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
 #include <scwx/qt/settings/unit_settings.hpp>
 #include <scwx/qt/types/unit_types.hpp>
 #include <scwx/provider/mrms_data_provider.hpp>
+#include <scwx/provider/configured_idx_provider.hpp>
+#include <scwx/provider/idx_model_provider.hpp>
 #include <scwx/provider/nbm_data_provider.hpp>
 #include <scwx/provider/rrfs_data_provider.hpp>
 #include <scwx/provider/rtma_data_provider.hpp>
@@ -14,6 +17,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <deque>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -1032,6 +1036,16 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
     PhysicalQuantity::TemperatureKelvin, "K", 0.0f, "", "", -1, -1},
 };
 
+// Categories whose fields are fetched one at a time through a wgrib2-style
+// .idx sidecar (see provider::IdxModelProvider), sharing one set of
+// cycle/forecast-hour and per-product fetch paths: NBM, whose rules are
+// compiled in, and user-imported models, whose rules come from a config.
+static bool IsIdxCategory(map::GribCategory category)
+{
+   return category == map::GribCategory::Nbm ||
+          category == map::GribCategory::User;
+}
+
 // NBM (National Blend of Models): map::GribCategory::Nbm. A first,
 // deliberately small set -- every entry's own nbmParameter/nbmLevel/
 // nbmQualifier confirmed live (2026-09-26) against a real downloaded
@@ -1076,6 +1090,86 @@ static const std::vector<ProductConfig> kNbmProducts_ {
 };
 // clang-format on
 
+// GribCategory::User has no compiled-in table: its products are the rows of
+// whichever model UserModelRegistry has selected, converted here.
+PhysicalQuantity QuantityFromName(std::string_view name)
+{
+   if (name == "temperature_kelvin")
+   {
+      return PhysicalQuantity::TemperatureKelvin;
+   }
+   if (name == "speed_meters_per_second")
+   {
+      return PhysicalQuantity::SpeedMetersPerSecond;
+   }
+   if (name == "accumulation_millimeters")
+   {
+      return PhysicalQuantity::AccumulationMillimeters;
+   }
+   if (name == "pressure_pascals")
+   {
+      return PhysicalQuantity::PressurePascals;
+   }
+   return PhysicalQuantity::None;
+}
+
+std::vector<ProductConfig>
+BuildUserProducts(const std::optional<manager::UserModelEntry>& model)
+{
+   std::vector<ProductConfig> products;
+   if (!model)
+   {
+      return products;
+   }
+
+   for (const auto& spec : model->config.products)
+   {
+      const auto& d = spec.display;
+
+      // Same field order as the built-in idx (NBM) rows above.
+      products.push_back({spec.name,
+                          "",
+                          spec.shortName,
+                          d.colorOffset,
+                          d.colorScale,
+                          d.noDataThreshold,
+                          QuantityFromName(d.quantity),
+                          d.units,
+                          d.type == "contour" ? d.contourInterval : 0.0f,
+                          "",
+                          "",
+                          -1,
+                          -1,
+                          -1,
+                          -1,
+                          provider::RrfsFileFamily::TwoDField,
+                          spec.index.parameter,
+                          spec.index.level,
+                          spec.index.qualifier});
+   }
+   return products;
+}
+
+// Every table ever built is kept, never freed: Products() hands out
+// references that background fetch threads may still be reading when the
+// user switches models, and a deque never moves existing elements. A table
+// is a few KB and one is added per model switch.
+std::mutex                             gUserProductsMutex;
+std::deque<std::vector<ProductConfig>> gUserProducts(1);
+
+const std::vector<ProductConfig>& CurrentUserProducts()
+{
+   std::lock_guard lock(gUserProductsMutex);
+   return gUserProducts.back();
+}
+
+void RebuildUserProducts(const std::optional<manager::UserModelEntry>& model)
+{
+   auto            products = BuildUserProducts(model);
+   std::lock_guard lock(gUserProductsMutex);
+   gUserProducts.push_back(std::move(products));
+}
+
 const std::vector<ProductConfig>& Products(map::GribCategory category)
 {
    switch (category)
@@ -1086,6 +1180,8 @@ const std::vector<ProductConfig>& Products(map::GribCategory category)
       return kRtmaProducts_;
    case map::GribCategory::Nbm:
       return kNbmProducts_;
+   case map::GribCategory::User:
+      return CurrentUserProducts();
    case map::GribCategory::Rrfs:
    default:
       return kRrfsProducts_;
@@ -1158,6 +1254,14 @@ MakeProvider(map::GribCategory category, const ProductConfig& product)
    }
    case map::GribCategory::Nbm:
       return std::make_shared<provider::NbmDataProvider>();
+   case map::GribCategory::User:
+   {
+      const auto model =
+         manager::UserModelRegistry::Instance()->SelectedModel();
+      return std::make_shared<provider::ConfiguredIdxProvider>(
+         model ? model->config.source :
+                 scwx::util::grib_model_config::SourceSpec {});
+   }
    case map::GribCategory::Rtma:
    default:
       return std::make_shared<provider::RtmaDataProvider>();
@@ -1217,7 +1321,7 @@ std::string CachedDownloadPath(const std::string& key)
 // StatusManager's own doc names this gap directly: a slow fetch already
 // reports byte progress, but "a stuck decode_grib call... look[s]
 // identical to nothing happening" once the download itself finishes --
-// true today because every QueueDownload()/QueueNbmDownload() completion
+// true today because every QueueDownload()/QueueIdxDownload() completion
 // handler calls ReportComplete() right before handing off to
 // ApplyCachedDownload()/ApplyShipDownload(), which report nothing of
 // their own. That gap matters more than it used to: a decode that's
@@ -1367,6 +1471,29 @@ bool StartsWithAllProductsInactive(map::GribCategory category)
 
 } // namespace
 
+// The model's own rules (which keys and forecast hours exist), answered
+// without needing any product to be active yet -- the hour slider needs them
+// before the first provider is created.
+static std::shared_ptr<provider::IdxModelProvider>
+MakeIdxRulesProvider(map::GribCategory category)
+{
+   switch (category)
+   {
+   case map::GribCategory::Nbm:
+      return std::make_shared<provider::NbmDataProvider>();
+   case map::GribCategory::User:
+   {
+      const auto model =
+         manager::UserModelRegistry::Instance()->SelectedModel();
+      return model ? std::make_shared<provider::ConfiguredIdxProvider>(
+                        model->config.source) :
+                     nullptr;
+   }
+   default:
+      return nullptr;
+   }
+}
+
 class GribManager::Impl
 {
 public:
@@ -1378,6 +1505,17 @@ public:
        // signal connections.
        timelineManager_ {manager::TimelineManager::Instance()}
    {
+      if (category_ == map::GribCategory::User)
+      {
+         RebuildUserProducts(userModels_->SelectedModel());
+      }
+
+      if (IsIdxCategory(category_))
+      {
+         idxRules_        = MakeIdxRulesProvider(category_);
+         idxForecastHour_ = idxRules_ ? idxRules_->MinForecastHourFor() : 1;
+      }
+
       // Mrms/Rtma start with just the first entry active, matching this
       // class's pre-multi-select behavior exactly -- activeProducts_ must
       // never become empty for these two (see SetProductActive), so this
@@ -1571,15 +1709,23 @@ public:
    // ProductConfig's own nbmParameter/nbmLevel/nbmQualifier doc), nowhere
    // near the cache-budget pressure a whole RRFS forecast-hour prefetch
    // creates.
-   bool                                  nbmUseLatestCycle_ {true};
-   std::chrono::system_clock::time_point nbmCycleOverride_ {};
+   // GribCategory::User only: held (Instance() keeps just a weak_ptr) so the
+   // registry outlives this manager and its selection stays readable.
+   std::shared_ptr<manager::UserModelRegistry> userModels_ {
+      manager::UserModelRegistry::Instance()};
+
+   // The idx model's own rules -- see MakeIdxRulesProvider().
+   std::shared_ptr<provider::IdxModelProvider> idxRules_;
+
+   bool                                  idxUseLatestCycle_ {true};
+   std::chrono::system_clock::time_point idxCycleOverride_ {};
    // 1, not 0 -- confirmed live (2026-09-26): unlike RRFS/GFS, NBM
    // doesn't publish an F000 file at all for the CONUS core product, so
    // F001 is the real minimum (see NbmDataProvider::kMinForecastHour_'s
    // own comment). Matches that class's own default so a freshly
    // constructed provider and this manager's own idea of "the current
    // hour" never disagree.
-   int nbmForecastHour_ {1};
+   int idxForecastHour_ {1};
 };
 
 GribManager::GribManager(map::GribCategory category) :
@@ -1869,10 +2015,10 @@ void GribManager::SetProductActive(const std::string& displayName, bool active)
             // Poll()/FetchArchiveFrame() call below runs against it.
             SyncRrfsProviderState(*p->providers_[i]);
          }
-         else if (p->category_ == map::GribCategory::Nbm)
+         else if (IsIdxCategory(p->category_))
          {
             // Same reason as the Rrfs branch above.
-            SyncNbmProviderState(*p->providers_[i]);
+            SyncIdxProviderState(*p->providers_[i]);
          }
       }
       else
@@ -1927,13 +2073,13 @@ void GribManager::SetProductActive(const std::string& displayName, bool active)
             // are independent axes.
             FetchRrfsSelection();
          }
-         else if (p->category_ == map::GribCategory::Nbm)
+         else if (IsIdxCategory(p->category_))
          {
             // Same reason as the Rrfs branch above -- Nbm's own cycle/
             // hour selection is a separate axis, and Poll()'s generic
             // "latest" loop deliberately skips Nbm entirely (see its own
             // comment), so nothing else would ever fetch this product.
-            FetchNbmSelection();
+            FetchIdxSelection();
          }
          else if (p->isLive_)
          {
@@ -2277,11 +2423,11 @@ void GribManager::Poll()
          continue;
       }
 
-      if (p->category_ == map::GribCategory::Nbm)
+      if (IsIdxCategory(p->category_))
       {
          // Nbm's own per-field idx-based fetch is handled entirely
          // through FetchArchiveFrameForProduct()'s dedicated dispatch
-         // (via FetchNbmSelection(), called whenever cycle/hour changes)
+         // (via FetchIdxSelection(), called whenever cycle/hour changes)
          // -- same reason as SHIP's own skip above: this generic "find
          // latest, RequestFrame" loop would call QueueDownload's category
          // switch, which has no Nbm case and would bad-cast this
@@ -2447,16 +2593,16 @@ bool GribManager::FetchArchiveFrameForProduct(
       return true;
    }
 
-   if (p->category_ == map::GribCategory::Nbm)
+   if (IsIdxCategory(p->category_))
    {
       // Nbm's own single-field idx-based dispatch -- see
-      // FetchNbmSelectionForProduct()'s own doc. Never reaches
+      // FetchIdxSelectionForProduct()'s own doc. Never reaches
       // RequestFrame()/QueueDownload() below (both assume a whole-file
       // download), and deliberately ignores the `time` argument the same
       // way the Rrfs branch below does -- resolves its own key from the
       // provider's own live cycle/forecast-hour state instead (kept in
-      // sync by SyncNbmProviderState() whenever that state changes).
-      FetchNbmSelectionForProduct(productIndex);
+      // sync by SyncIdxProviderState() whenever that state changes).
+      FetchIdxSelectionForProduct(productIndex);
       return true;
    }
 
@@ -2866,23 +3012,23 @@ bool GribManager::ApplyShipDownload(std::size_t        productIndex,
    return true;
 }
 
-void GribManager::SyncNbmProviderState(
+void GribManager::SyncIdxProviderState(
    provider::AwsNexradDataProvider& provider) const
 {
-   auto& nbmProvider = ProviderAs<provider::NbmDataProvider>(provider);
+   auto& nbmProvider = ProviderAs<provider::IdxModelProvider>(provider);
 
-   if (p->nbmUseLatestCycle_)
+   if (p->idxUseLatestCycle_)
    {
       nbmProvider.UseLatestCycle();
    }
    else
    {
-      nbmProvider.SetCycle(p->nbmCycleOverride_);
+      nbmProvider.SetCycle(p->idxCycleOverride_);
    }
-   nbmProvider.SetForecastHour(p->nbmForecastHour_);
+   nbmProvider.SetForecastHour(p->idxForecastHour_);
 }
 
-void GribManager::FetchNbmSelection()
+void GribManager::FetchIdxSelection()
 {
    using namespace std::chrono;
 
@@ -2895,7 +3041,7 @@ void GribManager::FetchNbmSelection()
    }
 
    auto& nbmProvider =
-      ProviderAs<provider::NbmDataProvider>(*p->providers_.at(*index));
+      ProviderAs<provider::IdxModelProvider>(*p->providers_.at(*index));
 
    // FetchArchiveFrameForProduct()'s own Nbm branch ignores this `time`
    // argument entirely, resolving each product's key from its own
@@ -2909,20 +3055,20 @@ void GribManager::FetchNbmSelection()
 
 // Nbm's own per-product dispatch, called from FetchArchiveFrameForProduct()
 // for every active Nbm product (via FetchArchiveFrame()'s loop) and
-// directly from FetchNbmSelection()/SetProductActive() when the manager
+// directly from FetchIdxSelection()/SetProductActive() when the manager
 // only has one product's selection to resolve. Unlike Rrfs/MRMS/RTMA, a
 // key alone doesn't say what to download here -- NBM's own per-cycle
 // file bundles every field, so the *field* (this product's own
 // nbmParameter/nbmLevel/nbmQualifier) has to come along too, and each
 // field's cached bytes need their own path (see cacheKey below) since
 // several products share the same underlying S3 key.
-void GribManager::FetchNbmSelectionForProduct(std::size_t productIndex)
+void GribManager::FetchIdxSelectionForProduct(std::size_t productIndex)
 {
-   auto& nbmProvider =
-      ProviderAs<provider::NbmDataProvider>(*p->providers_.at(productIndex));
+   auto& idxProvider =
+      ProviderAs<provider::IdxModelProvider>(*p->providers_.at(productIndex));
 
-   const std::string key = provider::NbmDataProvider::BuildKey(
-      nbmProvider.CurrentCycle(), nbmProvider.ForecastHour());
+   const std::string key = idxProvider.BuildKeyFor(idxProvider.CurrentCycle(),
+                                                   idxProvider.ForecastHour());
 
    // Suffixed with this product's own shortName -- distinct products
    // downloading different fields out of the *same* underlying key must
@@ -2947,7 +3093,7 @@ void GribManager::FetchNbmSelectionForProduct(std::size_t productIndex)
       return;
    }
 
-   QueueNbmDownload(productIndex, key, cacheKey);
+   QueueIdxDownload(productIndex, key, cacheKey);
 }
 
 // Downloads exactly one field via NbmDataProvider::FetchField() (the
@@ -2957,7 +3103,7 @@ void GribManager::FetchNbmSelectionForProduct(std::size_t productIndex)
 // downloaded bytes decode by shortName alone out of a multi-field file,
 // which is true for Rtma/Rrfs but not for Nbm, where the byte range
 // fetched already contains only the one field asked for.
-void GribManager::QueueNbmDownload(std::size_t        productIndex,
+void GribManager::QueueIdxDownload(std::size_t        productIndex,
                                    const std::string& key,
                                    const std::string& cacheKey)
 {
@@ -2994,7 +3140,7 @@ void GribManager::QueueNbmDownload(std::size_t        productIndex,
          };
 
          auto downloaded =
-            ProviderAs<provider::NbmDataProvider>(*provider).FetchField(
+            ProviderAs<provider::IdxModelProvider>(*provider).FetchField(
                key,
                product.nbmParameter,
                product.nbmLevel,
@@ -3045,52 +3191,50 @@ void GribManager::QueueNbmDownload(std::size_t        productIndex,
       });
 }
 
-void GribManager::SetNbmCycle(std::chrono::system_clock::time_point cycleTime)
+void GribManager::SetIdxCycle(std::chrono::system_clock::time_point cycleTime)
 {
-   if (p->category_ != map::GribCategory::Nbm)
+   if (!IsIdxCategory(p->category_))
    {
-      logger_->warn("SetNbmCycle() is only meaningful for GribCategory::Nbm");
+      logger_->warn("SetIdxCycle() is only meaningful for GribCategory::Nbm");
       return;
    }
 
-   p->nbmUseLatestCycle_ = false;
-   p->nbmCycleOverride_  = cycleTime;
+   p->idxUseLatestCycle_ = false;
+   p->idxCycleOverride_  = cycleTime;
 
    for (auto& [index, providerPtr] : p->providers_)
    {
-      SyncNbmProviderState(*providerPtr);
+      SyncIdxProviderState(*providerPtr);
    }
 
-   FetchNbmSelection();
+   FetchIdxSelection();
 }
 
-void GribManager::UseLatestNbmCycle()
+void GribManager::UseLatestIdxCycle()
 {
-   if (p->category_ != map::GribCategory::Nbm)
+   if (!IsIdxCategory(p->category_))
    {
       logger_->warn(
-         "UseLatestNbmCycle() is only meaningful for GribCategory::Nbm");
+         "UseLatestIdxCycle() is only meaningful for GribCategory::Nbm");
       return;
    }
 
-   p->nbmUseLatestCycle_ = true;
+   p->idxUseLatestCycle_ = true;
 
    for (auto& [index, providerPtr] : p->providers_)
    {
-      SyncNbmProviderState(*providerPtr);
+      SyncIdxProviderState(*providerPtr);
    }
 
-   FetchNbmSelection();
+   FetchIdxSelection();
 }
 
-bool GribManager::IsUsingLatestNbmCycle() const
-{
-   return p->category_ != map::GribCategory::Nbm || p->nbmUseLatestCycle_;
-}
+bool GribManager::IsUsingLatestIdxCycle() const
+{ return !IsIdxCategory(p->category_) || p->idxUseLatestCycle_; }
 
-std::chrono::system_clock::time_point GribManager::CurrentNbmCycle() const
+std::chrono::system_clock::time_point GribManager::CurrentIdxCycle() const
 {
-   if (p->category_ != map::GribCategory::Nbm)
+   if (!IsIdxCategory(p->category_))
    {
       return {};
    }
@@ -3103,16 +3247,16 @@ std::chrono::system_clock::time_point GribManager::CurrentNbmCycle() const
       return {};
    }
 
-   return ProviderAs<provider::NbmDataProvider>(*p->providers_.at(*index))
+   return ProviderAs<provider::IdxModelProvider>(*p->providers_.at(*index))
       .CurrentCycle();
 }
 
-void GribManager::SetNbmForecastHour(int hour)
+void GribManager::SetIdxForecastHour(int hour)
 {
-   if (p->category_ != map::GribCategory::Nbm)
+   if (!IsIdxCategory(p->category_))
    {
       logger_->warn(
-         "SetNbmForecastHour() is only meaningful for GribCategory::Nbm");
+         "SetIdxForecastHour() is only meaningful for GribCategory::Nbm");
       return;
    }
 
@@ -3121,32 +3265,115 @@ void GribManager::SetNbmForecastHour(int hour)
    // NbmDataProvider::SnapForecastHour()'s own doc), so a caller driving
    // this from a linear slider would otherwise request hours that simply
    // don't exist for most of the range.
-   p->nbmForecastHour_ =
-      provider::NbmDataProvider::SnapForecastHour(CurrentNbmCycle(), hour);
+   p->idxForecastHour_ =
+      p->idxRules_ ?
+         p->idxRules_->SnapForecastHourFor(CurrentIdxCycle(), hour) :
+         hour;
 
    for (auto& [index, providerPtr] : p->providers_)
    {
-      SyncNbmProviderState(*providerPtr);
+      SyncIdxProviderState(*providerPtr);
    }
 
-   FetchNbmSelection();
+   FetchIdxSelection();
 }
 
-int GribManager::NbmForecastHour() const
-{
-   return (p->category_ == map::GribCategory::Nbm) ? p->nbmForecastHour_ : 0;
-}
+int GribManager::IdxForecastHour() const
+{ return (IsIdxCategory(p->category_)) ? p->idxForecastHour_ : 0; }
 
-int GribManager::MaxNbmForecastHour() const
+int GribManager::MaxIdxForecastHour() const
 {
-   if (p->category_ != map::GribCategory::Nbm || !CurrentProductIndex())
+   if (!IsIdxCategory(p->category_) || !CurrentProductIndex())
    {
       // The second check matters on its own -- same reasoning as
       // MaxRrfsForecastHour()'s identical guard.
       return 0;
    }
 
-   return provider::NbmDataProvider::MaxForecastHourForCycle(CurrentNbmCycle());
+   return p->idxRules_ ? p->idxRules_->MaxForecastHourFor(CurrentIdxCycle()) :
+                         0;
+}
+
+int GribManager::MinIdxForecastHour() const
+{
+   return (IsIdxCategory(p->category_) && p->idxRules_) ?
+             p->idxRules_->MinForecastHourFor() :
+             0;
+}
+
+void GribManager::ReloadUserModel()
+{
+   if (p->category_ != map::GribCategory::User)
+   {
+      logger_->warn(
+         "ReloadUserModel() is only meaningful for GribCategory::User");
+      return;
+   }
+
+   // Every earlier product index belongs to the old model's table.
+   for (const auto& name : ActiveProductNames())
+   {
+      SetProductActive(name, false);
+   }
+
+   const auto model = p->userModels_->SelectedModel();
+   RebuildUserProducts(model);
+
+   {
+      std::lock_guard lock(p->fetchMutex_);
+      p->lastKeys_.clear();
+      p->lastRequestedKeys_.clear();
+   }
+
+   p->idxUseLatestCycle_ = true;
+   p->idxCycleOverride_  = {};
+   p->idxRules_          = MakeIdxRulesProvider(p->category_);
+   p->idxForecastHour_ = p->idxRules_ ? p->idxRules_->MinForecastHourFor() : 0;
+
+   logger_->info("User model is now \"{}\" ({} products)",
+                 model ? model->config.name : std::string {"(none)"},
+                 Products(p->category_).size());
+
+   Q_EMIT ProductsChanged();
+}
+
+std::string GribManager::UserModelName() const
+{
+   if (p->category_ != map::GribCategory::User)
+   {
+      return {};
+   }
+   return p->userModels_->SelectedModelName();
+}
+
+std::vector<std::chrono::system_clock::time_point>
+GribManager::IdxCycleChoices(int historyHours) const
+{
+   std::vector<std::chrono::system_clock::time_point> cycles;
+   if (!IsIdxCategory(p->category_) || !p->idxRules_)
+   {
+      return cycles;
+   }
+
+   const auto now =
+      std::chrono::floor<std::chrono::hours>(std::chrono::system_clock::now());
+   for (int i = 0; i < historyHours; ++i)
+   {
+      const auto cycle = now - std::chrono::hours {i};
+      if (p->idxRules_->RunsCycleAt(cycle))
+      {
+         cycles.push_back(cycle);
+      }
+   }
+   return cycles;
+}
+
+int GribManager::MaxIdxForecastHourFor(
+   std::chrono::system_clock::time_point cycle) const
+{
+   return (IsIdxCategory(p->category_) && p->idxRules_) ?
+             p->idxRules_->MaxForecastHourFor(cycle) :
+             0;
 }
 
 void GribManager::RequestFrame(

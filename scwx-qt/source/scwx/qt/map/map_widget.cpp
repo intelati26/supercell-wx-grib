@@ -405,6 +405,7 @@ public:
    std::shared_ptr<GribProductLayer>          gribRtmaLayer_;
    std::shared_ptr<GribProductLayer>          gribRrfsLayer_;
    std::shared_ptr<GribProductLayer>          gribNbmLayer_;
+   std::shared_ptr<GribProductLayer>          gribUserLayer_;
    std::shared_ptr<WindBarbLayer>             windBarbLayer_;
    std::shared_ptr<HodographLayer>            hodographLayer_;
    std::shared_ptr<OverlayLayer>              overlayLayer_;
@@ -1792,6 +1793,10 @@ void MapWidgetImpl::AddLayers()
    {
       gribNbmLayer_ = nullptr;
    }
+   if (!isDisplayedHere(types::DataLayer::GribUser))
+   {
+      gribUserLayer_ = nullptr;
+   }
 
    if (annotationLayer_ == nullptr)
    {
@@ -1846,6 +1851,7 @@ void MapWidgetImpl::AddLayer(types::LayerType        type,
          WireAreaSiblingPair(radarProductLayer_, gribRtmaLayer_);
          WireAreaSiblingPair(radarProductLayer_, gribRrfsLayer_);
          WireAreaSiblingPair(radarProductLayer_, gribNbmLayer_);
+         WireAreaSiblingPair(radarProductLayer_, gribUserLayer_);
 
          AddLayer(layerName, radarProductLayer_, before);
       }
@@ -1975,6 +1981,7 @@ void MapWidgetImpl::AddLayer(types::LayerType        type,
             WireAreaSiblingPair(gribMrmsLayer_, gribRtmaLayer_);
             WireAreaSiblingPair(gribMrmsLayer_, gribRrfsLayer_);
             WireAreaSiblingPair(gribMrmsLayer_, gribNbmLayer_);
+            WireAreaSiblingPair(gribMrmsLayer_, gribUserLayer_);
             WireAreaSiblingPair(gribMrmsLayer_, radarProductLayer_);
          }
          AddLayer(layerName, gribMrmsLayer_, before);
@@ -1988,6 +1995,7 @@ void MapWidgetImpl::AddLayer(types::LayerType        type,
             WireAreaSiblingPair(gribRtmaLayer_, gribMrmsLayer_);
             WireAreaSiblingPair(gribRtmaLayer_, gribRrfsLayer_);
             WireAreaSiblingPair(gribRtmaLayer_, gribNbmLayer_);
+            WireAreaSiblingPair(gribRtmaLayer_, gribUserLayer_);
             WireAreaSiblingPair(gribRtmaLayer_, radarProductLayer_);
          }
          AddLayer(layerName, gribRtmaLayer_, before);
@@ -2001,6 +2009,7 @@ void MapWidgetImpl::AddLayer(types::LayerType        type,
             WireAreaSiblingPair(gribRrfsLayer_, gribMrmsLayer_);
             WireAreaSiblingPair(gribRrfsLayer_, gribRtmaLayer_);
             WireAreaSiblingPair(gribRrfsLayer_, gribNbmLayer_);
+            WireAreaSiblingPair(gribRrfsLayer_, gribUserLayer_);
             WireAreaSiblingPair(gribRrfsLayer_, radarProductLayer_);
          }
          AddLayer(layerName, gribRrfsLayer_, before);
@@ -2014,9 +2023,24 @@ void MapWidgetImpl::AddLayer(types::LayerType        type,
             WireAreaSiblingPair(gribNbmLayer_, gribMrmsLayer_);
             WireAreaSiblingPair(gribNbmLayer_, gribRtmaLayer_);
             WireAreaSiblingPair(gribNbmLayer_, gribRrfsLayer_);
+            WireAreaSiblingPair(gribNbmLayer_, gribUserLayer_);
             WireAreaSiblingPair(gribNbmLayer_, radarProductLayer_);
          }
          AddLayer(layerName, gribNbmLayer_, before);
+         break;
+
+      case types::DataLayer::GribUser:
+         if (gribUserLayer_ == nullptr)
+         {
+            gribUserLayer_ = std::make_shared<GribProductLayer>(
+               glContext_, map::GribCategory::User);
+            WireAreaSiblingPair(gribUserLayer_, gribMrmsLayer_);
+            WireAreaSiblingPair(gribUserLayer_, gribRtmaLayer_);
+            WireAreaSiblingPair(gribUserLayer_, gribRrfsLayer_);
+            WireAreaSiblingPair(gribUserLayer_, gribNbmLayer_);
+            WireAreaSiblingPair(gribUserLayer_, radarProductLayer_);
+         }
+         AddLayer(layerName, gribUserLayer_, before);
          break;
 
       // Unlike the three GRIB layers above, wind barbs are point icons,

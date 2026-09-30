@@ -28,6 +28,7 @@ set(SRC_PROVIDER_TESTS source/scwx/provider/aws_level2_data_provider.test.cpp
                        source/scwx/provider/http_level3_data_provider.test.cpp
                        source/scwx/provider/iem_api_provider.test.cpp
                        source/scwx/provider/mrms_data_provider.test.cpp
+                       source/scwx/provider/configured_idx_provider.test.cpp
                        source/scwx/provider/nbm_data_provider.test.cpp
                        source/scwx/provider/nws_level3_behavior.test.cpp
                        source/scwx/provider/nws_api_provider.test.cpp
@@ -46,6 +47,8 @@ set(SRC_QT_MANAGER_TESTS source/scwx/qt/manager/grib_manager.test.cpp
                          source/scwx/qt/manager/hodograph_manager.test.cpp
                          source/scwx/qt/manager/product_datastore.test.cpp
                          source/scwx/qt/manager/radar_product_manager.test.cpp
+                         source/scwx/qt/manager/user_model_grib_manager.test.cpp
+                         source/scwx/qt/manager/user_model_registry.test.cpp
                          source/scwx/qt/manager/settings_manager.test.cpp
                          source/scwx/qt/manager/status_manager.test.cpp
                          source/scwx/qt/manager/update_manager.test.cpp)
@@ -58,7 +61,8 @@ set(SRC_QT_MODEL_TESTS source/scwx/qt/model/imgui_context_model.test.cpp
                        source/scwx/qt/model/layer_model.test.cpp
                        source/scwx/qt/model/marker_model.test.cpp)
 set(SRC_QT_TYPES_TESTS source/scwx/qt/types/layer_types.test.cpp)
-set(SRC_QT_UI_TESTS source/scwx/qt/ui/threshold_value_utility.test.cpp)
+set(SRC_QT_UI_TESTS source/scwx/qt/ui/threshold_value_utility.test.cpp
+                     source/scwx/qt/ui/grib_dock_widget.test.cpp)
 set(SRC_QT_SETTINGS_TESTS source/scwx/qt/settings/settings_container.test.cpp
                           source/scwx/qt/settings/settings_variable.test.cpp
                           source/scwx/qt/settings/ui_settings.test.cpp
@@ -71,6 +75,7 @@ set(SRC_QT_UTIL_TESTS source/scwx/qt/util/file.test.cpp
 set(SRC_TYPES_TESTS source/scwx/types/ondas_types.test.cpp)
 set(SRC_UTIL_TESTS source/scwx/util/float.test.cpp
                    source/scwx/util/grib_idx.test.cpp
+                   source/scwx/util/grib_model_config.test.cpp
                    source/scwx/util/rangebuf.test.cpp
                    source/scwx/util/streams.test.cpp
                    source/scwx/util/strings.test.cpp

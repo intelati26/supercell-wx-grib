@@ -1,0 +1,14 @@
+# Verified against a real HRRR f03 file: idx names below match its .idx, and
+# short_name is what eccodes reports for that record. Ranges and cutoffs come
+# from that file's own value distribution. Only the first 18 forecast hours are
+# offered because that is what every hourly cycle publishes (00/06/12/18z also
+# go to 48 -- raise max_forecast_hour in model.json if you only use those).
+name,parameter,level,qualifier,short_name,type,units,quantity,color_offset,color_scale,no_data_threshold,contour_interval
+2m Temperature,TMP,2 m above ground,,2t,fill,,,,,,
+2m Dewpoint,DPT,2 m above ground,,2d,fill,,,230,70,,
+Wind Gust,GUST,surface,,gust,fill,m/s,speed_meters_per_second,0,40,,
+# 79% of cells sit at the -10 dBZ "no echo" floor, so anything under 0 is hidden.
+Composite Reflectivity,REFC,entire atmosphere,,refc,fill,dBZ,none,-20,95,0,
+# 58% of cells are exactly 0; hide them rather than paint them the palette's floor colour.
+SBCAPE,CAPE,surface,,cape,fill,J/kg,none,0,5000,50,
+Mean Sea Level Pressure,MSLMA,mean sea level,,mslma,contour,Pa,pressure_pascals,97000,10000,,400

@@ -88,6 +88,8 @@ set(HDR_PROVIDER include/scwx/provider/aws_level2_data_provider.hpp
                  include/scwx/provider/iem_api_provider.hpp
                  include/scwx/provider/iem_api_provider.ipp
                  include/scwx/provider/mrms_data_provider.hpp
+                 include/scwx/provider/configured_idx_provider.hpp
+                 include/scwx/provider/idx_model_provider.hpp
                  include/scwx/provider/nbm_data_provider.hpp
                  include/scwx/provider/nexrad_data_provider.hpp
                  include/scwx/provider/nexrad_data_provider_factory.hpp
@@ -106,6 +108,7 @@ set(SRC_PROVIDER source/scwx/provider/aws_level2_data_provider.cpp
                  source/scwx/provider/http_nexrad_data_provider.cpp
                  source/scwx/provider/iem_api_provider.cpp
                  source/scwx/provider/mrms_data_provider.cpp
+                 source/scwx/provider/configured_idx_provider.cpp
                  source/scwx/provider/nbm_data_provider.cpp
                  source/scwx/provider/nexrad_data_provider.cpp
                  source/scwx/provider/nexrad_data_provider_factory.cpp
@@ -129,6 +132,7 @@ set(HDR_UTIL include/scwx/util/digest.hpp
              include/scwx/util/environment.hpp
              include/scwx/util/float.hpp
              include/scwx/util/grib_idx.hpp
+             include/scwx/util/grib_model_config.hpp
              include/scwx/util/hash.hpp
              include/scwx/util/iterator.hpp
              include/scwx/util/json.hpp
@@ -144,6 +148,7 @@ set(SRC_UTIL source/scwx/util/digest.cpp
              source/scwx/util/environment.cpp
              source/scwx/util/float.cpp
              source/scwx/util/grib_idx.cpp
+             source/scwx/util/grib_model_config.cpp
              source/scwx/util/hash.cpp
              source/scwx/util/json.cpp
              source/scwx/util/logger.cpp
