@@ -11,16 +11,18 @@ namespace scwx::qt::util::grib_legend
 {
 
 // Composites a color-scale legend bar plus model/valid-time text onto
-// `image` in place, for `gribManager`'s current product -- reads that
-// product's own colorOffset/colorScale straight from its decoded frame
-// file (see map::ReadGribFrameColorRange()) and samples the same shared
-// palette GribProductLayer's shader does (see LoadPalette()'s own doc),
-// so the legend always matches what's actually drawn on the map.
+// `image` in place for each of `gribManager`'s checked products (stacked
+// upward from the bottom-left corner, matching what GribProductLayer
+// draws) -- reads each product's own colorOffset/colorScale straight from
+// its decoded frame file (see map::ReadGribFrameColorRange()) and samples
+// the same shared palette GribProductLayer's shader does (see
+// LoadPalette()'s own doc), so the legend always matches what's actually
+// drawn on the map.
 // `categoryLabel` is the short display name (e.g. "RRFS", "NBM") shown
 // alongside the product name -- GribManager itself has no user-facing
 // category label, only GribDockWidget's own CategoryDisplayName() does.
-// A no-op (image left untouched) if this category has no decoded frame
-// yet (colorScale == 0).
+// Products with no decoded frame yet (colorScale == 0) are skipped; a
+// no-op if none has one.
 void DrawLegend(QImage&                     image,
                manager::GribManager&        gribManager,
                map::GribCategory            category,

@@ -72,6 +72,11 @@ public:
 protected:
    std::shared_ptr<Aws::S3::S3Client> client();
 
+   // False once Shutdown() has been called -- for a subclass's own S3
+   // requests to cancel on, the same way this class's own do (see
+   // DownloadObject()).
+   [[nodiscard]] bool IsRunning() const;
+
    // Downloads `key` from `bucketName` to `outputPath` as-is (no
    // decompression -- callers that need that, like MrmsDataProvider,
    // decompress the result afterward), honoring Shutdown()'s own

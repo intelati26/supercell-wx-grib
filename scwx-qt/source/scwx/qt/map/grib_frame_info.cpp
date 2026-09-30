@@ -11,8 +11,10 @@
 #   pragma warning(pop)
 #endif
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <system_error>
 
@@ -216,6 +218,124 @@ glm::dvec2 LambertGridToLatLon(const LambertGrid& grid, double i, double j)
    const double     y      = origin.y + j * grid.dy;
 
    return LambertInverse(grid, c, x, y);
+}
+
+bool FitsHalfFloatTexture(const float* values,
+                          std::size_t  count,
+                          float        noDataThreshold,
+                          float        colorScale,
+                          float        contourInterval,
+                          double       missingValue)
+{
+   // Largest finite half-precision value.
+   constexpr float kHalfMax = 65504.0f;
+
+   if (contourInterval > 0.0f || !(std::abs(colorScale) > 0.0f))
+   {
+      return false;
+   }
+
+   float maxAbs = 0.0f;
+   for (std::size_t i = 0; i < count; ++i)
+   {
+      const float v = values[i];
+      if (!(v >= noDataThreshold))
+      {
+         continue; // not drawn (below the cutoff, or NaN)
+      }
+      if (static_cast<double>(v) == missingValue)
+      {
+         if (!(std::abs(v) < kHalfMax))
+         {
+            return false; // would become infinity
+         }
+         continue; // drawn, but its exact value doesn't matter
+      }
+      maxAbs = std::max(maxAbs, std::abs(v));
+   }
+
+   if (!(maxAbs < kHalfMax)) // also catches +/-infinity
+   {
+      return false;
+   }
+   if (maxAbs == 0.0f)
+   {
+      return true;
+   }
+
+   // Half precision has a 10-bit mantissa, so values in [2^e, 2^(e+1))
+   // are spaced 2^(e-10) apart and round by at most half that. The largest
+   // drawn value has the coarsest spacing of any of them.
+   int exponent = 0;
+   std::frexp(maxAbs, &exponent); // maxAbs = m * 2^exponent, m in [0.5, 1)
+   const float maxRoundingError = std::ldexp(1.0f, (exponent - 1) - 11);
+
+   return maxRoundingError <= std::abs(colorScale) / 512.0f;
+}
+
+GridIndexBox LambertGridIndexBox(const LambertGrid& grid,
+                                 long               nx,
+                                 long               ny,
+                                 const LatLonBox&   box)
+{
+   if (nx <= 0 || ny <= 0 || grid.dx == 0.0 || grid.dy == 0.0)
+   {
+      return {};
+   }
+
+   const GridIndexBox wholeGrid {0, nx - 1, 0, ny - 1};
+
+   if (box.east - box.west > 90.0)
+   {
+      return wholeGrid;
+   }
+
+   const LambertConstants c = ComputeLambertConstants(grid);
+   const glm::dvec2 origin  = LambertForward(grid, c, grid.lat1, grid.lon1);
+
+   // The projection is continuous and one-to-one over a box this size, so
+   // the box's image is bounded by the image of its edges -- sampling the
+   // perimeter finely enough to follow the edges' curvature bounds the
+   // whole interior without projecting it.
+   constexpr int kSamplesPerEdge = 16;
+
+   double iMin = std::numeric_limits<double>::max();
+   double iMax = std::numeric_limits<double>::lowest();
+   double jMin = std::numeric_limits<double>::max();
+   double jMax = std::numeric_limits<double>::lowest();
+
+   auto include = [&](double lat, double lon)
+   {
+      // Measure longitude on the same side of the cone as the grid, so a
+      // grid described in 0-360 degrees still lines up with a -180-180 box.
+      lon = grid.lov + std::remainder(lon - grid.lov, 360.0);
+
+      const glm::dvec2 xy = LambertForward(grid, c, lat, lon);
+      const double     i  = (xy.x - origin.x) / grid.dx;
+      const double     j  = (xy.y - origin.y) / grid.dy;
+      iMin                = std::min(iMin, i);
+      iMax                = std::max(iMax, i);
+      jMin                = std::min(jMin, j);
+      jMax                = std::max(jMax, j);
+   };
+
+   for (int s = 0; s <= kSamplesPerEdge; ++s)
+   {
+      const double f   = static_cast<double>(s) / kSamplesPerEdge;
+      const double lat = box.south + f * (box.north - box.south);
+      const double lon = box.west + f * (box.east - box.west);
+      include(box.south, lon);
+      include(box.north, lon);
+      include(lat, box.west);
+      include(lat, box.east);
+   }
+
+   GridIndexBox result;
+   result.iMin = std::max(static_cast<long>(std::floor(iMin)), 0L);
+   result.iMax = std::min(static_cast<long>(std::ceil(iMax)), nx - 1);
+   result.jMin = std::max(static_cast<long>(std::floor(jMin)), 0L);
+   result.jMax = std::min(static_cast<long>(std::ceil(jMax)), ny - 1);
+   return result;
 }
 
 } // namespace scwx::qt::map

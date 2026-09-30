@@ -7,6 +7,8 @@
 #include <scwx/qt/util/geographic_lib.hpp>
 #include <scwx/util/logger.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <fstream>
 #include <memory>
@@ -32,12 +34,37 @@ static constexpr double kMetersPerSecondToKnots_ = 1.9438445;
 namespace
 {
 
-// Same shape as WindBarbLayer's own ParsedFrame -- one decoded field's
-// Lambert grid geometry plus its raw values. Duplicated rather than
-// shared: each layer's own frame set (RTMA's 3 fields vs. RRFS's 34+1)
-// is different enough, and small enough, that a shared struct would just
-// be a thin wrapper around ExtractNumber/LambertGrid, which both layers
-// already call directly from grib_frame_info.hpp.
+// Every decimation stride TierForZoom() below can return -- the only grid
+// rows/columns this layer ever reads (see SelectHodographPoints()), so the
+// only ones ParseFrame() keeps in memory.
+constexpr std::array<long, 3> kTierStrides_ {30, 14, 6};
+
+// Maps a full-grid row/column index to its slot in a ParsedFrame's
+// compacted values, or -1 for an index no tier ever samples.
+std::vector<long> SampledAxisSlots(long size)
+{
+   std::vector<long> slotOf(static_cast<std::size_t>(std::max(size, 0L)), -1);
+   long              next = 0;
+   for (long index = 0; index < size; ++index)
+   {
+      for (const long stride : kTierStrides_)
+      {
+         if (index % stride == 0)
+         {
+            slotOf[static_cast<std::size_t>(index)] = next++;
+            break;
+         }
+      }
+   }
+   return slotOf;
+}
+
+// One decoded field's Lambert grid geometry plus its values -- but only at
+// the rows/columns some zoom tier actually samples (see kTierStrides_),
+// not the whole grid. The layer holds 34 levels x (u, v) plus terrain at
+// once; at RRFS's full ~1800 x 1060 grid that was ~0.5GB of floats, nearly
+// all of it never read. Keeping just the sampled rows/columns is ~5% of
+// that. Otherwise the same shape as WindBarbLayer's own ParsedFrame.
 struct ParsedFrame
 {
    long               grid_nx {};
@@ -45,7 +72,29 @@ struct ParsedFrame
    LambertGrid        grid {};
    std::string        validTime;
    double             missingValue {};
-   std::vector<float> values;
+   std::vector<long>  colSlots; // grid_nx entries, see SampledAxisSlots()
+   std::vector<long>  rowSlots; // grid_ny entries
+   long               sampledCols {};
+   std::vector<float> values; // sampled rows x sampledCols, row-major
+
+   // Value at full-grid index (i, j), or std::nullopt if (i, j) is outside
+   // the grid or isn't a sampled point.
+   [[nodiscard]] std::optional<float> At(long i, long j) const
+   {
+      if (i < 0 || i >= grid_nx || j < 0 || j >= grid_ny)
+      {
+         return std::nullopt;
+      }
+      const long col = colSlots[static_cast<std::size_t>(i)];
+      const long row = rowSlots[static_cast<std::size_t>(j)];
+      if (col < 0 || row < 0)
+      {
+         return std::nullopt;
+      }
+      return values[static_cast<std::size_t>(row) *
+                       static_cast<std::size_t>(sampledCols) +
+                    static_cast<std::size_t>(col)];
+   }
 };
 
 std::optional<ParsedFrame> ParseFrame(const std::string& path)
@@ -78,12 +127,64 @@ std::optional<ParsedFrame> ParseFrame(const std::string& path)
 
       const auto byteLength =
          static_cast<std::size_t>(ExtractNumber(header, "byteLength"));
-      frame.values.resize(byteLength / sizeof(float));
-      in.read(reinterpret_cast<char*>(frame.values.data()),
-              static_cast<std::streamsize>(byteLength));
 
-      if (!in || frame.values.size() !=
-                    static_cast<std::size_t>(frame.grid_nx * frame.grid_ny))
+      if (frame.grid_nx <= 0 || frame.grid_ny <= 0 ||
+          byteLength != static_cast<std::size_t>(frame.grid_nx) *
+                           static_cast<std::size_t>(frame.grid_ny) *
+                           sizeof(float))
+      {
+         return std::nullopt;
+      }
+
+      frame.colSlots = SampledAxisSlots(frame.grid_nx);
+      frame.rowSlots = SampledAxisSlots(frame.grid_ny);
+      frame.sampledCols =
+         static_cast<long>(std::count_if(frame.colSlots.cbegin(),
+                                         frame.colSlots.cend(),
+                                         [](long slot) { return slot >= 0; }));
+      const auto sampledRows = static_cast<std::size_t>(
+         std::count_if(frame.rowSlots.cbegin(),
+                       frame.rowSlots.cend(),
+                       [](long slot) { return slot >= 0; }));
+
+      frame.values.reserve(sampledRows *
+                           static_cast<std::size_t>(frame.sampledCols));
+
+      // Row by row, reading (and seeking past) whole rows so only one
+      // row's worth of the full grid is ever in memory at once.
+      const auto rowBytes = static_cast<std::streamsize>(
+         static_cast<std::size_t>(frame.grid_nx) * sizeof(float));
+      std::vector<float> row(static_cast<std::size_t>(frame.grid_nx));
+
+      for (long j = 0; j < frame.grid_ny; ++j)
+      {
+         if (frame.rowSlots[static_cast<std::size_t>(j)] < 0)
+         {
+            in.seekg(rowBytes, std::ios::cur);
+            continue;
+         }
+
+         in.read(reinterpret_cast<char*>(row.data()), rowBytes);
+         if (!in)
+         {
+            return std::nullopt;
+         }
+
+         for (long i = 0; i < frame.grid_nx; ++i)
+         {
+            if (frame.colSlots[static_cast<std::size_t>(i)] >= 0)
+            {
+               frame.values.push_back(row[static_cast<std::size_t>(i)]);
+            }
+         }
+      }
+
+      // seekg() past the end doesn't fail by itself -- make sure the file
+      // really held the whole grid, trailing skipped rows included.
+      in.seekg(0, std::ios::end);
+      const auto fileEnd = in.tellg();
+      if (!in ||
+          fileEnd < static_cast<std::streamoff>(header.size() + 1 + byteLength))
       {
          return std::nullopt;
       }
@@ -98,10 +199,10 @@ std::optional<ParsedFrame> ParseFrame(const std::string& path)
 }
 
 // Every level's u/v plus terrain, parsed once and shared by every map pane's
-// HodographLayer. That is 35 full RRFS grids (~15MB each, ~525MB total):
-// held per pane -- and kept even while the layer was hidden below zoom 6 --
-// it was the app's single largest allocation (a 6-pane profile put ~3GB
-// here), enough on its own to swamp a 3GB machine.
+// HodographLayer. As 35 full RRFS grids that was ~525MB, held per pane --
+// and kept even while the layer was hidden below zoom 6 -- the app's single
+// largest allocation (a 6-pane profile put ~3GB here). Shared, and with
+// ParseFrame() keeping only the sampled rows/columns, it's now ~24MB total.
 struct SharedFrames
 {
    std::uint64_t                           generation {};
@@ -162,23 +263,30 @@ std::shared_ptr<const SharedFrames> ParseAllFrames(std::uint64_t generation)
    return frames;
 }
 
-// Same decimation idiom as WindBarbLayer's own SelectBarbPoints.
+// Same decimation idiom as WindBarbLayer's own SelectBarbPoints: every
+// `stride`-th row and column within `window`, kept on whole-grid multiples
+// of `stride` (which is also what keeps every point on a row/column
+// ParseFrame() sampled).
 std::vector<std::pair<long, long>>
-SelectHodographPoints(long nx, long ny, long stride)
+SelectHodographPoints(const GridIndexBox& window, long stride)
 {
    std::vector<std::pair<long, long>> points;
 
-   if (stride < 1)
+   if (stride < 1 || window.IsEmpty())
    {
       return points;
    }
 
-   points.reserve(
-      static_cast<std::size_t>((nx / stride + 1) * (ny / stride + 1)));
+   const long iStart = (window.iMin + stride - 1) / stride * stride;
+   const long jStart = (window.jMin + stride - 1) / stride * stride;
 
-   for (long j = 0; j < ny; j += stride)
+   points.reserve(
+      static_cast<std::size_t>(((window.iMax - iStart) / stride + 1) *
+                               ((window.jMax - jStart) / stride + 1)));
+
+   for (long j = jStart; j <= window.jMax; j += stride)
    {
-      for (long i = 0; i < nx; i += stride)
+      for (long i = iStart; i <= window.iMax; i += stride)
       {
          points.emplace_back(i, j);
       }
@@ -232,15 +340,15 @@ ZoomTier TierForZoom(double zoom)
    }
    else if (zoom < 7.5)
    {
-      return {30, 90.0, true};
+      return {kTierStrides_[0], 90.0, true};
    }
    else if (zoom < 9.0)
    {
-      return {14, 140.0, true};
+      return {kTierStrides_[1], 140.0, true};
    }
    else
    {
-      return {6, 220.0, true};
+      return {kTierStrides_[2], 220.0, true};
    }
 }
 
@@ -470,12 +578,24 @@ void HodographLayer::Impl::RebuildLines(ZoomTier tier, const GeoBounds& bounds)
       const auto& levels  = manager::HodographManager::Levels();
       const auto& terrain = *frames_->terrain;
 
-      for (const auto& [i, j] :
-           SelectHodographPoints(terrain.grid_nx, terrain.grid_ny, tier.stride))
+      // Only build what's on screen (plus margin): this grid covers all of
+      // CONUS at every zoom, and each hodograph is a whole polyline (one
+      // GeoLines entry per level, each with its own hover text). The
+      // grid-index window bounding `bounds` limits which points are visited
+      // at all; the per-point Contains() then trims its corners, since a
+      // lat/lon rectangle isn't a rectangle in grid indices.
+      const GridIndexBox window =
+         bounds.limited ?
+            LambertGridIndexBox(
+               terrain.grid,
+               terrain.grid_nx,
+               terrain.grid_ny,
+               LatLonBox {
+                  bounds.south, bounds.west, bounds.north, bounds.east}) :
+            GridIndexBox {0, terrain.grid_nx - 1, 0, terrain.grid_ny - 1};
+
+      for (const auto& [i, j] : SelectHodographPoints(window, tier.stride))
       {
-         // Only build what's on screen (plus margin): this grid covers all
-         // of CONUS at every zoom, and each hodograph is a whole polyline
-         // (one GeoLines entry per level, each with its own hover text).
          const glm::dvec2 latLon = LambertGridToLatLon(
             terrain.grid, static_cast<double>(i), static_cast<double>(j));
          if (!bounds.Contains(latLon.x, latLon.y))
@@ -483,15 +603,13 @@ void HodographLayer::Impl::RebuildLines(ZoomTier tier, const GeoBounds& bounds)
             continue;
          }
 
-         const auto index = static_cast<std::size_t>(j) *
-                               static_cast<std::size_t>(terrain.grid_nx) +
-                            static_cast<std::size_t>(i);
-         if (index >= terrain.values.size())
+         const std::optional<float> terrainValue = terrain.At(i, j);
+         if (!terrainValue.has_value())
          {
             continue;
          }
 
-         const float terrainM = terrain.values[index];
+         const float terrainM = *terrainValue;
          if (!std::isfinite(terrainM) ||
              static_cast<double>(terrainM) == terrain.missingValue)
          {
@@ -510,14 +628,15 @@ void HodographLayer::Impl::RebuildLines(ZoomTier tier, const GeoBounds& bounds)
 
          for (std::size_t lvl = 0; lvl < levels.size(); ++lvl)
          {
-            if (index >= frames_->u[lvl]->values.size() ||
-                index >= frames_->v[lvl]->values.size())
+            const std::optional<float> uValue = frames_->u[lvl]->At(i, j);
+            const std::optional<float> vValue = frames_->v[lvl]->At(i, j);
+            if (!uValue.has_value() || !vValue.has_value())
             {
                continue;
             }
 
-            const float u = frames_->u[lvl]->values[index];
-            const float v = frames_->v[lvl]->values[index];
+            const float u = *uValue;
+            const float v = *vValue;
 
             // eccodes' own missingValue sentinel (a real, finite number,
             // e.g. RRFS's own convention -- *not* NaN, confirmed by
