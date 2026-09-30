@@ -110,11 +110,10 @@ ByteRange RangeForRecord(const std::vector<IdxRecord>& records,
    return range;
 }
 
-std::optional<std::size_t>
-FindRecord(const std::vector<IdxRecord>& records,
-          const std::string&            parameter,
-          const std::string&            level,
-          const std::string&            qualifier)
+std::optional<std::size_t> FindRecord(const std::vector<IdxRecord>& records,
+                                      const std::string&            parameter,
+                                      const std::string&            level,
+                                      const std::string&            qualifier)
 {
    for (std::size_t i = 0; i < records.size(); ++i)
    {

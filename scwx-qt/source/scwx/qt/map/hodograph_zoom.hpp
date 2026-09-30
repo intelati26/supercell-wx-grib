@@ -21,8 +21,8 @@ inline constexpr std::array<long, 3> kTierStrides {30, 14, 6};
 // metres, so a fixed metres-per-(m/s) grows with the map -- tiny specks zoomed
 // out, enormous zoomed in. Sizing by pixels instead keeps it readable
 // throughout; zooming in adds more hodographs rather than bigger ones.
-inline constexpr double kGlyphPixels      = 64.0;
-inline constexpr double kReferenceWindMs  = 30.0;
+inline constexpr double kGlyphPixels     = 64.0;
+inline constexpr double kReferenceWindMs = 30.0;
 // Latitude the metres-per-pixel conversion assumes. The true value changes as
 // the view pans, and following it would rebuild every hodograph on each pan for
 // a +-20% change in size across the CONUS.
@@ -54,15 +54,14 @@ struct ZoomTier
 // geometry on every frame (the size stays within ~19% of the target).
 inline double MetersPerMsForZoom(double zoom)
 {
-   constexpr double kPi                = 3.14159265358979323846;
-   constexpr double kEquatorMeters     = 40075016.686;
-   constexpr double kTileSizePixels    = 512.0;
+   constexpr double kPi             = 3.14159265358979323846;
+   constexpr double kEquatorMeters  = 40075016.686;
+   constexpr double kTileSizePixels = 512.0;
 
    const double stepped = std::floor(zoom * 4.0) / 4.0;
    const double pixelsPerMeter =
       kTileSizePixels * std::exp2(stepped) /
-      (kEquatorMeters *
-       std::cos(kReferenceLatitudeDegrees * kPi / 180.0));
+      (kEquatorMeters * std::cos(kReferenceLatitudeDegrees * kPi / 180.0));
 
    return kGlyphPixels / (kReferenceWindMs * pixelsPerMeter);
 }

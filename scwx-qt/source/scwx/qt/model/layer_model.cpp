@@ -216,7 +216,7 @@ public:
    void InitializeLayerSettings();
    void ReadLayerSettings();
    [[nodiscard]] int ReadSchemaVersion() const;
-   void WriteSchemaVersion() const;
+   void              WriteSchemaVersion() const;
    void SaveLayerSettings();
    void SynchronizePlacefileLayers();
 

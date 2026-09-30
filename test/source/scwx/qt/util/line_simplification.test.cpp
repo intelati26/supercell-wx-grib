@@ -17,8 +17,8 @@ TEST(LineSimplificationTest, KeepsEverythingWithoutATolerance)
 {
    const std::vector<Point> line {{35, -100}, {35.1, -99.9}, {35, -99.8}};
    EXPECT_EQ(SimplifyLine(line, 0.0).size(), 3u);
-   EXPECT_EQ(SimplifyLine(std::vector<Point> {{35, -100}, {36, -99}}, 1.0).size(),
-             2u);
+   EXPECT_EQ(
+      SimplifyLine(std::vector<Point> {{35, -100}, {36, -99}}, 1.0).size(), 2u);
    EXPECT_TRUE(SimplifyLine(std::vector<Point> {}, 1.0).empty());
 }
 
@@ -62,10 +62,14 @@ TEST(LineSimplificationTest, ClosedRingKeepsItsShape)
    // A square ring sampled densely; the four corners (plus the repeated
    // start/end) must remain so it still reads as a square.
    std::vector<Point> ring;
-   for (int i = 0; i < 10; ++i) ring.push_back({35.0, -100.0 + i * 0.5});
-   for (int i = 0; i < 10; ++i) ring.push_back({35.0 + i * 0.5, -95.0});
-   for (int i = 0; i < 10; ++i) ring.push_back({40.0, -95.0 - i * 0.5});
-   for (int i = 0; i < 10; ++i) ring.push_back({40.0 - i * 0.5, -100.0});
+   for (int i = 0; i < 10; ++i)
+      ring.push_back({35.0, -100.0 + i * 0.5});
+   for (int i = 0; i < 10; ++i)
+      ring.push_back({35.0 + i * 0.5, -95.0});
+   for (int i = 0; i < 10; ++i)
+      ring.push_back({40.0, -95.0 - i * 0.5});
+   for (int i = 0; i < 10; ++i)
+      ring.push_back({40.0 - i * 0.5, -100.0});
    ring.push_back(ring.front());
 
    const auto kept = SimplifyLine(ring, SimplificationTolerance(4));
@@ -78,9 +82,11 @@ TEST(LineSimplificationTest, ClosedRingKeepsItsShape)
 TEST(LineSimplificationTest, SpecksAreDroppedUntilYouZoomIn)
 {
    // A ~0.05 degree loop (~5km): a few pixels at zoom 5, easily visible at 9.
-   const std::vector<Point> loop {
-      {35.00, -100.00}, {35.05, -100.00}, {35.05, -99.95}, {35.00, -99.95},
-      {35.00, -100.00}};
+   const std::vector<Point> loop {{35.00, -100.00},
+                                  {35.05, -100.00},
+                                  {35.05, -99.95},
+                                  {35.00, -99.95},
+                                  {35.00, -100.00}};
 
    EXPECT_TRUE(IsNegligibleAtTier(loop, 5));
    EXPECT_FALSE(IsNegligibleAtTier(loop, 9));
@@ -95,7 +101,8 @@ TEST(LineSimplificationTest, SpecksAreDroppedUntilYouZoomIn)
 TEST(LineSimplificationTest, ToleranceShrinksWithZoomAndEndsAtFullDetail)
 {
    EXPECT_GT(SimplificationTolerance(3), SimplificationTolerance(6));
-   EXPECT_NEAR(SimplificationTolerance(5) / SimplificationTolerance(6), 2.0, 1e-9);
+   EXPECT_NEAR(
+      SimplificationTolerance(5) / SimplificationTolerance(6), 2.0, 1e-9);
    EXPECT_EQ(SimplificationTolerance(kFullDetailZoomTier), 0.0);
    EXPECT_EQ(SimplificationTier(-3.0), 0);
    EXPECT_EQ(SimplificationTier(7.9), 7);

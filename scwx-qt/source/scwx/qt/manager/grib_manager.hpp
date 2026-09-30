@@ -143,7 +143,7 @@ public:
    // PNG export filename. CurrentProductName()/FormatValue(float) report
    // on it.
    [[nodiscard]] std::optional<std::size_t> CurrentProductIndex() const;
-   [[nodiscard]] std::string CurrentProductName() const;
+   [[nodiscard]] std::string                CurrentProductName() const;
 
    // Display name of product `productIndex` (see ProductNames()), or empty
    // if out of range.

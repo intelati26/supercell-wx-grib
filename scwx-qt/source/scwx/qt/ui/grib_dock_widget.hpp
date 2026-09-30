@@ -47,7 +47,7 @@ signals:
    // is that section's own display name (e.g. "RRFS") -- passed through
    // rather than recomputed on the receiving end.
    void ExportSnapshotRequested(map::GribCategory category,
-                                QString            categoryLabel);
+                                QString           categoryLabel);
 
    // Emitted by RRFS's "Export loop" button with the forecast hours to save,
    // in order (Play has already been stopped and their downloads started).

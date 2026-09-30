@@ -550,7 +550,7 @@ void TextEventManager::Impl::LoadArchives(
       auto loadView = loadListEntries |
                       ranges::views::transform([](const auto& entry)
                                                { return entry.productId_; });
-      products      = provider::IemApiProvider::LoadTextProducts(loadView);
+      products = provider::IemApiProvider::LoadTextProducts(loadView);
    }
 
    // Process loaded products

@@ -233,8 +233,7 @@ void PlacefileLayer::Impl::ReloadLinesSync()
          if (drawItem->itemType_ == gr::Placefile::ItemType::Line)
          {
             placefileLines_->AddLine(
-               std::static_pointer_cast<gr::Placefile::LineDrawItem>(
-                  drawItem));
+               std::static_pointer_cast<gr::Placefile::LineDrawItem>(drawItem));
          }
       }
    }

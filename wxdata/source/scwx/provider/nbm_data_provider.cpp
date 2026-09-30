@@ -51,7 +51,8 @@ public:
    int                                   forecastHour_ {kMinForecastHour_};
 };
 
-NbmDataProvider::NbmDataProvider() : NbmDataProvider("noaa-nbm-grib2-pds", "us-east-1")
+NbmDataProvider::NbmDataProvider() :
+    NbmDataProvider("noaa-nbm-grib2-pds", "us-east-1")
 {
 }
 
@@ -77,15 +78,13 @@ bool NbmDataProvider::UsesExtendedRange(
 
 int NbmDataProvider::MaxForecastHourForCycle(
    std::chrono::system_clock::time_point cycleTime)
-{
-   return UsesExtendedRange(cycleTime) ? 264 : 36;
-}
+{ return UsesExtendedRange(cycleTime) ? 264 : 36; }
 
 int NbmDataProvider::SnapForecastHour(
    std::chrono::system_clock::time_point cycleTime, int hour)
 {
    const int maxHour = MaxForecastHourForCycle(cycleTime);
-   hour               = std::clamp(hour, kMinForecastHour_, maxHour);
+   hour              = std::clamp(hour, kMinForecastHour_, maxHour);
 
    if (!UsesExtendedRange(cycleTime) || hour <= kHourlyEnd_)
    {
@@ -112,14 +111,10 @@ void NbmDataProvider::SetCycle(std::chrono::system_clock::time_point cycleTime)
 }
 
 void NbmDataProvider::UseLatestCycle()
-{
-   p->useLatestCycle_ = true;
-}
+{ p->useLatestCycle_ = true; }
 
 bool NbmDataProvider::IsUsingLatestCycle() const
-{
-   return p->useLatestCycle_;
-}
+{ return p->useLatestCycle_; }
 
 std::chrono::system_clock::time_point NbmDataProvider::CurrentCycle() const
 {
@@ -156,14 +151,10 @@ int NbmDataProvider::SnapForecastHourFor(
 { return SnapForecastHour(cycle, hour); }
 
 void NbmDataProvider::SetForecastHour(int hour)
-{
-   p->forecastHour_ = hour;
-}
+{ p->forecastHour_ = hour; }
 
 int NbmDataProvider::ForecastHour() const
-{
-   return p->forecastHour_;
-}
+{ return p->forecastHour_; }
 
 std::string
 NbmDataProvider::GetPrefix(std::chrono::system_clock::time_point date)
@@ -186,13 +177,13 @@ NbmDataProvider::GetPrefix(std::chrono::system_clock::time_point date)
       return fmt::format("blend.{0:%Y%m%d}/99/", fmt::gmtime(date));
    }
 
-   const std::string key = BuildKey(cycle, p->forecastHour_);
+   const std::string        key = BuildKey(cycle, p->forecastHour_);
    static const std::string kGribSuffix {".grib2"};
    return key.substr(0, key.size() - kGribSuffix.size());
 }
 
-std::string NbmDataProvider::BuildKey(std::chrono::system_clock::time_point cycle,
-                                      int                                    hour)
+std::string
+NbmDataProvider::BuildKey(std::chrono::system_clock::time_point cycle, int hour)
 {
    using namespace std::chrono;
 
@@ -277,13 +268,18 @@ std::shared_ptr<wsr88d::NexradFile> NbmDataProvider::LoadObjectByTime(
 std::optional<std::string>
 NbmDataProvider::FetchField(const std::string&              key,
                             const std::string&              parameter,
-                            const std::string&               level,
-                            const std::string&               qualifier,
-                            const std::string&               outputPath,
+                            const std::string&              level,
+                            const std::string&              qualifier,
+                            const std::string&              outputPath,
                             const DownloadProgressCallback& progressCallback)
 {
-   return DownloadGribMessageByIndex(
-      p->bucketName_, key, parameter, level, qualifier, outputPath, progressCallback);
+   return DownloadGribMessageByIndex(p->bucketName_,
+                                     key,
+                                     parameter,
+                                     level,
+                                     qualifier,
+                                     outputPath,
+                                     progressCallback);
 }
 
 } // namespace scwx::provider

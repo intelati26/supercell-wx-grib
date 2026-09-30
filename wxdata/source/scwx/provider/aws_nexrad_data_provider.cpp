@@ -126,9 +126,7 @@ std::shared_ptr<Aws::S3::S3Client> AwsNexradDataProvider::client()
 { return p->client_; }
 
 bool AwsNexradDataProvider::IsRunning() const
-{
-   return p->running_.load();
-}
+{ return p->running_.load(); }
 
 std::chrono::seconds AwsNexradDataProvider::update_period() const
 { return p->updatePeriod_; }
@@ -390,11 +388,13 @@ std::optional<std::string> AwsNexradDataProvider::DownloadObjectRange(
    const std::string&               outputPath,
    const DownloadProgressCallback&  progressCallback)
 {
-   return DownloadObjectImpl(bucketName, key, range, outputPath, progressCallback);
+   return DownloadObjectImpl(
+      bucketName, key, range, outputPath, progressCallback);
 }
 
-std::optional<std::string> AwsNexradDataProvider::DownloadObjectString(
-   const std::string& bucketName, const std::string& key)
+std::optional<std::string>
+AwsNexradDataProvider::DownloadObjectString(const std::string& bucketName,
+                                            const std::string& key)
 {
    Aws::S3::Model::GetObjectRequest request;
    request.SetBucket(bucketName);
@@ -427,13 +427,13 @@ std::optional<std::string> AwsNexradDataProvider::DownloadObjectString(
 }
 
 std::optional<std::string> AwsNexradDataProvider::DownloadGribMessageByIndex(
-   const std::string&               bucketName,
-   const std::string&               key,
-   const std::string&               parameter,
-   const std::string&               level,
-   const std::string&               qualifier,
-   const std::string&               outputPath,
-   const DownloadProgressCallback&  progressCallback)
+   const std::string&              bucketName,
+   const std::string&              key,
+   const std::string&              parameter,
+   const std::string&              level,
+   const std::string&              qualifier,
+   const std::string&              outputPath,
+   const DownloadProgressCallback& progressCallback)
 {
    auto idxText = DownloadObjectString(bucketName, key + ".idx");
    if (!idxText.has_value())
@@ -442,7 +442,8 @@ std::optional<std::string> AwsNexradDataProvider::DownloadGribMessageByIndex(
    }
 
    auto records = util::grib_idx::ParseIdx(*idxText);
-   auto found = util::grib_idx::FindRecord(records, parameter, level, qualifier);
+   auto found =
+      util::grib_idx::FindRecord(records, parameter, level, qualifier);
 
    if (!found.has_value())
    {
@@ -456,7 +457,8 @@ std::optional<std::string> AwsNexradDataProvider::DownloadGribMessageByIndex(
 
    auto range = util::grib_idx::RangeForRecord(records, *found);
 
-   return DownloadObjectRange(bucketName, key, range, outputPath, progressCallback);
+   return DownloadObjectRange(
+      bucketName, key, range, outputPath, progressCallback);
 }
 
 std::optional<std::string> AwsNexradDataProvider::DownloadObjectImpl(

@@ -28,7 +28,6 @@ namespace scwx::qt::map
 using hodograph_zoom::TierForZoom;
 using hodograph_zoom::ZoomTier;
 
-
 static const std::string logPrefix_ = "scwx::qt::map::hodograph_layer";
 static const auto        logger_    = scwx::util::Logger::Create(logPrefix_);
 
@@ -61,11 +60,12 @@ std::vector<long> SampledAxisSlots(long size)
 }
 
 // One decoded field's Lambert grid geometry plus its values -- but only at
-// the rows/columns some zoom tier actually samples (see hodograph_zoom::kTierStrides),
-// not the whole grid. The layer holds 34 levels x (u, v) plus terrain at
-// once; at RRFS's full ~1800 x 1060 grid that was ~0.5GB of floats, nearly
-// all of it never read. Keeping just the sampled rows/columns is ~5% of
-// that. Otherwise the same shape as WindBarbLayer's own ParsedFrame.
+// the rows/columns some zoom tier actually samples (see
+// hodograph_zoom::kTierStrides), not the whole grid. The layer holds 34 levels
+// x (u, v) plus terrain at once; at RRFS's full ~1800 x 1060 grid that was
+// ~0.5GB of floats, nearly all of it never read. Keeping just the sampled
+// rows/columns is ~5% of that. Otherwise the same shape as WindBarbLayer's own
+// ParsedFrame.
 struct ParsedFrame
 {
    long               grid_nx {};
@@ -520,12 +520,13 @@ void HodographLayer::Impl::RebuildLines(ZoomTier tier, const GeoBounds& bounds)
       frames_.reset();
    }
 
-   logger_->debug("RebuildLines(stride={}, metersPerMs={}, visible={}, "
-                  "culled={})",
-                  tier.stride,
-                  tier.metersPerMs,
-                  tier.visible,
-                  bounds.limited);
+   logger_->debug(
+      "RebuildLines(stride={}, metersPerMs={}, visible={}, "
+      "culled={})",
+      tier.stride,
+      tier.metersPerMs,
+      tier.visible,
+      bounds.limited);
 
    lastTier_    = tier;
    builtBounds_ = bounds;

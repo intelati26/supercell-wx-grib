@@ -178,8 +178,8 @@ struct BarbFrames
    ParsedFrame   gust;
 };
 
-std::mutex                       sharedFramesMutex_;
-std::weak_ptr<const BarbFrames>  sharedFrames_;
+std::mutex                      sharedFramesMutex_;
+std::weak_ptr<const BarbFrames> sharedFrames_;
 
 // Picks which grid points get a barb: every `stride`-th row and column
 // within `window`. RTMA's full 2.5km CONUS grid (~2345 x 1597) is far too

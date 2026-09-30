@@ -11,7 +11,8 @@ namespace scwx::qt::manager
 class HodographSelectionTest : public testing::Test
 {
 protected:
-   void TearDown() override { HodographSelection::Instance().SetEnabled(false); }
+   void TearDown() override
+   { HodographSelection::Instance().SetEnabled(false); }
 };
 
 TEST_F(HodographSelectionTest, StartsOffAndTogglesOnRequest)
@@ -28,8 +29,8 @@ TEST_F(HodographSelectionTest, StartsOffAndTogglesOnRequest)
 
 TEST_F(HodographSelectionTest, AnnouncesOnlyRealChanges)
 {
-   auto&             selection = HodographSelection::Instance();
-   std::vector<bool> announced;
+   auto&                         selection = HodographSelection::Instance();
+   std::vector<bool>             announced;
    const QMetaObject::Connection connection = QObject::connect(
       &selection,
       &HodographSelection::EnabledChanged,

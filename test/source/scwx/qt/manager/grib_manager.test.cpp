@@ -383,7 +383,7 @@ TEST(GribManagerTest, NbmProductDecodesRealFile)
    auto gribManager = GribManager::Instance(map::GribCategory::Nbm);
 
    const auto names = gribManager->ProductNames();
-   const auto it = std::find(names.begin(), names.end(), "2m Temperature");
+   const auto it    = std::find(names.begin(), names.end(), "2m Temperature");
    ASSERT_NE(it, names.end());
    const std::size_t productIndex =
       static_cast<std::size_t>(std::distance(names.begin(), it));
@@ -403,9 +403,9 @@ TEST(GribManagerTest, NbmProductDecodesRealFile)
       map::GetGribFramePath(map::GribCategory::Nbm, productIndex);
    constexpr double   kExpectedMean = 288.995;
    constexpr double   kTolerance    = 0.5;
-   bool                found        = false;
-   double              lastMean     = 0.0;
-   std::vector<float>  payload;
+   bool               found         = false;
+   double             lastMean      = 0.0;
+   std::vector<float> payload;
 
    for (int i = 0; i < 60 && !found; ++i)
    {

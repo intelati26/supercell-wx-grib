@@ -15,7 +15,7 @@ TEST(NbmDataProvider, TimePointValid)
    constexpr auto expectedTime = sys_days {2026y / September / 25d} + 12h;
 
    NbmDataProvider provider;
-   auto             time = provider.GetTimePointByKey(
+   auto            time = provider.GetTimePointByKey(
       "blend.20260925/12/core/blend.t12z.core.f000.co.grib2");
 
    EXPECT_EQ(time, expectedTime);
@@ -29,7 +29,7 @@ TEST(NbmDataProvider, TimePointForecastHour)
    constexpr auto expectedTime = sys_days {2026y / September / 25d} + 13h;
 
    NbmDataProvider provider;
-   auto             time = provider.GetTimePointByKey(
+   auto            time = provider.GetTimePointByKey(
       "blend.20260925/12/core/blend.t12z.core.f001.co.grib2");
 
    EXPECT_EQ(time, expectedTime);
@@ -157,9 +157,9 @@ TEST(NbmDataProvider, BuildKeyPlain)
    // hour 0 clamps up to 1 -- NBM has no F000 file at all (confirmed
    // live 2026-09-26).
    EXPECT_EQ(NbmDataProvider::BuildKey(cycle, 0),
-            "blend.20260925/12/core/blend.t12z.core.f001.co.grib2");
+             "blend.20260925/12/core/blend.t12z.core.f001.co.grib2");
    EXPECT_EQ(NbmDataProvider::BuildKey(cycle, 72),
-            "blend.20260925/12/core/blend.t12z.core.f072.co.grib2");
+             "blend.20260925/12/core/blend.t12z.core.f072.co.grib2");
 }
 
 TEST(NbmDataProvider, BuildKeyClampsOutOfRangeHour)
@@ -172,7 +172,7 @@ TEST(NbmDataProvider, BuildKeyClampsOutOfRangeHour)
    constexpr auto cycle = sys_days {2026y / September / 25d} + 9h;
 
    EXPECT_EQ(NbmDataProvider::BuildKey(cycle, 200),
-            "blend.20260925/09/core/blend.t09z.core.f036.co.grib2");
+             "blend.20260925/09/core/blend.t09z.core.f036.co.grib2");
 }
 
 TEST(NbmDataProvider, LoadObjectByKeyNotApplicable)

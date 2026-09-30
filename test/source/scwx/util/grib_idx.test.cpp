@@ -70,10 +70,11 @@ TEST(GribIdx, ParseIdxSkipsMalformedLines)
 {
    // A blank line and a truncated line (too few fields) should be
    // skipped, not throw or abort the rest of the parse.
-   const std::string idxText = "1:0:d=2026092500:PRMSL:mean sea level:anl:\n"
-                                "\n"
-                                "not:enough:fields\n"
-                                "2:991171:d=2026092500:CLMR:1 hybrid level:anl:\n";
+   const std::string idxText =
+      "1:0:d=2026092500:PRMSL:mean sea level:anl:\n"
+      "\n"
+      "not:enough:fields\n"
+      "2:991171:d=2026092500:CLMR:1 hybrid level:anl:\n";
 
    auto records = ParseIdx(idxText);
 

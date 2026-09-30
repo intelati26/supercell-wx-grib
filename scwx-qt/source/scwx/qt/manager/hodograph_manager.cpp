@@ -136,8 +136,8 @@ public:
    std::atomic<std::uint64_t> dataGeneration_ {0};
 
    // Owners currently drawing hodographs -- see SetDrawing().
-   std::mutex                drawersMutex_;
-   std::set<const void*>     drawers_;
+   std::mutex            drawersMutex_;
+   std::set<const void*> drawers_;
 
    // Same idiom GribManager::Impl/WindBarbManager::Impl use: stop+join in
    // the destructor's *body*, since fetchPool_'s posted lambdas capture

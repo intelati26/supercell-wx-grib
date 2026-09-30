@@ -394,7 +394,7 @@ public:
 #endif
 
    std::shared_ptr<manager::AlertManager>  alertManager_;
-   std::shared_ptr<manager::OutlookManager>   outlookManager_;
+   std::shared_ptr<manager::OutlookManager> outlookManager_;
    std::shared_ptr<manager::HotkeyManager> hotkeyManager_ {
       manager::HotkeyManager::Instance()};
    std::shared_ptr<manager::PlacefileManager> placefileManager_;
@@ -516,9 +516,9 @@ MainWindow::MainWindow(QWidget* parent) :
            &ui::GribDockWidget::MapBoundsRequested,
            this,
            [this](double southLatitude,
-                 double westLongitude,
-                 double northLatitude,
-                 double eastLongitude)
+                  double westLongitude,
+                  double northLatitude,
+                  double eastLongitude)
            {
               if (p->activeMap_ != nullptr)
               {
@@ -1029,9 +1029,7 @@ void MainWindow::on_actionMarkerManager_triggered()
 }
 
 void MainWindow::on_actionLayerManager_triggered()
-{
-   p->layerDialog_->toggleViewAction()->trigger();
-}
+{ p->layerDialog_->toggleViewAction()->trigger(); }
 
 void MainWindow::on_actionImGuiDebug_triggered()
 {

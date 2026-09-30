@@ -104,18 +104,18 @@ protected:
    // within the existing per-frame cache budget -- those files run
    // hundreds of MB for every field at once, unlike RRFS/RTMA/MRMS's
    // already-small, single-purpose files.
-   std::optional<std::string>
-   DownloadObjectRange(const std::string&               bucketName,
-                       const std::string&               key,
-                       const util::grib_idx::ByteRange& range,
-                       const std::string&               outputPath,
-                       const DownloadProgressCallback& progressCallback = nullptr);
+   std::optional<std::string> DownloadObjectRange(
+      const std::string&               bucketName,
+      const std::string&               key,
+      const util::grib_idx::ByteRange& range,
+      const std::string&               outputPath,
+      const DownloadProgressCallback&  progressCallback = nullptr);
 
    // Downloads `key` fully into memory rather than to disk -- for small
    // sidecar files (namely ".idx" text) where a throwaway temp file
    // would be pure overhead.
-   std::optional<std::string> DownloadObjectString(const std::string& bucketName,
-                                                    const std::string& key);
+   std::optional<std::string>
+   DownloadObjectString(const std::string& bucketName, const std::string& key);
 
    // Downloads exactly one GRIB2 message from `key` (a full-file S3
    // object with a NOMADS-style `key + ".idx"` sidecar) selected by
@@ -125,14 +125,14 @@ protected:
    // if the idx can't be fetched or no record matches. On success,
    // `outputPath` holds a normal, valid single-message .grib2 file (see
    // DownloadObjectRange()'s own comment on why that's true).
-   std::optional<std::string>
-   DownloadGribMessageByIndex(const std::string&              bucketName,
-                              const std::string&               key,
-                              const std::string&               parameter,
-                              const std::string&               level,
-                              const std::string&               qualifier,
-                              const std::string&               outputPath,
-                              const DownloadProgressCallback& progressCallback = nullptr);
+   std::optional<std::string> DownloadGribMessageByIndex(
+      const std::string&              bucketName,
+      const std::string&              key,
+      const std::string&              parameter,
+      const std::string&              level,
+      const std::string&              qualifier,
+      const std::string&              outputPath,
+      const DownloadProgressCallback& progressCallback = nullptr);
 
    virtual std::string
    GetPrefix(std::chrono::system_clock::time_point date) = 0;
@@ -142,11 +142,11 @@ private:
    std::unique_ptr<Impl> p;
 
    std::optional<std::string>
-   DownloadObjectImpl(const std::string&                              bucketName,
-                      const std::string&                              key,
+   DownloadObjectImpl(const std::string& bucketName,
+                      const std::string& key,
                       const std::optional<util::grib_idx::ByteRange>& range,
-                      const std::string&                              outputPath,
-                      const DownloadProgressCallback&                 progressCallback);
+                      const std::string&              outputPath,
+                      const DownloadProgressCallback& progressCallback);
 };
 
 } // namespace scwx::provider

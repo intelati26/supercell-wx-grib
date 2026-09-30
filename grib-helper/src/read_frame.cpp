@@ -23,7 +23,7 @@ namespace
 double ExtractNumber(const std::string& header, const std::string& key)
 {
    const std::string needle = "\"" + key + "\":";
-   const size_t       pos    = header.find(needle);
+   const size_t      pos    = header.find(needle);
    if (pos == std::string::npos)
    {
       throw std::runtime_error("Missing key: " + key);
@@ -34,7 +34,7 @@ double ExtractNumber(const std::string& header, const std::string& key)
 std::string ExtractString(const std::string& header, const std::string& key)
 {
    const std::string needle = "\"" + key + "\":\"";
-   const size_t       start  = header.find(needle);
+   const size_t      start  = header.find(needle);
    if (start == std::string::npos)
    {
       throw std::runtime_error("Missing key: " + key);
@@ -70,33 +70,32 @@ int main(int argc, char** argv)
 
    const std::string product   = ExtractString(header, "product");
    const std::string validTime = ExtractString(header, "validTime");
-   const auto   nx           = static_cast<long>(ExtractNumber(header, "nx"));
-   const auto   ny           = static_cast<long>(ExtractNumber(header, "ny"));
-   const double missingValue = ExtractNumber(header, "missingValue");
-   const auto   byteLength =
+   const auto        nx        = static_cast<long>(ExtractNumber(header, "nx"));
+   const auto        ny        = static_cast<long>(ExtractNumber(header, "ny"));
+   const double      missingValue = ExtractNumber(header, "missingValue");
+   const auto        byteLength =
       static_cast<size_t>(ExtractNumber(header, "byteLength"));
 
    std::vector<float> values(byteLength / sizeof(float));
    in.read(reinterpret_cast<char*>(values.data()),
-            static_cast<std::streamsize>(byteLength));
+           static_cast<std::streamsize>(byteLength));
 
    if (!in)
    {
-      std::cerr << "Short read: expected " << byteLength
-                 << " payload bytes\n";
+      std::cerr << "Short read: expected " << byteLength << " payload bytes\n";
       return 1;
    }
 
    if (values.size() != static_cast<size_t>(nx * ny))
    {
-      std::cerr << "Payload size " << values.size()
-                 << " doesn't match nx*ny " << (nx * ny) << "\n";
+      std::cerr << "Payload size " << values.size() << " doesn't match nx*ny "
+                << (nx * ny) << "\n";
       return 1;
    }
 
    double minVal       = std::numeric_limits<double>::infinity();
-   double maxVal        = -std::numeric_limits<double>::infinity();
-   double sum           = 0.0;
+   double maxVal       = -std::numeric_limits<double>::infinity();
+   double sum          = 0.0;
    size_t missingCount = 0;
 
    for (float v : values)
@@ -115,15 +114,15 @@ int main(int argc, char** argv)
    const double meanVal    = validCount > 0 ? sum / validCount : 0.0;
 
    std::cout << "Read frame " << argv[1] << "\n"
-              << "  Product:  " << product << "\n"
-              << "  Valid:    " << validTime << "\n"
-              << "  Header:   " << header << "\n"
-              << "  Grid:     " << nx << " x " << ny << " (" << values.size()
-              << " cells)\n"
-              << "  Missing:  " << missingCount << " / " << values.size()
-              << " cells\n"
-              << "  Range:    [" << minVal << ", " << maxVal
-              << "], mean=" << meanVal << "\n";
+             << "  Product:  " << product << "\n"
+             << "  Valid:    " << validTime << "\n"
+             << "  Header:   " << header << "\n"
+             << "  Grid:     " << nx << " x " << ny << " (" << values.size()
+             << " cells)\n"
+             << "  Missing:  " << missingCount << " / " << values.size()
+             << " cells\n"
+             << "  Range:    [" << minVal << ", " << maxVal
+             << "], mean=" << meanVal << "\n";
 
    return 0;
 }

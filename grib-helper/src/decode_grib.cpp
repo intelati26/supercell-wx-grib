@@ -946,24 +946,24 @@ int RunDerived(int argc, char** argv)
       if (name == "stp")
       {
          StpResult stp = ComputeStp(f, ni, nj);
-         values              = std::move(stp.values);
-         missingValue        = stp.missingValue;
+         values        = std::move(stp.values);
+         missingValue  = stp.missingValue;
       }
       else if (name == "shear6")
       {
-         auto mag = ComputeVectorMagnitude(f,
-                                                 ni,
-                                                 nj,
-                                                 "vucsh",
-                                                 "heightAboveGroundLayer",
-                                                 0,
-                                                 6000,
-                                                 "vvcsh",
-                                                 "heightAboveGroundLayer",
-                                                 0,
-                                                 6000);
-         values         = std::move(mag.values);
-         missingValue   = mag.missingValue;
+         auto mag     = ComputeVectorMagnitude(f,
+                                               ni,
+                                               nj,
+                                               "vucsh",
+                                               "heightAboveGroundLayer",
+                                               0,
+                                               6000,
+                                               "vvcsh",
+                                               "heightAboveGroundLayer",
+                                               0,
+                                               6000);
+         values       = std::move(mag.values);
+         missingValue = mag.missingValue;
       }
       else if (name == "wind10")
       {
@@ -974,25 +974,25 @@ int RunDerived(int argc, char** argv)
       }
       else if (name == "wind500")
       {
-         auto mag = ComputeVectorMagnitude(f,
-                                                 ni,
-                                                 nj,
-                                                 "u",
-                                                 "isobaricInhPa",
-                                                 500,
-                                                 500,
-                                                 "v",
-                                                 "isobaricInhPa",
-                                                 500,
-                                                 500);
-         values         = std::move(mag.values);
-         missingValue   = mag.missingValue;
+         auto mag     = ComputeVectorMagnitude(f,
+                                               ni,
+                                               nj,
+                                               "u",
+                                               "isobaricInhPa",
+                                               500,
+                                               500,
+                                               "v",
+                                               "isobaricInhPa",
+                                               500,
+                                               500);
+         values       = std::move(mag.values);
+         missingValue = mag.missingValue;
       }
       else // "ship"
       {
          ShipResult ship = ComputeShip(f, f2, ni, nj);
-         values                = std::move(ship.values);
-         missingValue          = ship.missingValue;
+         values          = std::move(ship.values);
+         missingValue    = ship.missingValue;
       }
 
       std::fclose(f);

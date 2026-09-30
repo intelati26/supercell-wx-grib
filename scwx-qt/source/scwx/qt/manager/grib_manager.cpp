@@ -1275,9 +1275,7 @@ namespace
 // behavior -- this throws std::bad_cast instead.
 template<typename Derived>
 Derived& ProviderAs(provider::AwsNexradDataProvider& base)
-{
-   return dynamic_cast<Derived&>(base);
-}
+{ return dynamic_cast<Derived&>(base); }
 
 void EnsureDateListed(provider::AwsNexradDataProvider&      provider,
                       std::chrono::system_clock::time_point date)
@@ -1334,17 +1332,15 @@ std::string CachedDownloadPath(const std::string& key)
 class ScopedDecodeStatus
 {
 public:
-   ScopedDecodeStatus(std::string id, const std::string& displayName)
-      : id_ {std::move(id)}
+   ScopedDecodeStatus(std::string id, const std::string& displayName) :
+       id_ {std::move(id)}
    {
       manager::StatusManager::Instance()->ReportProgress(
          id_, displayName + " (decoding)", 0, -1);
    }
 
    ~ScopedDecodeStatus()
-   {
-      manager::StatusManager::Instance()->ReportComplete(id_);
-   }
+   { manager::StatusManager::Instance()->ReportComplete(id_); }
 
    ScopedDecodeStatus(const ScopedDecodeStatus&)            = delete;
    ScopedDecodeStatus& operator=(const ScopedDecodeStatus&) = delete;
@@ -1844,9 +1840,7 @@ std::optional<std::size_t> GribManager::CurrentProductIndex() const
 }
 
 std::vector<std::size_t> GribManager::ActiveProductIndices() const
-{
-   return {p->activeProducts_.cbegin(), p->activeProducts_.cend()};
-}
+{ return {p->activeProducts_.cbegin(), p->activeProducts_.cend()}; }
 
 std::string GribManager::CurrentProductName() const
 {
@@ -2321,8 +2315,8 @@ std::set<int> GribManager::CachedRrfsForecastHours() const
       return cached;
    }
 
-   const auto cycle   = CurrentRrfsCycle();
-   const auto family  = Products(p->category_)[*index].rrfsFileFamily;
+   const auto cycle  = CurrentRrfsCycle();
+   const auto family = Products(p->category_)[*index].rrfsFileFamily;
    const int  maxHour =
       provider::RrfsDataProvider::MaxForecastHourForCycle(cycle);
 
@@ -2873,9 +2867,8 @@ void GribManager::QueueShipInput(std::size_t        productIndex,
                statusId, "SHIP", bytesReceived, totalBytes);
          };
 
-         auto& rrfsProvider =
-            ProviderAs<provider::RrfsDataProvider>(*provider);
-         auto downloaded =
+         auto& rrfsProvider = ProviderAs<provider::RrfsDataProvider>(*provider);
+         auto  downloaded =
             rrfsProvider.DownloadRaw(key, cachedPath, progressCallback);
          statusManager->ReportComplete(statusId);
 
@@ -2989,7 +2982,8 @@ void GribManager::FetchIdxSelection()
    // provider state instead -- same reasoning as FetchRrfsSelection()'s
    // identical call shape. Computed anyway for readability/logging, not
    // because anything downstream reads it.
-   const auto time = nbmProvider.CurrentCycle() + hours {nbmProvider.ForecastHour()};
+   const auto time =
+      nbmProvider.CurrentCycle() + hours {nbmProvider.ForecastHour()};
 
    FetchArchiveFrame(time);
 }
@@ -3016,7 +3010,8 @@ void GribManager::FetchIdxSelectionForProduct(std::size_t productIndex)
    // not collide on one cache path (CachedDownloadPath() otherwise keys
    // purely off the S3 object path, correct for every other category
    // where one download serves every product sharing that file).
-   const std::string cacheKey = key + "." + Products(p->category_)[productIndex].shortName;
+   const std::string cacheKey =
+      key + "." + Products(p->category_)[productIndex].shortName;
 
    {
       std::lock_guard lock(p->fetchMutex_);
@@ -3630,8 +3625,8 @@ bool GribManager::CommitDecodedFrame(std::size_t        productIndex,
       std::lock_guard lock(p->fetchMutex_);
       const auto      requested = p->lastRequestedKeys_.find(productIndex);
       wanted                    = p->activeSnapshot_.contains(productIndex) &&
-               requested != p->lastRequestedKeys_.cend() &&
-               requested->second == key;
+                                  requested != p->lastRequestedKeys_.cend() &&
+                                  requested->second == key;
    }
 
    std::error_code ec;

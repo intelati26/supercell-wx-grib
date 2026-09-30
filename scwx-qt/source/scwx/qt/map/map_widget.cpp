@@ -3252,9 +3252,7 @@ void MapWidgetImpl::RadarProductViewDisconnect()
 }
 
 QImage MapWidget::CaptureImage()
-{
-   return grabFramebuffer();
-}
+{ return grabFramebuffer(); }
 
 std::vector<VisibleGribLayer> MapWidget::VisibleGribLayers() const
 { return map::VisibleGribLayers(p->layerModel_->GetLayers(), p->id_); }

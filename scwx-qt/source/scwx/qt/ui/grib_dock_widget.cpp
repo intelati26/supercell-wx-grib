@@ -92,7 +92,8 @@ const std::string kHodographProduct_ = "Gridded Hodograph";
 // pick list is about to cost, not for any accounting.
 constexpr int kRrfsApproxHourMegabytes_ = 320;
 
-// Hour buttons per grid row: 8 fits the dock width (a full 84h cycle is 11 rows).
+// Hour buttons per grid row: 8 fits the dock width (a full 84h cycle is 11
+// rows).
 constexpr int kRrfsHourButtonColumns_ = 8;
 
 // Where the RRFS Play loop ends until the user picks otherwise -- every
@@ -103,7 +104,7 @@ constexpr int kRrfsHourButtonColumns_ = 8;
 constexpr int kDefaultRrfsLoopEndHour_ = 18;
 
 // Same reasoning as kRrfsCycleHistoryHours_ -- NBM also cycles hourly.
-constexpr int kNbmCycleHistoryHours_ = 24;
+constexpr int kNbmCycleHistoryHours_  = 24;
 constexpr int kUserCycleHistoryHours_ = 72;
 
 struct MapCropPreset
@@ -177,13 +178,13 @@ struct CategorySection
    // -- the hour files are per cycle, not per product -- but doesn't leak
    // a run's picks onto a different run. With nothing picked, Play falls
    // back to the loop-range spin boxes above.
-   QWidget*                         hourButtonHost {};
-   QGridLayout*                     hourGrid {};
-   std::vector<QPushButton*>        hourButtons;
-   QPushButton*                     addRangeButton {};
-   QPushButton*                     clearPicksButton {};
-   QLabel*                          pickSummaryLabel {};
-   std::map<qint64, std::set<int>>  picksByCycle;
+   QWidget*                        hourButtonHost {};
+   QGridLayout*                    hourGrid {};
+   std::vector<QPushButton*>       hourButtons;
+   QPushButton*                    addRangeButton {};
+   QPushButton*                    clearPicksButton {};
+   QLabel*                         pickSummaryLabel {};
+   std::map<qint64, std::set<int>> picksByCycle;
 
    // Whether the user has picked a loop end themselves -- until then,
    // RerangeRrfsLoop() keeps it at the default (see
@@ -242,10 +243,10 @@ public:
    void RefreshSection(CategorySection& section);
 
    // RRFS hour pick list -- see CategorySection::picksByCycle.
-   [[nodiscard]] std::set<int>& Picks(CategorySection& section);
+   [[nodiscard]] std::set<int>&   Picks(CategorySection& section);
    [[nodiscard]] std::vector<int> PlaybackHours(CategorySection& section);
-   void RebuildHourButtons(CategorySection& section);
-   void RefreshHourButtons(CategorySection& section);
+   void                           RebuildHourButtons(CategorySection& section);
+   void                           RefreshHourButtons(CategorySection& section);
 
    // Idx sections (NBM, custom models): the "Latest"-plus-recent-cycles picker
    // filled from the manager, which knows which cycles the model really runs.
@@ -313,7 +314,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
       groupLayout->addWidget(section.modelIssuesLabel);
    }
 
-   section.comboBox = new CheckableComboBox(groupBox);
+   section.comboBox                      = new CheckableComboBox(groupBox);
    std::vector<std::string> productNames = section.gribManager->ProductNames();
    if (category == map::GribCategory::Rrfs)
    {
@@ -422,7 +423,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
       PopulateCycleCombo(section);
       groupLayout->addWidget(section.cycleComboBox);
 
-      auto* hourRow      = new QHBoxLayout();
+      auto* hourRow = new QHBoxLayout();
       section.hourLabel =
          new QLabel(QString::fromStdString(fmt::format(
                        "F{:03d}", section.gribManager->MinIdxForecastHour())),
@@ -516,37 +517,37 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
 
    if (stored.exportLoopButton != nullptr)
    {
-      connect(stored.exportLoopButton,
-              &QPushButton::clicked,
-              self_,
-              [this, &stored, category]()
-              {
-                 const std::vector<int> hours = PlaybackHours(stored);
-                 if (hours.empty())
-                 {
-                    return;
-                 }
+      connect(
+         stored.exportLoopButton,
+         &QPushButton::clicked,
+         self_,
+         [this, &stored, category]()
+         {
+            const std::vector<int> hours = PlaybackHours(stored);
+            if (hours.empty())
+            {
+               return;
+            }
 
-                 // The export steps the slider itself; a running Play would
-                 // fight it for the same slider.
-                 if (stored.animationTimer->isActive())
-                 {
-                    stored.animationTimer->stop();
-                    stored.playButton->setText(tr("Play"));
-                 }
+            // The export steps the slider itself; a running Play would
+            // fight it for the same slider.
+            if (stored.animationTimer->isActive())
+            {
+               stored.animationTimer->stop();
+               stored.playButton->setText(tr("Play"));
+            }
 
-                 // Start every hour's download now, in parallel, rather than
-                 // one at a time as the export reaches each.
-                 stored.gribManager->PrefetchRrfsForecastHours(
-                    std::set<int>(hours.begin(), hours.end()));
-                 RefreshHourButtons(stored);
+            // Start every hour's download now, in parallel, rather than
+            // one at a time as the export reaches each.
+            stored.gribManager->PrefetchRrfsForecastHours(
+               std::set<int>(hours.begin(), hours.end()));
+            RefreshHourButtons(stored);
 
-                 Q_EMIT self_->ExportLoopRequested(
-                    category,
-                    QString::fromStdString(
-                       map::GribCategoryDisplayName(category)),
-                    hours);
-              });
+            Q_EMIT self_->ExportLoopRequested(
+               category,
+               QString::fromStdString(map::GribCategoryDisplayName(category)),
+               hours);
+         });
    }
 
    connect(stored.gribManager.get(),
@@ -704,8 +705,9 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                     // the slider was left at F040 while the picks are 2-6)
                     // would otherwise show it until the timer happened to
                     // wrap -- snap in first.
-                    if (!std::binary_search(
-                           hours.begin(), hours.end(), stored.hourSlider->value()))
+                    if (!std::binary_search(hours.begin(),
+                                            hours.end(),
+                                            stored.hourSlider->value()))
                     {
                        stored.hourSlider->setValue(hours.front());
                     }
@@ -739,7 +741,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                  const auto it = std::upper_bound(
                     hours.begin(), hours.end(), stored.hourSlider->value());
                  stored.hourSlider->setValue(it == hours.end() ? hours.front() :
-                                                                  *it);
+                                                                 *it);
               });
    }
    else if (IsIdxSection(category))
@@ -1071,18 +1073,20 @@ void GribDockWidget::Impl::RebuildHourButtons(CategorySection& section)
 
       // A cycle that's gone (nothing active yet) has one degenerate hour;
       // don't show a lone F000 button for it.
-      const bool haveCycle = section.gribManager->CurrentProductIndex().has_value();
+      const bool haveCycle =
+         section.gribManager->CurrentProductIndex().has_value();
       for (int hour = 0; haveCycle && hour < hourCount; ++hour)
       {
-         auto* button = new QPushButton(
-            QString::fromStdString(fmt::format("{:03d}", hour)),
-            section.hourButtonHost);
+         auto* button =
+            new QPushButton(QString::fromStdString(fmt::format("{:03d}", hour)),
+                            section.hourButtonHost);
          button->setFixedWidth(34);
          button->setFlat(false);
          button->setFocusPolicy(Qt::NoFocus);
          button->setContentsMargins(0, 0, 0, 0);
-         section.hourGrid->addWidget(
-            button, hour / kRrfsHourButtonColumns_, hour % kRrfsHourButtonColumns_);
+         section.hourGrid->addWidget(button,
+                                     hour / kRrfsHourButtonColumns_,
+                                     hour % kRrfsHourButtonColumns_);
          section.hourButtons.push_back(button);
 
          connect(button,
@@ -1108,24 +1112,25 @@ void GribDockWidget::Impl::RebuildHourButtons(CategorySection& section)
 
 void GribDockWidget::Impl::RefreshHourButtons(CategorySection& section)
 {
-   const std::set<int>& picks   = Picks(section);
-   const std::set<int>  cached  = section.gribManager->CachedRrfsForecastHours();
+   const std::set<int>& picks  = Picks(section);
+   const std::set<int>  cached = section.gribManager->CachedRrfsForecastHours();
    const int            current = section.hourSlider->value();
 
    // Three independent cues so any combination stays readable:
    // downloaded = filled, picked = accent border, viewing = bold text.
    for (std::size_t hour = 0; hour < section.hourButtons.size(); ++hour)
    {
-      const int  h          = static_cast<int>(hour);
-      const bool isCached   = cached.contains(h);
-      const bool isPicked   = picks.contains(h);
-      const bool isViewing  = (h == current);
+      const int  h         = static_cast<int>(hour);
+      const bool isCached  = cached.contains(h);
+      const bool isPicked  = picks.contains(h);
+      const bool isViewing = (h == current);
 
       QString style = QStringLiteral("QPushButton { padding: 1px 0px; ");
       style += isCached ? QStringLiteral("background: palette(mid); ") :
                           QStringLiteral("background: palette(button); ");
-      style += isPicked ? QStringLiteral("border: 2px solid palette(highlight); ") :
-                          QStringLiteral("border: 1px solid palette(mid); ");
+      style += isPicked ?
+                  QStringLiteral("border: 2px solid palette(highlight); ") :
+                  QStringLiteral("border: 1px solid palette(mid); ");
       style += isViewing ? QStringLiteral("font-weight: bold; ") : QString();
       style += QStringLiteral("}");
       section.hourButtons[hour]->setStyleSheet(style);
@@ -1248,8 +1253,8 @@ void GribDockWidget::Impl::BuildMapCropPanel(QVBoxLayout* parentLayout,
 
    for (const auto& preset : kMapCropPresets_)
    {
-      auto* button = new QPushButton(QString::fromStdString(preset.name),
-                                     groupBox);
+      auto* button =
+         new QPushButton(QString::fromStdString(preset.name), groupBox);
 
       connect(button,
               &QPushButton::clicked,

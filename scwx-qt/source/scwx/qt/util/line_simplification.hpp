@@ -19,13 +19,15 @@ inline constexpr int kFullDetailZoomTier = 12;
 // tier changes (and lines are rebuilt) once per zoom level, not per frame.
 [[nodiscard]] inline int SimplificationTier(double zoom)
 {
-   return std::clamp(static_cast<int>(std::floor(zoom)), 0, kFullDetailZoomTier);
+   return std::clamp(
+      static_cast<int>(std::floor(zoom)), 0, kFullDetailZoomTier);
 }
 
 // Douglas-Peucker tolerance for a tier, in Web Mercator units normalized to
 // the whole world = 1: `pixels` on screen at that zoom (MapLibre's 512px
 // tiles). 0 at full detail.
-[[nodiscard]] inline double SimplificationTolerance(int tier, double pixels = 2.0)
+[[nodiscard]] inline double SimplificationTolerance(int    tier,
+                                                    double pixels = 2.0)
 {
    if (tier >= kFullDetailZoomTier)
    {
@@ -45,7 +47,7 @@ inline constexpr double kMinLineExtentPixels = 5.0;
 // detail. Uses the bounding box diagonal in Web Mercator space.
 template<typename Element>
 [[nodiscard]] bool IsNegligibleAtTier(const std::vector<Element>& points,
-                                      int                          tier,
+                                      int                         tier,
                                       double minPixels = kMinLineExtentPixels)
 {
    if (tier >= kFullDetailZoomTier || points.empty())
@@ -111,7 +113,8 @@ SimplifyLine(const std::vector<Element>& points, double tolerance)
          0.5 - std::log(std::tan(kPi / 4.0 + lat * kPi / 360.0)) / (2.0 * kPi);
    }
 
-   const auto distanceToSegment = [&xy](std::size_t p, std::size_t a, std::size_t b)
+   const auto distanceToSegment =
+      [&xy](std::size_t p, std::size_t a, std::size_t b)
    {
       const double dx     = xy[b][0] - xy[a][0];
       const double dy     = xy[b][1] - xy[a][1];

@@ -68,7 +68,7 @@ TEST(HodographManagerTest, CycleForecastHourSelection)
       {
          std::getline(in, header);
          if (header.find(std::format(R"("validTime":"{:%Y-%m-%dT%H:%M:%SZ}")",
-                                 floor<seconds>(fixedCycle))) !=
+                                     floor<seconds>(fixedCycle))) !=
              std::string::npos)
          {
             found = true;

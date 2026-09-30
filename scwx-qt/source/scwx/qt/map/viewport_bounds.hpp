@@ -51,7 +51,8 @@ struct GeoBounds
 // on screen and a simple rectangle would cut it off, or before the view has
 // a size.
 [[nodiscard]] inline GeoBounds
-VisibleBounds(const QMapLibre::CustomLayerRenderParameters& params, double scale)
+VisibleBounds(const QMapLibre::CustomLayerRenderParameters& params,
+              double                                        scale)
 {
    if (params.width <= 0.0 || params.height <= 0.0 || params.pitch > 1.0)
    {

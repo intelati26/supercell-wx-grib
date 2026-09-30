@@ -10,8 +10,8 @@ namespace scwx::qt::map::hodograph_zoom
 namespace
 {
 
-constexpr double kPi              = 3.14159265358979323846;
-constexpr double kRrfsGridMeters  = 3000.0;
+constexpr double kPi             = 3.14159265358979323846;
+constexpr double kRrfsGridMeters = 3000.0;
 
 // On-screen pixels per metre at `zoom` for the latitude the tiers assume
 double PixelsPerMeter(double zoom)
@@ -22,9 +22,7 @@ double PixelsPerMeter(double zoom)
 
 // Length on screen of the reference (30 m/s) vector drawn by `tier` at `zoom`
 double GlyphPixels(const ZoomTier& tier, double zoom)
-{
-   return kReferenceWindMs * tier.metersPerMs * PixelsPerMeter(zoom);
-}
+{ return kReferenceWindMs * tier.metersPerMs * PixelsPerMeter(zoom); }
 
 } // namespace
 
@@ -66,10 +64,9 @@ TEST(HodographZoomTest, NeighboursDoNotOverlap)
 {
    for (double zoom = 6.0; zoom <= 14.0; zoom += 0.05)
    {
-      const ZoomTier tier = TierForZoom(zoom);
-      const double   spacingPixels =
-         static_cast<double>(tier.stride) * kRrfsGridMeters *
-         PixelsPerMeter(zoom);
+      const ZoomTier tier          = TierForZoom(zoom);
+      const double   spacingPixels = static_cast<double>(tier.stride) *
+                                     kRrfsGridMeters * PixelsPerMeter(zoom);
       EXPECT_LT(GlyphPixels(tier, zoom) * 1.25, spacingPixels)
          << "zoom " << zoom;
    }

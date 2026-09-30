@@ -57,11 +57,10 @@ ByteRange RangeForRecord(const std::vector<IdxRecord>& records,
 // exactly (default "" matches only records with no qualifier -- the
 // common case; pass the exact trailing text, e.g. "ens std dev", to pick
 // a specific variant sharing the same parameter+level).
-std::optional<std::size_t>
-FindRecord(const std::vector<IdxRecord>& records,
-          const std::string&            parameter,
-          const std::string&            level,
-          const std::string&            qualifier = "");
+std::optional<std::size_t> FindRecord(const std::vector<IdxRecord>& records,
+                                      const std::string&            parameter,
+                                      const std::string&            level,
+                                      const std::string& qualifier = "");
 
 // Renders `range` as an HTTP/S3 Range header value: "bytes=start-end",
 // or "bytes=start-" when `end` is unset.

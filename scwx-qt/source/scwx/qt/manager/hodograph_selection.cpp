@@ -16,9 +16,7 @@ HodographSelection& HodographSelection::Instance()
 }
 
 bool HodographSelection::IsEnabled() const
-{
-   return enabled_.load();
-}
+{ return enabled_.load(); }
 
 void HodographSelection::SetEnabled(bool enabled)
 {

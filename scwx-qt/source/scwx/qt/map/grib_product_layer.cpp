@@ -958,14 +958,14 @@ std::optional<float> GribProductLayer::Impl::ValueAt(const ProductFrame& frame,
       // ComputeLambertConstants/LambertForward the mesh builder uses, just
       // run lat/lon -> grid index instead of grid index -> lat/lon.
       const LambertGrid      grid {frame.lov,
-                              frame.lad,
-                              frame.latin1,
-                              frame.latin2,
-                              frame.lat1,
-                              frame.lon1,
-                              frame.dx,
-                              frame.dy,
-                              frame.radius};
+                                   frame.lad,
+                                   frame.latin1,
+                                   frame.latin2,
+                                   frame.lat1,
+                                   frame.lon1,
+                                   frame.dx,
+                                   frame.dy,
+                                   frame.radius};
       const LambertConstants c = ComputeLambertConstants(grid);
 
       const glm::dvec2 origin = LambertForward(grid, c, frame.lat1, frame.lon1);

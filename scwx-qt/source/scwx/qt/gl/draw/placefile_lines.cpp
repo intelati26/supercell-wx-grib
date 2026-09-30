@@ -108,10 +108,10 @@ public:
    // the margin), buildBounds_ what the build in progress uses, builtBounds_
    // what the drawn buffers cover. Unlimited until a Render() has reported a
    // view, so the very first build is uncropped and is redone once one has.
-   std::mutex      boundsMutex_ {};
-   map::GeoBounds  latestBuildBounds_ {};
-   map::GeoBounds  builtBounds_ {};
-   map::GeoBounds  buildBounds_ {};
+   std::mutex     boundsMutex_ {};
+   map::GeoBounds latestBuildBounds_ {};
+   map::GeoBounds builtBounds_ {};
+   map::GeoBounds buildBounds_ {};
 
    // A rebuild has been asked for and hasn't finished; Render() runs every
    // frame and must not queue one per frame while it waits.
@@ -163,9 +163,7 @@ void PlacefileLines::set_thresholded(bool thresholded)
 
 void PlacefileLines::set_rebuild_requested_callback(
    std::function<void()> callback)
-{
-   p->rebuildRequested_ = std::move(callback);
-}
+{ p->rebuildRequested_ = std::move(callback); }
 
 void PlacefileLines::Initialize()
 {
@@ -275,10 +273,10 @@ void PlacefileLines::Render(
       std::lock_guard boundsLock {p->boundsMutex_};
       p->latestBuildBounds_ = map::VisibleBounds(params, kBuildMargin_);
 
-      needsRebuild = p->builtTier_ >= 0 &&
-                     (tier != p->builtTier_ ||
-                      !p->builtBounds_.ContainsBounds(visible) ||
-                      (!p->builtBounds_.limited && visible.limited));
+      needsRebuild =
+         p->builtTier_ >= 0 &&
+         (tier != p->builtTier_ || !p->builtBounds_.ContainsBounds(visible) ||
+          (!p->builtBounds_.limited && visible.limited));
    }
    if (needsRebuild && p->rebuildRequested_ &&
        !p->rebuildPending_.exchange(true))
@@ -355,9 +353,7 @@ void PlacefileLines::StartLines()
 }
 
 void PlacefileLines::AbortRebuild()
-{
-   p->rebuildPending_ = false;
-}
+{ p->rebuildPending_ = false; }
 
 void PlacefileLines::AddLine(
    const std::shared_ptr<gr::Placefile::LineDrawItem>& di)

@@ -51,7 +51,8 @@ public:
    // some (but not all) short cycles have a few scattered hours beyond
    // that, but real gaps too (confirmed live), so F036 is the
    // conservative cutoff that's always actually there.
-   static bool UsesExtendedRange(std::chrono::system_clock::time_point cycleTime);
+   static bool
+   UsesExtendedRange(std::chrono::system_clock::time_point cycleTime);
    static int
    MaxForecastHourForCycle(std::chrono::system_clock::time_point cycleTime);
 
@@ -63,13 +64,13 @@ public:
    // prefetch loop) always get a real, fetchable hour back, never one
    // that falls in a step gap.
    static int SnapForecastHour(std::chrono::system_clock::time_point cycleTime,
-                               int                                    hour);
+                               int                                   hour);
 
    // Deterministic S3 key for `cycle`'s `hour`-hour CONUS forecast -- no
    // network call, no provider-instance-state mutation (same shape and
    // reason as RrfsDataProvider::BuildKey()).
    static std::string BuildKey(std::chrono::system_clock::time_point cycle,
-                               int                                    hour);
+                               int                                   hour);
 
    void SetCycle(std::chrono::system_clock::time_point cycleTime) override;
    void UseLatestCycle() override;
