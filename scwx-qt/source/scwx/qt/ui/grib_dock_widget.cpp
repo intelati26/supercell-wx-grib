@@ -631,35 +631,32 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
 
 void GribDockWidget::Impl::RefreshSection(CategorySection& section)
 {
-   const auto activeNames = section.gribManager->ActiveProductNames();
+   const auto activeIndices = section.gribManager->ActiveProductIndices();
 
-   if (activeNames.empty())
+   if (activeIndices.empty())
    {
-      // Genuinely reachable now for Rrfs/Nbm, which start (and can be
-      // brought back down to) zero active products -- see GribManager's
-      // own per-category default. Still unreachable for Mrms/Rtma, which
-      // keep the original "always at least one" behavior.
+      // Reachable for Rrfs/Nbm, which start (and can be brought back down
+      // to) zero active products -- see GribManager's own per-category
+      // default. Unreachable for Mrms/Rtma, which keep the original
+      // "always at least one" behavior.
       section.statusLabel->setText(tr("(no products active)"));
       return;
    }
 
-   // The primary (CurrentProductIndex()) product's valid time --
-   // GribProductLayer only ever renders that one today, so its status is
-   // what's actually meaningful to show here; the other active products
-   // are fetching/decoding, just not drawn on the map yet. activeNames
-   // being non-empty (just checked above) guarantees CurrentProductIndex()
-   // resolves to a real value here.
-   const std::string validTime =
-      map::ReadGribFrameValidTime(map::GetGribFramePath(
-         section.category, *section.gribManager->CurrentProductIndex()));
-
-   std::string statusText =
-      "Primary: " + section.gribManager->CurrentProductName();
-   statusText += validTime.empty() ? "\n(loading...)" : "\nValid: " + validTime;
-
-   if (activeNames.size() > 1)
+   // One line per checked product -- GribProductLayer draws all of them --
+   // with its frame's valid time, or that it's still on its way.
+   std::string statusText;
+   for (const std::size_t index : activeIndices)
    {
-      statusText += fmt::format("\n({} products active)", activeNames.size());
+      const std::string validTime = map::ReadGribFrameValidTime(
+         map::GetGribFramePath(section.category, index));
+
+      if (!statusText.empty())
+      {
+         statusText += "\n";
+      }
+      statusText += section.gribManager->ProductName(index) + ": " +
+                    (validTime.empty() ? "loading..." : validTime);
    }
 
    section.statusLabel->setText(QString::fromStdString(statusText));

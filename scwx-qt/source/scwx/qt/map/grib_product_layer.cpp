@@ -29,7 +29,9 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -69,12 +71,12 @@ namespace
 // (HRRR, RRFS, RAP, NAM, for future sources) are lambert. The two need
 // genuinely different mesh math, not just different parameters: on a
 // regular_ll grid, a column of constant grid index is a line of constant
-// longitude and a row is a line of constant latitude, so the existing
-// mesh only needed to subdivide latitude (see the west/east comment in
-// LoadFrame). On a lambert grid neither is true -- rows and columns of
-// constant grid index are curves in lat/lon space -- so both axes need
-// subdividing, with each vertex's true geographic position computed via
-// the actual projection.
+// longitude and a row is a line of constant latitude, so the mesh only
+// needs to subdivide latitude (see the west/east comment in LoadFrame).
+// On a lambert grid neither is true -- rows and columns of constant grid
+// index are curves in lat/lon space -- so both axes need subdividing, with
+// each vertex's true geographic position computed via the actual
+// projection.
 enum class GridType
 {
    RegularLatLon,
@@ -82,9 +84,75 @@ enum class GridType
 };
 
 // LambertGrid/LambertConstants/ComputeLambertConstants/LambertForward/
-// LambertInverse/LambertGridToLatLon now live in grib_frame_info.hpp --
-// promoted there once WindBarbLayer became a second consumer of the same
-// Snyder projection math (see that header for the full derivation notes).
+// LambertInverse/LambertGridToLatLon live in grib_frame_info.hpp, shared
+// with WindBarbLayer/HodographLayer.
+
+// One checked product's decoded frame and the GL objects drawing it --
+// GribProductLayer holds one per active product (see
+// manager::GribManager::ActiveProductIndices()) and draws them all.
+struct ProductFrame
+{
+   GLuint  vao {GL_INVALID_INDEX};
+   GLuint  vbo {GL_INVALID_INDEX};
+   GLuint  dataTexture {GL_INVALID_INDEX};
+   GLsizei numVertices {0};
+
+   bool loaded {false};
+
+   // Set when GribManager says this product has a new frame (FrameReady),
+   // or by the reload timer's fallback stat() check; consumed by Render(),
+   // since GL calls only happen there (MapLibre only guarantees this
+   // layer's GL context is current inside Initialize()/Render()).
+   bool                            needsReload {true};
+   std::filesystem::file_time_type lastWriteTime {};
+
+   // Grid geometry, populated by LoadFrame()
+   GridType gridType {GridType::RegularLatLon};
+   long     nx {};
+   long     ny {};
+   double   lat1 {};
+   double   lon1 {};
+   double   di {};
+   double   dj {};
+
+   // Lambert only (see GridType/LambertGrid comments above); left
+   // zero-initialized and unused for regular_ll frames.
+   double lov {};
+   double lad {};
+   double latin1 {};
+   double latin2 {};
+   double dx {};
+   double dy {};
+   double radius {};
+
+   // Where the loaded frame came from, and its header line exactly as
+   // read -- the decoded grid itself isn't kept in memory after the GL
+   // upload (up to ~98MB for an MRMS CONUS grid, used only by the
+   // Shift-hover tooltip). ValueAt() reads the one value it needs back
+   // from the file instead, and uses the header to make sure the file
+   // still holds the frame on screen (a newer one may have been renamed
+   // into place and not reloaded yet).
+   std::string framePath;
+   std::string frameHeader;
+
+   // GribManager's curated display name, and the frame's valid time
+   // (ISO8601 UTC, e.g. "2026-09-19T03:58:38Z") -- kept as two separate
+   // fields, not one display string, so the time stays usable data.
+   std::string productLabel;
+   std::string validTime;
+
+   // Per-frame colorizing range -- set by GribManager per product (see
+   // grib_manager.cpp's ProductConfig), read back from the frame header.
+   float colorOffset     = kDefaultDataMomentOffset_;
+   float colorScale      = kDefaultDataMomentScale_;
+   float noDataThreshold = kDefaultNoDataThreshold_;
+
+   // 0 is fill mode; a nonzero value switches the shader to isoline
+   // rendering at every multiple of this value (see grib.frag). Contour
+   // products draw after fill products, so isolines stay visible on top of
+   // a filled field (see Render()).
+   float contourInterval = 0.0f;
+};
 
 } // namespace
 
@@ -99,6 +167,28 @@ public:
    Impl(const Impl&&)            = delete;
    Impl& operator=(const Impl&&) = delete;
 
+   void BuildPalette();
+
+   // Brings frames_ in line with GribManager's active products: frees the
+   // GL objects of products no longer checked, and creates (and marks for
+   // loading) entries for newly checked ones. GL context must be current.
+   void SyncProducts();
+
+   void LoadFrame(std::size_t productIndex, ProductFrame& frame);
+   void DrawFrame(const ProductFrame& frame) const;
+
+   static void ClearFrame(ProductFrame& frame);
+   static void DeleteFrameGl(ProductFrame& frame);
+
+   // Looks up the raw decoded value nearest (lat, lon) in `frame`, or
+   // nullopt if that point falls outside its grid or has no data.
+   // Grid-type-aware: regular_ll inverts the linear lat1/lon1/di/dj
+   // mapping directly; lambert reuses the same LambertForward/
+   // ComputeLambertConstants the mesh builder uses, run the other way
+   // (lat/lon -> grid index instead of grid index -> lat/lon).
+   static std::optional<float>
+   ValueAt(const ProductFrame& frame, double lat, double lon);
+
    GribCategory category_;
 
    std::shared_ptr<gl::ShaderProgram> shaderProgram_ {nullptr};
@@ -112,79 +202,22 @@ public:
    GLint uPaletteLocation_ {static_cast<GLint>(GL_INVALID_INDEX)};
    GLint uContourIntervalLocation_ {static_cast<GLint>(GL_INVALID_INDEX)};
 
-   GLuint  vao_ {GL_INVALID_INDEX};
-   GLuint  vbo_ {GL_INVALID_INDEX};
-   GLuint  dataTexture_ {GL_INVALID_INDEX};
-   GLuint  paletteTexture_ {GL_INVALID_INDEX};
-   GLsizei numVertices_ {0};
+   // Shared by every product's frame: it samples the color table's own
+   // domain, not any product's range (see BuildPalette()).
+   GLuint paletteTexture_ {GL_INVALID_INDEX};
 
-   bool frameLoaded_ {false};
+   // One per checked product, keyed (and drawn, within each pass) by
+   // product index.
+   std::map<std::size_t, ProductFrame> frames_;
 
-   // Set by the reload timer (cheap stat() only), consumed by Render() --
-   // GL calls only happen there, never from the timer callback directly,
-   // since MapLibre only guarantees this layer's GL context is current
-   // inside its own Initialize()/Render() calls. Mirrors how
-   // RadarProductLayer's sweepNeedsUpdate_ works (set from a signal
-   // handler, applied lazily in Render()).
-   bool frameNeedsReload_ {false};
+   // Set when GribManager's active products change (see
+   // GribManager::ActiveProductsChanged) -- applied in Render() via
+   // SyncProducts(), for the same GL-context reason as needsReload.
+   bool productsChanged_ {true};
 
-   // Same deferred-to-Render() pattern as frameNeedsReload_, set when the
-   // user changes their reflectivity palette in Settings.
+   // Same deferred-to-Render() pattern, set when the user changes their
+   // reflectivity palette in Settings.
    bool paletteNeedsRebuild_ {false};
-
-   // Grid geometry, populated by LoadFrame()
-   GridType gridType_ {GridType::RegularLatLon};
-   long     nx_ {};
-   long     ny_ {};
-   double   lat1_ {};
-   double   lon1_ {};
-   double   di_ {};
-   double   dj_ {};
-
-   // Lambert only (see GridType/LambertGrid comments above); left
-   // zero-initialized and unused for regular_ll frames.
-   double lov_ {};
-   double lad_ {};
-   double latin1_ {};
-   double latin2_ {};
-   double dx_ {};
-   double dy_ {};
-   double radius_ {};
-
-   // Where the loaded frame came from, and its header line exactly as
-   // read -- the decoded grid itself isn't kept in memory after the GL
-   // upload (up to ~98MB for an MRMS CONUS grid, used only by the
-   // Shift-hover tooltip). ValueAt() reads the one value it needs back
-   // from the file instead, and uses the header to make sure the file
-   // still holds the frame on screen (a newer one may have been renamed
-   // into place and not reloaded yet).
-   std::string framePath_;
-   std::string frameHeader_;
-
-   // Derived from the MRMS filename by grib-helper, since eccodes has no
-   // usable product name for MRMS's local GRIB2 table (see
-   // grib-helper/README.md). Kept as two separate fields, not one display
-   // string -- validTime_ (ISO8601 UTC) is meant to be real, usable data
-   // (e.g. a future staleness check against TimelineManager's selected
-   // time), not just text baked into a label.
-   std::string productLabel_; // e.g. "MergedReflectivityQCComposite_00.50"
-   std::string validTime_;    // e.g. "2026-09-19T03:58:38Z"
-
-   // Per-frame colorizing range -- set by GribManager per product (see
-   // grib_manager.cpp's ProductConfig), read back from the frame header
-   // rather than assumed, so switching products at runtime recolors
-   // correctly instead of staying stuck on reflectivity's range.
-   float colorOffset_     = kDefaultDataMomentOffset_;
-   float colorScale_      = kDefaultDataMomentScale_;
-   float noDataThreshold_ = kDefaultNoDataThreshold_;
-
-   // 0 (default) is fill mode; a nonzero value switches the shader to
-   // isoline rendering at every multiple of this value (see grib.frag)
-   // -- set by GribManager per product (ProductConfig::contourInterval),
-   // baked into the frame header by decode_grib the same way colorOffset/
-   // colorScale/noDataThreshold already are. Also drives dataTexture_'s
-   // filter mode in LoadFrame() -- see that comment for why.
-   float contourInterval_ = 0.0f;
 
    // Keeps GribManager alive: Instance() only caches a weak_ptr, so
    // discarding the shared_ptr immediately destroys it (and its timer)
@@ -192,11 +225,10 @@ public:
    std::shared_ptr<manager::GribManager> gribManager_;
 
    // Fallback safety net for noticing a new frame: GribManager::FrameReady
-   // (see frameReadyConnection_ below) is the primary, immediate path now
-   // -- this cheap stat()-only poll only matters if a signal were ever
+   // (see frameReadyConnection_ below) is the primary, immediate path --
+   // this cheap stat()-only poll only matters if a signal were ever
    // somehow missed (e.g. a frame written by some other means entirely).
-   QTimer*                         reloadTimer_ {nullptr};
-   std::filesystem::file_time_type lastFrameWriteTime_ {};
+   QTimer* reloadTimer_ {nullptr};
 
    boost::signals2::scoped_connection paletteChangedConnection_;
 
@@ -205,9 +237,6 @@ public:
    // Deinitialize() leaving two live connections, same reasoning as
    // reloadTimer_'s delete-before-new guard).
    QMetaObject::Connection frameReadyConnection_;
-
-   // Same lifecycle as frameReadyConnection_ -- see
-   // GribManager::ActiveProductsChanged.
    QMetaObject::Connection activeProductsConnection_;
 };
 
@@ -265,13 +294,17 @@ void GribProductLayer::Initialize(
    glUniform1i(p->uDataTextureLocation_, 0);
    glUniform1i(p->uPaletteLocation_, 1);
 
-   glGenVertexArrays(1, &p->vao_);
-   glGenBuffers(1, &p->vbo_);
-   glGenTextures(1, &p->dataTexture_);
    glGenTextures(1, &p->paletteTexture_);
 
-   BuildPalette();
-   LoadFrame();
+   p->BuildPalette();
+
+   // Loads whatever frames the checked products already have on disk.
+   p->productsChanged_ = true;
+   p->SyncProducts();
+   for (auto& [index, frame] : p->frames_)
+   {
+      p->LoadFrame(index, frame);
+   }
 
    // Live-update when the user changes their reflectivity palette in
    // Settings (mirrors how map_widget.cpp subscribes for RadarProductLayer).
@@ -289,39 +322,30 @@ void GribProductLayer::Initialize(
                                         });
 
    // Primary reload path: GribManager may finish a fetch on its own
-   // background thread (see grib_manager.cpp's fetchPool_), so this
-   // connection can fire from a thread other than this one -- Qt's queued
-   // cross-thread delivery makes that safe, and the slot only ever sets a
-   // dirty flag (never touches GL directly), same pattern as
-   // paletteChangedConnection_ above.
+   // background thread, so this connection can fire from a thread other
+   // than this one -- Qt's queued cross-thread delivery makes that safe,
+   // and the slot only ever sets a dirty flag (never touches GL directly),
+   // same pattern as paletteChangedConnection_ above.
    QObject::disconnect(p->frameReadyConnection_); // guard against a second
                                                   // Initialize() leaving
                                                   // two live connections
-   p->frameReadyConnection_ =
-      connect(p->gribManager_.get(),
-              &manager::GribManager::FrameReady,
-              this,
-              [this](std::size_t productIndex)
-              {
-                 // GribManager can now have several products active at once
-                 // (see its own SetProductActive), but this layer still only
-                 // ever renders one frame -- the current/primary one -- so a
-                 // FrameReady for any other active product isn't relevant here
-                 // yet. Rendering every active product at once is a real,
-                 // separate follow-up, not done in this pass. No current
-                 // product at all (Rrfs/Nbm with nothing checked) is simply
-                 // never relevant either.
-                 const auto currentIndex = p->gribManager_->CurrentProductIndex();
-                 if (currentIndex && productIndex == *currentIndex)
-                 {
-                    p->frameNeedsReload_ = true;
-                    Q_EMIT NeedsRendering();
-                 }
-              });
+   p->frameReadyConnection_ = connect(p->gribManager_.get(),
+                                      &manager::GribManager::FrameReady,
+                                      this,
+                                      [this](std::size_t productIndex)
+                                      {
+                                         const auto frame =
+                                            p->frames_.find(productIndex);
+                                         if (frame != p->frames_.end())
+                                         {
+                                            frame->second.needsReload = true;
+                                            Q_EMIT NeedsRendering();
+                                         }
+                                      });
 
-   // A product being checked/unchecked can change which frame this layer
-   // should show (or leave it with none at all) without any FrameReady --
-   // reload now rather than leaving the old product's frame on the map.
+   // A product being checked/unchecked changes what this layer draws
+   // without any FrameReady -- re-sync now rather than leaving an
+   // unchecked product's frame on the map.
    QObject::disconnect(p->activeProductsConnection_);
    p->activeProductsConnection_ =
       connect(p->gribManager_.get(),
@@ -329,12 +353,12 @@ void GribProductLayer::Initialize(
               this,
               [this]()
               {
-                 p->frameNeedsReload_ = true;
+                 p->productsChanged_ = true;
                  Q_EMIT NeedsRendering();
               });
 
    // Fallback safety net only -- see reloadTimer_'s comment. Kept slow
-   // since FrameReady is now the responsive path.
+   // since FrameReady is the responsive path.
    constexpr int kReloadCheckIntervalMs = 15000;
    delete p->reloadTimer_; // guard against a second Initialize() without an
                            // intervening Deinitialize() leaking a timer
@@ -344,27 +368,21 @@ void GribProductLayer::Initialize(
            this,
            [this]()
            {
-              const auto currentIndex = p->gribManager_->CurrentProductIndex();
-              if (!currentIndex)
+              bool anyChanged = false;
+              for (auto& [index, frame] : p->frames_)
               {
-                 // Rrfs/Nbm with nothing checked yet -- nothing to reload.
-                 return;
-              }
-
-              const std::string framePath =
-                 GetGribFramePath(p->category_, *currentIndex);
-              try
-              {
-                 if (std::filesystem::last_write_time(framePath) !=
-                     p->lastFrameWriteTime_)
+                 std::error_code ec;
+                 const auto      writeTime = std::filesystem::last_write_time(
+                    GetGribFramePath(p->category_, index), ec);
+                 if (!ec && writeTime != frame.lastWriteTime)
                  {
-                    p->frameNeedsReload_ = true;
-                    Q_EMIT NeedsRendering();
+                    frame.needsReload = true;
+                    anyChanged        = true;
                  }
               }
-              catch (const std::filesystem::filesystem_error&)
+              if (anyChanged)
               {
-                 // Frame file missing/unreadable -- nothing to reload yet.
+                 Q_EMIT NeedsRendering();
               }
            });
    p->reloadTimer_->start(kReloadCheckIntervalMs);
@@ -372,7 +390,7 @@ void GribProductLayer::Initialize(
    SCWX_GL_CHECK_ERROR();
 }
 
-void GribProductLayer::BuildPalette()
+void GribProductLayer::Impl::BuildPalette()
 {
    // Same palette the user has selected for NEXRAD base reflectivity
    // (Settings > Palettes > Color Tables), not a hardcoded ramp -- see
@@ -406,21 +424,19 @@ void GribProductLayer::BuildPalette()
       colorTable       = common::ColorTable::Load(*colorTableStream);
    }
 
-   // Deliberately NOT p->colorOffset_/colorScale_ here -- those are the
-   // *product's* physical range (e.g. 260-325 Kelvin for RTMA temperature),
-   // used by the shader to normalize a raw data value into a 0..1 LUT
-   // index (see uDataMomentOffset/Scale in Render()). This loop is a
-   // completely different concern: sampling the *color table's own*
+   // Deliberately NOT any product's colorOffset/colorScale here -- those
+   // are the *product's* physical range (e.g. 260-325 Kelvin for RTMA
+   // temperature), used by the shader to normalize a raw data value into a
+   // 0..1 LUT index (see uDataMomentOffset/Scale in DrawFrame()). This loop
+   // is a completely different concern: sampling the *color table's own*
    // native gradient to build the 256-entry LUT texture in the first
    // place, which must always use the table's own domain -- DR.pal's
    // breakpoints are dBZ values roughly -20 to 75, regardless of what
    // product is being displayed. Confirmed as a real, live bug: feeding
    // RTMA's Kelvin range in here instead put every LUT entry past DR.pal's
    // highest breakpoint, so ColorTable::Color() clamped all 256 entries to
-   // the same final color -- a solid, uninformative fill. Reflectivity
-   // never showed this because its own physical range (-20 to 75 dBZ)
-   // happens to equal kDefaultDataMomentOffset_/Scale_ already, by
-   // coincidence, not by correct design.
+   // the same final color -- a solid, uninformative fill. That's also why
+   // one palette texture serves every product this layer draws.
    std::array<boost::gil::rgba8_pixel_t, 256> palette {};
    for (int i = 0; i < 256; ++i)
    {
@@ -431,7 +447,7 @@ void GribProductLayer::BuildPalette()
    }
 
    glActiveTexture(GL_TEXTURE1);
-   glBindTexture(GL_TEXTURE_1D, p->paletteTexture_);
+   glBindTexture(GL_TEXTURE_1D, paletteTexture_);
    glTexImage1D(GL_TEXTURE_1D,
                 0,
                 GL_RGBA,
@@ -445,41 +461,62 @@ void GribProductLayer::BuildPalette()
    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 }
 
-void GribProductLayer::LoadFrame()
+void GribProductLayer::Impl::SyncProducts()
 {
-   const auto currentIndex = p->gribManager_->CurrentProductIndex();
-   if (!currentIndex)
+   productsChanged_ = false;
+
+   const std::vector<std::size_t> active = gribManager_->ActiveProductIndices();
+   const std::set<std::size_t>    activeSet(active.cbegin(), active.cend());
+
+   for (auto it = frames_.begin(); it != frames_.end();)
    {
-      // Rrfs/Nbm with nothing checked (any more) -- nothing to show, and
-      // whatever was shown before belongs to a product the user just
-      // unchecked.
-      ClearFrame();
-      return;
+      if (!activeSet.contains(it->first))
+      {
+         DeleteFrameGl(it->second);
+         it = frames_.erase(it);
+      }
+      else
+      {
+         ++it;
+      }
    }
 
-   const std::string framePath =
-      GetGribFramePath(p->category_, *currentIndex);
+   for (const std::size_t index : active)
+   {
+      auto [entry, inserted] = frames_.try_emplace(index);
+      if (inserted)
+      {
+         ProductFrame& frame = entry->second;
+         glGenVertexArrays(1, &frame.vao);
+         glGenBuffers(1, &frame.vbo);
+         glGenTextures(1, &frame.dataTexture);
+         frame.needsReload = true;
+      }
+   }
+}
+
+void GribProductLayer::Impl::LoadFrame(std::size_t   productIndex,
+                                       ProductFrame& frame)
+{
+   frame.needsReload = false;
+
+   const std::string framePath = GetGribFramePath(category_, productIndex);
 
    std::ifstream in(framePath, std::ios::binary);
    if (!in)
    {
-      // No frame for the current product yet (just activated, or its
-      // frame was dropped on deactivation -- see GribManager::
-      // SetProductActive). Clear rather than keep showing a different
-      // product's frame under this product's name; FrameReady reloads
-      // once it arrives.
+      // No frame for this product yet (just checked, or its frame was
+      // dropped on deactivation -- see GribManager::SetProductActive).
+      // Nothing to draw until FrameReady says it's arrived.
       logger_->debug("No frame file yet: {}", framePath);
-      ClearFrame();
+      ClearFrame(frame);
       return;
    }
 
-   try
    {
-      p->lastFrameWriteTime_ = std::filesystem::last_write_time(framePath);
-   }
-   catch (const std::filesystem::filesystem_error&)
-   {
-      // Non-fatal: worst case, the next reload-timer tick re-reads a frame
+      std::error_code ec;
+      frame.lastWriteTime = std::filesystem::last_write_time(framePath, ec);
+      // On failure, worst case the next reload-timer tick re-reads a frame
       // that hasn't actually changed.
    }
 
@@ -488,46 +525,43 @@ void GribProductLayer::LoadFrame()
 
    try
    {
-      p->nx_   = static_cast<long>(ExtractNumber(header, "nx"));
-      p->ny_   = static_cast<long>(ExtractNumber(header, "ny"));
-      p->lat1_ = ExtractNumber(header, "lat1");
-      p->lon1_ = ExtractNumber(header, "lon1");
-      p->di_   = ExtractNumber(header, "di");
-      p->dj_   = ExtractNumber(header, "dj");
-      p->gridType_ =
+      frame.nx   = static_cast<long>(ExtractNumber(header, "nx"));
+      frame.ny   = static_cast<long>(ExtractNumber(header, "ny"));
+      frame.lat1 = ExtractNumber(header, "lat1");
+      frame.lon1 = ExtractNumber(header, "lon1");
+      frame.di   = ExtractNumber(header, "di");
+      frame.dj   = ExtractNumber(header, "dj");
+      frame.gridType =
          ExtractStringOr(header, "gridType", "regular_ll") == "lambert" ?
             GridType::Lambert :
             GridType::RegularLatLon;
-      p->lov_    = ExtractNumberOr(header, "lov", 0.0);
-      p->lad_    = ExtractNumberOr(header, "lad", 0.0);
-      p->latin1_ = ExtractNumberOr(header, "latin1", 0.0);
-      p->latin2_ = ExtractNumberOr(header, "latin2", 0.0);
-      p->dx_     = ExtractNumberOr(header, "dx", 0.0);
-      p->dy_     = ExtractNumberOr(header, "dy", 0.0);
-      p->radius_ = ExtractNumberOr(header, "radius", 0.0);
-      // Prefer GribManager's curated display name over the header's own
+      frame.lov    = ExtractNumberOr(header, "lov", 0.0);
+      frame.lad    = ExtractNumberOr(header, "lad", 0.0);
+      frame.latin1 = ExtractNumberOr(header, "latin1", 0.0);
+      frame.latin2 = ExtractNumberOr(header, "latin2", 0.0);
+      frame.dx     = ExtractNumberOr(header, "dx", 0.0);
+      frame.dy     = ExtractNumberOr(header, "dy", 0.0);
+      frame.radius = ExtractNumberOr(header, "radius", 0.0);
+      // GribManager's curated display name rather than the header's own
       // "product" field: decode_grib's label is a clean product+level
       // string for MRMS, but just the bare GRIB shortName for RTMA (e.g.
-      // "2t", since field selection there happens by shortName) --
-      // GribManager already knows the pretty name shown in the dropdown.
-      p->productLabel_ = p->gribManager_ ?
-                            p->gribManager_->CurrentProductName() :
-                            ExtractString(header, "product");
-      p->validTime_    = ExtractString(header, "validTime");
-      p->colorOffset_  = static_cast<float>(
+      // "2t") -- GribManager knows the name shown in the dropdown.
+      frame.productLabel = gribManager_->ProductName(productIndex);
+      frame.validTime    = ExtractString(header, "validTime");
+      frame.colorOffset  = static_cast<float>(
          ExtractNumberOr(header, "colorOffset", kDefaultDataMomentOffset_));
-      p->colorScale_ = static_cast<float>(
+      frame.colorScale = static_cast<float>(
          ExtractNumberOr(header, "colorScale", kDefaultDataMomentScale_));
-      p->noDataThreshold_ = static_cast<float>(
+      frame.noDataThreshold = static_cast<float>(
          ExtractNumberOr(header, "noDataThreshold", kDefaultNoDataThreshold_));
-      p->contourInterval_ =
+      frame.contourInterval =
          static_cast<float>(ExtractNumberOr(header, "contourInterval", 0.0));
       const auto byteLength =
          static_cast<size_t>(ExtractNumber(header, "byteLength"));
       const double missingValue = ExtractNumberOr(
          header, "missingValue", std::numeric_limits<double>::quiet_NaN());
 
-      // Only held for the GL upload below -- see framePath_'s comment.
+      // Only held for the GL upload below -- see framePath's comment.
       // make_unique_for_overwrite skips zero-filling a buffer that's about
       // to be overwritten anyway.
       const std::size_t valueCount = byteLength / sizeof(float);
@@ -535,14 +569,14 @@ void GribProductLayer::LoadFrame()
       in.read(reinterpret_cast<char*>(values.get()),
               static_cast<std::streamsize>(byteLength));
 
-      if (!in || valueCount != static_cast<size_t>(p->nx_ * p->ny_))
+      if (!in || valueCount != static_cast<size_t>(frame.nx * frame.ny))
       {
          logger_->warn("Frame payload size mismatch, expected {} got {}",
-                       p->nx_ * p->ny_,
+                       frame.nx * frame.ny,
                        valueCount);
-         // nx_/ny_ no longer describe the texture still on the GPU, so the
+         // nx/ny no longer describe the texture still on the GPU, so the
          // hover tooltip would read the wrong cells -- drop both.
-         ClearFrame();
+         ClearFrame(frame);
          return;
       }
 
@@ -552,26 +586,26 @@ void GribProductLayer::LoadFrame()
       // it reads full-precision values back from the frame file.
       const bool halfFloat = FitsHalfFloatTexture(values.get(),
                                                   valueCount,
-                                                  p->noDataThreshold_,
-                                                  p->colorScale_,
-                                                  p->contourInterval_,
+                                                  frame.noDataThreshold,
+                                                  frame.colorScale,
+                                                  frame.contourInterval,
                                                   missingValue);
 
       glActiveTexture(GL_TEXTURE0);
-      glBindTexture(GL_TEXTURE_2D, p->dataTexture_);
+      glBindTexture(GL_TEXTURE_2D, frame.dataTexture);
       glTexImage2D(GL_TEXTURE_2D,
                    0,
                    halfFloat ? GL_R16F : GL_R32F,
-                   static_cast<GLsizei>(p->nx_),
-                   static_cast<GLsizei>(p->ny_),
+                   static_cast<GLsizei>(frame.nx),
+                   static_cast<GLsizei>(frame.ny),
                    0,
                    GL_RED,
                    GL_FLOAT,
                    values.get());
       values.reset();
 
-      p->framePath_   = framePath;
-      p->frameHeader_ = header;
+      frame.framePath   = framePath;
+      frame.frameHeader = header;
 
       // NEAREST for every fill-mode product -- load-bearing, not just a
       // style choice: MRMS's -999 "no coverage" sentinel (and any other
@@ -584,7 +618,7 @@ void GribProductLayer::LoadFrame()
       // is safe here specifically because no contour-mode product uses a
       // sentinel value the way MRMS does.
       const GLint filter =
-         (p->contourInterval_ > 0.0f) ? GL_LINEAR : GL_NEAREST;
+         (frame.contourInterval > 0.0f) ? GL_LINEAR : GL_NEAREST;
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -601,15 +635,17 @@ void GribProductLayer::LoadFrame()
          vertices.push_back(texV);
       };
 
-      if (p->gridType_ == GridType::RegularLatLon)
+      if (frame.gridType == GridType::RegularLatLon)
       {
          // Build the bounding quad. lat1/lon1 is the north-west corner;
          // grid scans east (+di) and south (-dj), matching MRMS/most
          // GRIB2 default scanning order (see grib-helper/README.md).
-         const double west  = p->lon1_;
-         const double east  = p->lon1_ + p->di_ * static_cast<double>(p->nx_);
-         const double north = p->lat1_;
-         const double south = p->lat1_ - p->dj_ * static_cast<double>(p->ny_);
+         const double west = frame.lon1;
+         const double east =
+            frame.lon1 + frame.di * static_cast<double>(frame.nx);
+         const double north = frame.lat1;
+         const double south =
+            frame.lat1 - frame.dj * static_cast<double>(frame.ny);
 
          // A single quad isn't enough: GL interpolates texCoord linearly
          // in screen space, but screen space here is Web Mercator, which
@@ -644,7 +680,7 @@ void GribProductLayer::LoadFrame()
             pushVertex(lat, east, 1.0f, texV);
          }
 
-         p->numVertices_ = static_cast<GLsizei>((kLatSubdivisions + 1) * 2);
+         frame.numVertices = static_cast<GLsizei>((kLatSubdivisions + 1) * 2);
       }
       else // GridType::Lambert
       {
@@ -654,20 +690,19 @@ void GribProductLayer::LoadFrame()
          // vertex's true position computed via LambertGridToLatLon rather
          // than linear degree interpolation. Resolution chosen to match
          // regular_ll's kLatSubdivisions in order of magnitude; mesh is
-         // rebuilt only on frame load (RTMA is hourly), so its cost is a
-         // non-issue.
+         // rebuilt only on frame load, so its cost is a non-issue.
          constexpr int kMeshCols = 96;
          constexpr int kMeshRows = 96;
 
-         const LambertGrid lambertGrid {p->lov_,
-                                        p->lad_,
-                                        p->latin1_,
-                                        p->latin2_,
-                                        p->lat1_,
-                                        p->lon1_,
-                                        p->dx_,
-                                        p->dy_,
-                                        p->radius_};
+         const LambertGrid lambertGrid {frame.lov,
+                                        frame.lad,
+                                        frame.latin1,
+                                        frame.latin2,
+                                        frame.lat1,
+                                        frame.lon1,
+                                        frame.dx,
+                                        frame.dy,
+                                        frame.radius};
 
          vertices.reserve(
             static_cast<size_t>((kMeshRows + 1) * (kMeshCols + 1) +
@@ -678,8 +713,8 @@ void GribProductLayer::LoadFrame()
          {
             const double iFrac = static_cast<double>(col) / kMeshCols;
             const double jFrac = static_cast<double>(row) / kMeshRows;
-            const double i     = iFrac * static_cast<double>(p->nx_ - 1);
-            const double j     = jFrac * static_cast<double>(p->ny_ - 1);
+            const double i     = iFrac * static_cast<double>(frame.nx - 1);
+            const double j     = jFrac * static_cast<double>(frame.ny - 1);
             return LambertGridToLatLon(lambertGrid, i, j);
          };
 
@@ -701,9 +736,8 @@ void GribProductLayer::LoadFrame()
             // Degenerate triangles bridging to the next row-band (repeat
             // this band's last vertex, then the next band's first
             // vertex) so the whole mesh still draws with a single
-            // GL_TRIANGLE_STRIP call, matching Render()'s existing
-            // glDrawArrays -- same technique the regular_ll path gets for
-            // free by only ever having one row-band.
+            // GL_TRIANGLE_STRIP call -- same technique the regular_ll
+            // path gets for free by only ever having one row-band.
             if (row + 1 < kMeshRows)
             {
                const glm::dvec2 lastOfBand = vertexAt(row + 1, kMeshCols);
@@ -714,11 +748,11 @@ void GribProductLayer::LoadFrame()
             }
          }
 
-         p->numVertices_ = static_cast<GLsizei>(vertices.size() / 4);
+         frame.numVertices = static_cast<GLsizei>(vertices.size() / 4);
       }
 
-      glBindVertexArray(p->vao_);
-      glBindBuffer(GL_ARRAY_BUFFER, p->vbo_);
+      glBindVertexArray(frame.vao);
+      glBindBuffer(GL_ARRAY_BUFFER, frame.vbo);
       glBufferData(GL_ARRAY_BUFFER,
                    static_cast<GLsizeiptr>(vertices.size() * sizeof(float)),
                    vertices.data(),
@@ -736,23 +770,17 @@ void GribProductLayer::LoadFrame()
                             reinterpret_cast<void*>(2 * sizeof(float)));
       glEnableVertexAttribArray(1);
 
-      // Rebuild the palette LUT using this frame's (possibly new)
-      // colorOffset_/colorScale_ -- the LUT bakes in a specific value
-      // range at build time, so switching products without rebuilding it
-      // would leave the old product's range in effect.
-      BuildPalette();
-
-      p->frameLoaded_ = true;
+      frame.loaded = true;
 
       logger_->info(
          "Loaded GRIB frame: {} valid {} ({} x {} grid, origin "
          "({}, {}), {}-bit texture, {:.1f} MB)",
-         p->productLabel_,
-         p->validTime_,
-         p->nx_,
-         p->ny_,
-         p->lat1_,
-         p->lon1_,
+         frame.productLabel,
+         frame.validTime,
+         frame.nx,
+         frame.ny,
+         frame.lat1,
+         frame.lon1,
          halfFloat ? 16 : 32,
          static_cast<double>(valueCount) * (halfFloat ? 2 : 4) /
             (1024.0 * 1024.0));
@@ -763,27 +791,53 @@ void GribProductLayer::LoadFrame()
    }
 }
 
-void GribProductLayer::ClearFrame()
+void GribProductLayer::Impl::ClearFrame(ProductFrame& frame)
 {
-   p->frameLoaded_ = false;
+   frame.loaded = false;
+   frame.framePath.clear();
+   frame.frameHeader.clear();
+   frame.nx = 0;
+   frame.ny = 0;
+   frame.productLabel.clear();
+   frame.validTime.clear();
 
-   p->framePath_.clear();
-   p->frameHeader_.clear();
-   p->nx_ = 0;
-   p->ny_ = 0;
-   p->productLabel_.clear();
-   p->validTime_.clear();
-
-   // Same for the GPU copy, when there's a texture to release it from
-   // (only ever called with this layer's GL context current: from
-   // LoadFrame(), itself only called from Initialize()/Render()).
-   if (p->dataTexture_ != GL_INVALID_INDEX)
+   // Release the GPU copy (only ever called with this layer's GL context
+   // current: from LoadFrame(), itself only called from Initialize()/
+   // Render()).
+   if (frame.dataTexture != GL_INVALID_INDEX)
    {
       glActiveTexture(GL_TEXTURE0);
-      glBindTexture(GL_TEXTURE_2D, p->dataTexture_);
+      glBindTexture(GL_TEXTURE_2D, frame.dataTexture);
       glTexImage2D(
          GL_TEXTURE_2D, 0, GL_R32F, 0, 0, 0, GL_RED, GL_FLOAT, nullptr);
    }
+}
+
+void GribProductLayer::Impl::DeleteFrameGl(ProductFrame& frame)
+{
+   glDeleteVertexArrays(1, &frame.vao);
+   glDeleteBuffers(1, &frame.vbo);
+   glDeleteTextures(1, &frame.dataTexture);
+
+   frame.vao         = GL_INVALID_INDEX;
+   frame.vbo         = GL_INVALID_INDEX;
+   frame.dataTexture = GL_INVALID_INDEX;
+   frame.numVertices = 0;
+   frame.loaded      = false;
+}
+
+void GribProductLayer::Impl::DrawFrame(const ProductFrame& frame) const
+{
+   glUniform1f(uDataMomentOffsetLocation_, frame.colorOffset);
+   glUniform1f(uDataMomentScaleLocation_, frame.colorScale);
+   glUniform1f(uNoDataThresholdLocation_, frame.noDataThreshold);
+   glUniform1f(uContourIntervalLocation_, frame.contourInterval);
+
+   glActiveTexture(GL_TEXTURE0);
+   glBindTexture(GL_TEXTURE_2D, frame.dataTexture);
+
+   glBindVertexArray(frame.vao);
+   glDrawArrays(GL_TRIANGLE_STRIP, 0, frame.numVertices);
 }
 
 void GribProductLayer::Render(
@@ -793,16 +847,25 @@ void GribProductLayer::Render(
    if (p->paletteNeedsRebuild_)
    {
       p->paletteNeedsRebuild_ = false;
-      BuildPalette();
+      p->BuildPalette();
    }
 
-   if (p->frameNeedsReload_)
+   if (p->productsChanged_)
    {
-      p->frameNeedsReload_ = false;
-      LoadFrame();
+      p->SyncProducts();
    }
 
-   if (!p->frameLoaded_)
+   bool anyLoaded = false;
+   for (auto& [index, frame] : p->frames_)
+   {
+      if (frame.needsReload)
+      {
+         p->LoadFrame(index, frame);
+      }
+      anyLoaded |= frame.loaded;
+   }
+
+   if (!anyLoaded)
    {
       return;
    }
@@ -828,18 +891,23 @@ void GribProductLayer::Render(
    glUniformMatrix4fv(
       p->uMVPMatrixLocation_, 1, GL_FALSE, glm::value_ptr(uMVPMatrix));
 
-   glUniform1f(p->uDataMomentOffsetLocation_, p->colorOffset_);
-   glUniform1f(p->uDataMomentScaleLocation_, p->colorScale_);
-   glUniform1f(p->uNoDataThresholdLocation_, p->noDataThreshold_);
-   glUniform1f(p->uContourIntervalLocation_, p->contourInterval_);
-
-   glActiveTexture(GL_TEXTURE0);
-   glBindTexture(GL_TEXTURE_2D, p->dataTexture_);
    glActiveTexture(GL_TEXTURE1);
    glBindTexture(GL_TEXTURE_1D, p->paletteTexture_);
 
-   glBindVertexArray(p->vao_);
-   glDrawArrays(GL_TRIANGLE_STRIP, 0, p->numVertices_);
+   // Every checked product: filled fields first, then contour products on
+   // top, so isolines stay visible over a filled field (e.g. MSLP contours
+   // over 2m temperature). Within each pass, in product order -- a later
+   // fill covers an earlier one where both have data.
+   for (const bool contourPass : {false, true})
+   {
+      for (const auto& [index, frame] : p->frames_)
+      {
+         if (frame.loaded && (frame.contourInterval > 0.0f) == contourPass)
+         {
+            p->DrawFrame(frame);
+         }
+      }
+   }
 
    SCWX_GL_CHECK_ERROR();
 }
@@ -851,84 +919,80 @@ void GribProductLayer::Deinitialize()
    delete p->reloadTimer_;
    p->reloadTimer_ = nullptr;
 
-   glDeleteVertexArrays(1, &p->vao_);
-   glDeleteBuffers(1, &p->vbo_);
-   glDeleteTextures(1, &p->dataTexture_);
+   for (auto& [index, frame] : p->frames_)
+   {
+      Impl::DeleteFrameGl(frame);
+   }
+   p->frames_.clear();
+
    glDeleteTextures(1, &p->paletteTexture_);
-
-   p->vao_            = GL_INVALID_INDEX;
-   p->vbo_            = GL_INVALID_INDEX;
-   p->dataTexture_    = GL_INVALID_INDEX;
    p->paletteTexture_ = GL_INVALID_INDEX;
-   p->numVertices_    = 0;
-
-   // Initialize() reloads the frame from disk anyway -- don't hold the CPU
-   // copy while deinitialized.
-   ClearFrame();
 
    QObject::disconnect(p->frameReadyConnection_);
    QObject::disconnect(p->activeProductsConnection_);
 }
 
-std::optional<float> GribProductLayer::ValueAt(double lat, double lon) const
+std::optional<float> GribProductLayer::Impl::ValueAt(const ProductFrame& frame,
+                                                     double              lat,
+                                                     double              lon)
 {
-   if (p->framePath_.empty() || p->nx_ <= 0 || p->ny_ <= 0)
+   if (!frame.loaded || frame.framePath.empty() || frame.nx <= 0 ||
+       frame.ny <= 0)
    {
       return std::nullopt;
    }
 
    long gi = 0; // column, west to east, matching the wire format's own
-   long gj = 0; // row-major (index = row * nx_ + col) scan order
+   long gj = 0; // row-major (index = row * nx + col) scan order
 
-   if (p->gridType_ == GridType::RegularLatLon)
+   if (frame.gridType == GridType::RegularLatLon)
    {
-      // lat1_/lon1_ is the north-west corner; grid scans east (+di_) and
-      // south (-dj_) -- see LoadFrame's mesh-building comment.
-      gi = std::lround((lon - p->lon1_) / p->di_);
-      gj = std::lround((p->lat1_ - lat) / p->dj_);
+      // lat1/lon1 is the north-west corner; grid scans east (+di) and
+      // south (-dj) -- see LoadFrame's mesh-building comment.
+      gi = std::lround((lon - frame.lon1) / frame.di);
+      gj = std::lround((frame.lat1 - lat) / frame.dj);
    }
    else // Lambert
    {
       // Exact inverse of LambertGridToLatLon: reuses the same
-      // ComputeLambertConstants/LambertForward this file already uses to
-      // build the mesh, just run lat/lon -> grid index instead of grid
-      // index -> lat/lon.
-      const LambertGrid      grid {p->lov_,
-                                   p->lad_,
-                                   p->latin1_,
-                                   p->latin2_,
-                                   p->lat1_,
-                                   p->lon1_,
-                                   p->dx_,
-                                   p->dy_,
-                                   p->radius_};
+      // ComputeLambertConstants/LambertForward the mesh builder uses, just
+      // run lat/lon -> grid index instead of grid index -> lat/lon.
+      const LambertGrid      grid {frame.lov,
+                              frame.lad,
+                              frame.latin1,
+                              frame.latin2,
+                              frame.lat1,
+                              frame.lon1,
+                              frame.dx,
+                              frame.dy,
+                              frame.radius};
       const LambertConstants c = ComputeLambertConstants(grid);
 
-      const glm::dvec2 origin = LambertForward(grid, c, p->lat1_, p->lon1_);
+      const glm::dvec2 origin = LambertForward(grid, c, frame.lat1, frame.lon1);
       const glm::dvec2 target = LambertForward(grid, c, lat, lon);
 
-      gi = std::lround((target.x - origin.x) / p->dx_);
-      gj = std::lround((target.y - origin.y) / p->dy_);
+      gi = std::lround((target.x - origin.x) / frame.dx);
+      gj = std::lround((target.y - origin.y) / frame.dy);
    }
 
-   if (gi < 0 || gi >= p->nx_ || gj < 0 || gj >= p->ny_)
+   if (gi < 0 || gi >= frame.nx || gj < 0 || gj >= frame.ny)
    {
       return std::nullopt;
    }
 
-   // Read just this one value back from the frame file -- see
-   // framePath_'s comment. Opened per lookup rather than held open, since
-   // Windows won't let GribManager rename a newer frame over an open file.
-   std::ifstream in(p->framePath_, std::ios::binary);
+   // Read just this one value back from the frame file -- see framePath's
+   // comment. Opened per lookup rather than held open, since Windows won't
+   // let GribManager rename a newer frame over an open file.
+   std::ifstream in(frame.framePath, std::ios::binary);
    std::string   header;
-   if (!in || !std::getline(in, header) || header != p->frameHeader_)
+   if (!in || !std::getline(in, header) || header != frame.frameHeader)
    {
       // Gone, or already replaced by a frame this layer hasn't loaded yet.
       return std::nullopt;
    }
 
    const auto index =
-      static_cast<std::streamoff>(gj) * static_cast<std::streamoff>(p->nx_) +
+      static_cast<std::streamoff>(gj) * static_cast<std::streamoff>(frame.nx) +
       static_cast<std::streamoff>(gi);
    in.seekg(index * static_cast<std::streamoff>(sizeof(float)), std::ios::cur);
 
@@ -943,7 +1007,7 @@ std::optional<float> GribProductLayer::ValueAt(double lat, double lon) const
    // grib.frag) -- keeps the tooltip in agreement with what's actually
    // rendered, rather than a separate, possibly-differing notion of "no
    // data here".
-   if (value < p->noDataThreshold_)
+   if (value < frame.noDataThreshold)
    {
       return std::nullopt;
    }
@@ -955,24 +1019,39 @@ std::optional<std::string> GribProductLayer::GetHoverText(
    const std::shared_ptr<MapContext>& /* mapContext */,
    const common::Coordinate& mouseGeoCoords) const
 {
-   if (!p->frameLoaded_)
+   // One "product\nvalue units\nValid: ..." block per checked product with
+   // data under the cursor, separated by a blank line -- the same way
+   // CombineAreaHoverText() separates sibling layers' blocks.
+   std::string combined;
+
+   for (const auto& [index, frame] : p->frames_)
+   {
+      const std::optional<float> value = Impl::ValueAt(
+         frame, mouseGeoCoords.latitude_, mouseGeoCoords.longitude_);
+      if (!value.has_value())
+      {
+         continue;
+      }
+
+      const std::string formattedValue =
+         p->gribManager_ ? p->gribManager_->FormatValue(index, *value) :
+                           fmt::format("{:.2f}", *value);
+
+      if (!combined.empty())
+      {
+         combined += "\n\n";
+      }
+      combined += fmt::format("{}\n{}\nValid: {}",
+                              frame.productLabel,
+                              formattedValue,
+                              frame.validTime);
+   }
+
+   if (combined.empty())
    {
       return std::nullopt;
    }
-
-   std::optional<float> value =
-      ValueAt(mouseGeoCoords.latitude_, mouseGeoCoords.longitude_);
-   if (!value.has_value())
-   {
-      return std::nullopt;
-   }
-
-   const std::string formattedValue =
-      p->gribManager_ ? p->gribManager_->FormatValue(value.value()) :
-                        fmt::format("{:.2f}", value.value());
-
-   return fmt::format(
-      "{}\n{}\nValid: {}", p->productLabel_, formattedValue, p->validTime_);
+   return combined;
 }
 
 bool GribProductLayer::RunMousePicking(

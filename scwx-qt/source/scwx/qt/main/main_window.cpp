@@ -3519,7 +3519,16 @@ void MainWindowImpl::ExportGribSnapshot(map::GribCategory category,
    const std::string defaultFolder =
       generalSettings.screen_capture_folder().GetValue();
 
-   std::string productName = gribManager->CurrentProductName();
+   // Every drawn product, e.g. "RTMA_2m_Temperature+10m_Wind_Speed.png".
+   std::string productName;
+   for (const std::size_t index : gribManager->ActiveProductIndices())
+   {
+      if (!productName.empty())
+      {
+         productName += '+';
+      }
+      productName += gribManager->ProductName(index);
+   }
    std::replace(productName.begin(), productName.end(), ' ', '_');
 
    const QString defaultPath = QString::fromStdString(fmt::format(

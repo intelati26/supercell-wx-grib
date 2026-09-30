@@ -1028,6 +1028,12 @@ public:
    // entry.
    std::set<std::pair<std::size_t, std::string>> inFlightKeys_;
 
+   // QueueDownload()'s own in-flight set: each file being downloaded, and
+   // every product waiting on it -- keyed by file alone, so products that
+   // share a file (RTMA/RRFS bundle every field into one) download it once
+   // and each get their own decode when it lands.
+   std::map<std::string, std::set<std::size_t>> downloadWaiters_;
+
    // Mirror of activeProducts_ for background threads (activeProducts_
    // itself is GUI-thread-only) -- lets a lookup, download or decode that
    // outlived its product's deactivation notice and drop its result
@@ -1229,10 +1235,22 @@ std::optional<std::size_t> GribManager::CurrentProductIndex() const
    return *p->activeProducts_.begin();
 }
 
+std::vector<std::size_t> GribManager::ActiveProductIndices() const
+{
+   return {p->activeProducts_.cbegin(), p->activeProducts_.cend()};
+}
+
 std::string GribManager::CurrentProductName() const
 {
    const auto index = CurrentProductIndex();
-   return index ? Products(p->category_)[*index].displayName : std::string {};
+   return index ? ProductName(*index) : std::string {};
+}
+
+std::string GribManager::ProductName(std::size_t productIndex) const
+{
+   const auto& products = Products(p->category_);
+   return productIndex < products.size() ? products[productIndex].displayName :
+                                           std::string {};
 }
 
 std::string GribManager::FormatValue(float rawValue) const
@@ -1240,14 +1258,23 @@ std::string GribManager::FormatValue(float rawValue) const
    const auto index = CurrentProductIndex();
    if (!index)
    {
-      // Only reachable for Rrfs/Nbm with nothing active -- every current
-      // caller (grib_legend.cpp, GribProductLayer's own hover text) is
-      // already guarded not to reach here, this is just insurance against
-      // a future one that isn't.
+      // Only reachable for Rrfs/Nbm with nothing active -- insurance
+      // against a caller that doesn't check first.
+      return fmt::format("{:.2f}", rawValue);
+   }
+   return FormatValue(*index, rawValue);
+}
+
+std::string GribManager::FormatValue(std::size_t productIndex,
+                                     float       rawValue) const
+{
+   const auto& products = Products(p->category_);
+   if (productIndex >= products.size())
+   {
       return fmt::format("{:.2f}", rawValue);
    }
 
-   const ProductConfig& product = Products(p->category_)[*index];
+   const ProductConfig& product      = products[productIndex];
    auto&                unitSettings = settings::UnitSettings::Instance();
 
    switch (product.quantity)
@@ -1597,14 +1624,12 @@ void GribManager::PrefetchRrfsForecastHourRange()
 
    // Nothing to prefetch with no product active (e.g. Play pressed the
    // instant a category is enabled, before any product is checked).
-   const auto index = CurrentProductIndex();
-   if (!index)
+   if (p->activeProducts_.empty())
    {
       return;
    }
 
-   const auto cycle   = CurrentRrfsCycle();
-   const auto family  = Products(p->category_)[*index].rrfsFileFamily;
+   const auto cycle = CurrentRrfsCycle();
    const int  maxHour =
       provider::RrfsDataProvider::MaxForecastHourForCycle(cycle);
 
@@ -1619,12 +1644,26 @@ void GribManager::PrefetchRrfsForecastHourRange()
                   startHour,
                   endHour);
 
-   const auto productProvider = p->providers_.at(*index);
-   for (int hour = startHour; hour <= endHour; ++hour)
+   // Every checked product, since they're all drawn during playback.
+   // Products in the same file family share each hour's file, which
+   // QueueDownload() downloads once for all of them. SHIP is skipped: its
+   // two inputs go through its own dispatch (see FetchShipSelection()).
+   for (const std::size_t index : p->activeProducts_)
    {
-      QueueDownload(*index,
-                    provider::RrfsDataProvider::BuildKey(cycle, hour, family),
-                    productProvider);
+      const ProductConfig& product = Products(p->category_)[index];
+      if (product.derivedIndex == "ship")
+      {
+         continue;
+      }
+
+      const auto productProvider = p->providers_.at(index);
+      for (int hour = startHour; hour <= endHour; ++hour)
+      {
+         QueueDownload(index,
+                       provider::RrfsDataProvider::BuildKey(
+                          cycle, hour, product.rrfsFileFamily),
+                       productProvider);
+      }
    }
 }
 
@@ -1725,22 +1764,29 @@ void GribManager::PrefetchLoopRange()
       return;
    }
 
-   // Current product only, not every active one -- see this method's own
-   // doc in grib_manager.hpp. A reasonable follow-up, not attempted here.
-   // Also nothing to prefetch at all with no product active yet.
-   const auto index = CurrentProductIndex();
-   if (!index)
-   {
-      return;
-   }
-   const std::size_t productIndex = *index;
-   const auto        provider     = p->providers_.at(productIndex);
-
    auto [startTime, endTime] = p->timelineManager_->GetLoopStartAndEndTimes();
    if (startTime >= endTime)
    {
       return;
    }
+
+   // Every checked product, since they're all drawn during playback --
+   // one lookup job each (MRMS products are separate files; RTMA's share
+   // one, which QueueDownload() downloads once for all of them).
+   for (const std::size_t productIndex : p->activeProducts_)
+   {
+      PrefetchLoopRangeForProduct(
+         productIndex, p->providers_.at(productIndex), startTime, endTime);
+   }
+}
+
+void GribManager::PrefetchLoopRangeForProduct(
+   std::size_t                                      productIndex,
+   std::shared_ptr<provider::AwsNexradDataProvider> provider,
+   std::chrono::system_clock::time_point            startTime,
+   std::chrono::system_clock::time_point            endTime)
+{
+   using namespace std::chrono;
 
    // Listing a day and searching it are blocking network I/O -- run them
    // on the lookup pool rather than the GUI thread Play was pressed on.
@@ -2581,13 +2627,15 @@ void GribManager::QueueDownload(
 {
    {
       std::lock_guard lock(p->fetchMutex_);
-      if (!p->inFlightKeys_.insert({productIndex, key}).second)
+      auto [waiters, firstRequest] = p->downloadWaiters_.try_emplace(key);
+      waiters->second.insert(productIndex);
+      if (!firstRequest)
       {
-         return; // already downloading for this product (a prefetch and a
-                 // direct request can race for the same key; only one
-                 // should fetch it) -- see this method's own doc in
-                 // grib_manager.hpp for why the dedup key includes
-                 // productIndex rather than being just `key`.
+         // Already downloading this file -- for this product (a prefetch
+         // and a direct request racing), or for another product sharing
+         // it (RTMA/RRFS bundle every field into one file). Either way the
+         // running download decodes it for productIndex too when it's done.
+         return;
       }
    }
 
@@ -2654,9 +2702,16 @@ void GribManager::QueueDownload(
 
          statusManager->ReportComplete(statusId);
 
+         // Every product that asked for this file while it downloaded.
+         std::set<std::size_t> waiters;
          {
             std::lock_guard lock(p->fetchMutex_);
-            p->inFlightKeys_.erase({productIndex, key});
+            const auto      entry = p->downloadWaiters_.find(key);
+            if (entry != p->downloadWaiters_.end())
+            {
+               waiters = std::move(entry->second);
+               p->downloadWaiters_.erase(entry);
+            }
          }
 
          if (!downloaded.has_value())
@@ -2667,31 +2722,13 @@ void GribManager::QueueDownload(
 
          NoteCachedDownload(cachedPath);
 
-         // Only apply this to the display if it's still what's wanted --
-         // otherwise playback/scrubbing has moved on since this was
-         // queued, and applying it now would show a stale frame. It stays
-         // cached on disk regardless, for a loop repeat or a scrub back.
-         bool stillWanted;
+         // Decode it for each of them -- QueueCachedDecode() skips any whose
+         // request has since moved on (playback/scrubbing, or the product
+         // was unchecked), which would otherwise show a stale frame. The
+         // file stays cached regardless, for a loop repeat or a scrub back.
+         for (const std::size_t waiter : waiters)
          {
-            std::lock_guard lock(p->fetchMutex_);
-            stillWanted = (p->lastRequestedKeys_[productIndex] == key);
-         }
-
-         if (stillWanted)
-         {
-            ApplyCachedDownload(productIndex,
-                                key,
-                                product.shortName,
-                                product.colorOffset,
-                                product.colorScale,
-                                product.noDataThreshold,
-                                product.contourInterval,
-                                product.derivedIndex,
-                                product.typeOfLevel,
-                                product.topLevel,
-                                product.bottomLevel,
-                                product.startStep,
-                                product.lengthOfTimeRange);
+            QueueCachedDecode(waiter, key);
          }
       });
 }
