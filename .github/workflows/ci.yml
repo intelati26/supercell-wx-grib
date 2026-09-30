@@ -199,7 +199,9 @@ jobs:
         # keeps the dynamic CRT to match the rest of the build.
         & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "eccodes[aec,png]:${{ matrix.vcpkg_triplet }}"
         if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed" }
-        "SCWX_VCPKG_PREFIX=$env:VCPKG_INSTALLATION_ROOT/installed/${{ matrix.vcpkg_triplet }}" |
+        # Forward slashes: CMake parses backslashes in CMAKE_PREFIX_PATH as escapes.
+        $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT -replace '\\', '/'
+        "SCWX_VCPKG_PREFIX=$vcpkgRoot/installed/${{ matrix.vcpkg_triplet }}" |
           Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
     - name: Restore Conan Packages
@@ -509,7 +511,7 @@ jobs:
       env:
         MAPBOX_API_KEY:   ${{ secrets.MAPBOX_API_KEY }}
         MAPTILER_API_KEY: ${{ secrets.MAPTILER_API_KEY }}
-      run: ctest -C ${{ matrix.build_type }} --exclude-regex "test_mln.*|NtpClient.*|UpdateManager.*"
+      run: ctest --output-on-failure -C ${{ matrix.build_type }} --exclude-regex "test_mln.*|NtpClient.*|UpdateManager.*"
 
     - name: Upload Test Logs
       if: ${{ !cancelled() }}

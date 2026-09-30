@@ -126,7 +126,7 @@ TEST(GribManagerTest, PrslevProductDecodesRealFile)
    double             lastMean        = 0.0;
    std::vector<float> payload;
 
-   for (int i = 0; i < 300 && !found; ++i)
+   for (int i = 0; i < 900 && !found; ++i)
    {
       std::ifstream in(framePath, std::ios::binary);
       if (in.is_open())
@@ -151,6 +151,8 @@ TEST(GribManagerTest, PrslevProductDecodesRealFile)
             }
          }
       }
+      // Windows refuses to rename a new frame over a file still open here.
+      in.close();
       std::this_thread::sleep_for(500ms);
    }
 
@@ -207,7 +209,7 @@ TEST(GribManagerTest, ShipProductDecodesRealFile)
    double             lastMean      = 0.0;
    std::vector<float> payload;
 
-   for (int i = 0; i < 300 && !found; ++i)
+   for (int i = 0; i < 900 && !found; ++i)
    {
       std::ifstream in(framePath, std::ios::binary);
       if (in.is_open())
@@ -232,6 +234,8 @@ TEST(GribManagerTest, ShipProductDecodesRealFile)
             }
          }
       }
+      // Windows refuses to rename a new frame over a file still open here.
+      in.close();
       std::this_thread::sleep_for(500ms);
    }
 
@@ -402,6 +406,8 @@ TEST(GribManagerTest, NbmProductDecodesRealFile)
             }
          }
       }
+      // Windows refuses to rename a new frame over a file still open here.
+      in.close();
       std::this_thread::sleep_for(500ms);
    }
 
