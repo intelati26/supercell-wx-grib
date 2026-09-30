@@ -219,18 +219,31 @@ void PlacefileLayer::Impl::ReloadLinesSync()
       manager::PlacefileManager::Instance()->placefile(placefileName_);
    if (placefile == nullptr)
    {
+      // Nothing to rebuild from; let the draw item ask again later.
+      placefileLines_->AbortRebuild();
       return;
    }
 
    placefileLines_->StartLines();
 
-   for (auto& drawItem : placefile->GetDrawItems())
+   try
    {
-      if (drawItem->itemType_ == gr::Placefile::ItemType::Line)
+      for (auto& drawItem : placefile->GetDrawItems())
       {
-         placefileLines_->AddLine(
-            std::static_pointer_cast<gr::Placefile::LineDrawItem>(drawItem));
+         if (drawItem->itemType_ == gr::Placefile::ItemType::Line)
+         {
+            placefileLines_->AddLine(
+               std::static_pointer_cast<gr::Placefile::LineDrawItem>(
+                  drawItem));
+         }
       }
+   }
+   catch (...)
+   {
+      // Always finish what StartLines() began, or the draw item would treat
+      // a rebuild as pending forever.
+      placefileLines_->FinishLines();
+      throw;
    }
 
    placefileLines_->FinishLines();

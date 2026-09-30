@@ -32,7 +32,8 @@ public:
 
    /**
     * Sets a function called from Render() when the current zoom no longer
-    * matches the level of detail the lines were last built for. It should
+    * matches the level of detail, or the visible area, the lines were last
+    * built for (only the on-screen part plus a margin is built). It should
     * rebuild the lines (StartLines(), AddLine() for each, FinishLines())
     * on the same thread that normally builds them -- not from within the
     * callback itself. Lines are drawn simplified for the zoom they were
@@ -52,6 +53,13 @@ public:
                    const glm::vec2&                              mouseCoords,
                    const common::Coordinate&                     mouseGeoCoords,
                    std::shared_ptr<types::EventHandler>& eventHandler) override;
+
+   /**
+    * Tells the draw item a rebuild it asked for (see
+    * set_rebuild_requested_callback()) will not happen -- e.g. the placefile
+    * has gone away -- so it may ask again.
+    */
+   void AbortRebuild();
 
    /**
     * Resets and prepares the draw item for adding a new set of lines.
