@@ -693,6 +693,19 @@ static const std::vector<ProductConfig> kRtmaProducts_ {
 // 2dfld, fixed at RrfsDataProvider's resolved synoptic-cycle F000, no
 // forecast-hour selection yet. Same no-coverage-gaps convention as RTMA
 // above -- RRFS's fields are full model grids too.
+// RRFS's fields are full model grids with no missing cells, so unlike MRMS
+// there is no "no coverage" sentinel to drop -- but a field whose zero means
+// "nothing here" (no rain, no CAPE, clear sky, no echo) still can't be drawn
+// at zero: every such cell would be painted the bottom colour of the shared
+// reflectivity palette, a grey blanket over the whole domain (in a real F000
+// file 92% of simulated-reflectivity cells are <= 0 dBZ, 88% of precip-rate
+// and 51% of CAPE cells are 0). Those products set noDataThreshold just above
+// the meaningless floor so that part is transparent. Cutoffs were read off a
+// live file's distributions where the field is in F000 (reflectivity, VIL,
+// precip rate, CAPE, cloud cover); accumulated precipitation and lightning
+// threat aren't in F000, so theirs are conservative guesses. Continuous
+// fields (temperature, wind, pressure, heights, satellite bands) are meant
+// to fill the domain and are unchanged.
 static const std::vector<ProductConfig> kRrfsProducts_ {
    // Mean sea level pressure (ETA reduction), Pa. Verified against live
    // data on two separate days: 100203-103017 Pa (2026-09-20) and
@@ -718,7 +731,7 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // eccodes (no definition table entry for this parameter combination
    // yet) -- decode_grib selects by shortName, so that field isn't
    // usable this way; LTNG is the one that works.
-   {"Lightning Threat", "", "ltng", 0.0f, 50.0f, -999.0f,
+   {"Lightning Threat", "", "ltng", 0.0f, 50.0f, 0.1f,
     PhysicalQuantity::None, "index", 0.0f, "", "", -1, -1},
 
    // Significant Tornado Parameter, fixed-layer form (Thompson et al.
@@ -732,7 +745,7 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // real range -1.11 to 2.26 on a quiet (non-severe) day; scaled to
    // -2 to 6 for headroom toward a genuinely favorable severe-weather
    // setup, which this one observed day wasn't.
-   {"STP (Fixed-Layer)", "", "", -2.0f, 8.0f, -9000.0f,
+   {"STP (Fixed-Layer)", "", "", -2.0f, 8.0f, 0.1f,
     PhysicalQuantity::None, "index", 0.0f, "stp", "", -1, -1},
 
    // Everything below verified against the same real downloaded 2dfld
@@ -749,16 +762,16 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // tilts); each level is its own product since eccodes has no single
    // "composite" message for it. Same -20/95 range as MRMS reflectivity
    // (kMrmsProducts_ above) so it reads on the same visual scale.
-   {"Simulated Reflectivity (1km AGL)", "", "rare", -20.0f, 95.0f, -999.0f,
+   {"Simulated Reflectivity (1km AGL)", "", "rare", -20.0f, 95.0f, 0.0f,
     PhysicalQuantity::None, "dBZ", 0.0f, "", "heightAboveGround", 1000, 1000},
-   {"Simulated Reflectivity (4km AGL)", "", "rare", -20.0f, 95.0f, -999.0f,
+   {"Simulated Reflectivity (4km AGL)", "", "rare", -20.0f, 95.0f, 0.0f,
     PhysicalQuantity::None, "dBZ", 0.0f, "", "heightAboveGround", 4000, 4000},
-   {"Simulated Reflectivity (-10C level)", "", "rare", -20.0f, 95.0f, -999.0f,
+   {"Simulated Reflectivity (-10C level)", "", "rare", -20.0f, 95.0f, 0.0f,
     PhysicalQuantity::None, "dBZ", 0.0f, "", "isothermal", 263, 263},
 
    // Vertically Integrated Liquid, kg/m^2. Verified: real range
    // 0.001-197.3; scaled to 0-220 for headroom.
-   {"VIL", "", "veril", 0.0f, 220.0f, -999.0f,
+   {"VIL", "", "veril", 0.0f, 220.0f, 0.5f,
     PhysicalQuantity::None, "kg/m^2", 0.0f, "", "", -1, -1},
 
    // RRFS's own forecast surface visibility, metres -- distinct from
@@ -786,7 +799,7 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // real range 0-0.0791; scaled to 0-0.1 for headroom. Quantity is None
    // (raw rate), not AccumulationMillimeters -- that setting is for
    // totals, converting a rate through it would be wrong.
-   {"Precipitation Rate", "", "prate", 0.0f, 0.1f, -999.0f,
+   {"Precipitation Rate", "", "prate", 0.0f, 0.1f, 0.000028f,
     PhysicalQuantity::None, "kg/m^2/s", 0.0f, "", "", -1, -1},
 
    // 1-hour accumulated precipitation, kg/m^2 (== mm). RRFS's 2dfld file
@@ -797,7 +810,7 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // via grib_ls against a real forecast-hour-5 file, not assumed).
    // Verified: real range 0-107.8 at that hour; scaled to 0-120 for
    // headroom.
-   {"1-Hour Precipitation", "", "tp", 0.0f, 120.0f, -999.0f,
+   {"1-Hour Precipitation", "", "tp", 0.0f, 120.0f, 0.1f,
     PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "", -1, -1,
     -1, 1},
 
@@ -810,7 +823,7 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // (it is a running total over the whole forecast, up to 84h), so a
    // long-enough run's true max could still exceed this; only checked at
    // one (early) forecast hour, not the full range.
-   {"Total Precipitation", "", "tp", 0.0f, 300.0f, -999.0f,
+   {"Total Precipitation", "", "tp", 0.0f, 300.0f, 0.1f,
     PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "", -1, -1,
     0, -1},
 
@@ -882,7 +895,7 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // headroom toward SPC's own documented "very high" (>4) ceiling,
    // which this one observed day wasn't close to, same reasoning as
    // STP's own headroom above.
-   {"SHIP", "", "", 0.0f, 6.0f, -9000.0f, PhysicalQuantity::None, "index",
+   {"SHIP", "", "", 0.0f, 6.0f, 0.1f, PhysicalQuantity::None, "index",
     0.0f, "ship", "", -1, -1},
 
    // Planetary boundary layer height, metres AGL. Verified: real range
@@ -907,20 +920,20 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // (boundaryLayerCloudLayer and atmosphereSingleLayer) -- picked
    // atmosphereSingleLayer as the more standard "whole column" total,
    // disambiguated explicitly rather than trusting message order.
-   {"Total Cloud Cover", "", "tcc", 0.0f, 100.0f, -999.0f,
+   {"Total Cloud Cover", "", "tcc", 0.0f, 100.0f, 5.0f,
     PhysicalQuantity::None, "%", 0.0f, "", "atmosphereSingleLayer", 0, 0},
-   {"Low Cloud Cover", "", "lcc", 0.0f, 100.0f, -999.0f,
+   {"Low Cloud Cover", "", "lcc", 0.0f, 100.0f, 5.0f,
     PhysicalQuantity::None, "%", 0.0f, "", "", -1, -1},
-   {"Mid Cloud Cover", "", "mcc", 0.0f, 100.0f, -999.0f,
+   {"Mid Cloud Cover", "", "mcc", 0.0f, 100.0f, 5.0f,
     PhysicalQuantity::None, "%", 0.0f, "", "", -1, -1},
-   {"High Cloud Cover", "", "hcc", 0.0f, 100.0f, -999.0f,
+   {"High Cloud Cover", "", "hcc", 0.0f, 100.0f, 5.0f,
     PhysicalQuantity::None, "%", 0.0f, "", "", -1, -1},
 
    // Surface-based CAPE/CIN, J/kg -- the file also carries 3 mixed-layer
    // CAPE/CIN variants (90/180/255 mb) sharing the same "cape"/"cin"
    // shortName; "surface" disambiguates to the SB (not MU) variant.
    // Verified: CAPE 0-5006, CIN -874-0; scaled with headroom.
-   {"SBCAPE", "", "cape", 0.0f, 5500.0f, -999.0f,
+   {"SBCAPE", "", "cape", 0.0f, 5500.0f, 50.0f,
     PhysicalQuantity::None, "J/kg", 0.0f, "", "surface", 0, 0},
    {"SBCIN", "", "cin", -1000.0f, 1000.0f, -999.0f,
     PhysicalQuantity::None, "J/kg", 0.0f, "", "surface", 0, 0},
@@ -929,7 +942,7 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // formula uses, see decode_grib.cpp; SHIP itself stays deferred until
    // prslev support exists, but MUCAPE/MUCIN are useful fields alone).
    // Verified: CAPE 0-4224, CIN -1364-0.
-   {"MUCAPE", "", "cape", 0.0f, 4600.0f, -999.0f,
+   {"MUCAPE", "", "cape", 0.0f, 4600.0f, 50.0f,
     PhysicalQuantity::None, "J/kg", 0.0f, "", "pressureFromGroundLayer",
     18000, 0},
    {"MUCIN", "", "cin", -1500.0f, 1500.0f, -999.0f,
