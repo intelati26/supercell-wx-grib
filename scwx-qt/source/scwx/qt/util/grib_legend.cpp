@@ -182,7 +182,8 @@ void DrawLegends(QImage& image, const std::vector<Source>& sources)
 
    for (std::size_t i = 0; i < panels.size(); ++i)
    {
-      if (!placements[i].has_value())
+      const auto& placement = placements[i];
+      if (!placement.has_value())
       {
          logger_->info(
             "No room on the image for the {} {} legend",
@@ -195,8 +196,8 @@ void DrawLegends(QImage& image, const std::vector<Source>& sources)
       const auto&       gribManager  = *panel.source->gribManager;
       const auto&       colorRange   = panel.colorRange;
       const std::size_t productIndex = panel.productIndex;
-      const int         barX         = placements[i]->barX;
-      const int         barY         = placements[i]->barY;
+      const int         barX         = placement->barX;
+      const int         barY         = placement->barY;
 
       // Background panel so the legend stays legible over any map content.
       const QRect panelRect(

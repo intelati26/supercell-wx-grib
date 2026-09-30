@@ -945,13 +945,13 @@ int RunDerived(int argc, char** argv)
 
       if (name == "stp")
       {
-         const StpResult stp = ComputeStp(f, ni, nj);
+         StpResult stp = ComputeStp(f, ni, nj);
          values              = std::move(stp.values);
          missingValue        = stp.missingValue;
       }
       else if (name == "shear6")
       {
-         const auto mag = ComputeVectorMagnitude(f,
+         auto mag = ComputeVectorMagnitude(f,
                                                  ni,
                                                  nj,
                                                  "vucsh",
@@ -967,14 +967,14 @@ int RunDerived(int argc, char** argv)
       }
       else if (name == "wind10")
       {
-         const auto mag = ComputeVectorMagnitude(
+         auto mag = ComputeVectorMagnitude(
             f, ni, nj, "10u", "", -1, -1, "10v", "", -1, -1);
          values       = std::move(mag.values);
          missingValue = mag.missingValue;
       }
       else if (name == "wind500")
       {
-         const auto mag = ComputeVectorMagnitude(f,
+         auto mag = ComputeVectorMagnitude(f,
                                                  ni,
                                                  nj,
                                                  "u",
@@ -990,7 +990,7 @@ int RunDerived(int argc, char** argv)
       }
       else // "ship"
       {
-         const ShipResult ship = ComputeShip(f, f2, ni, nj);
+         ShipResult ship = ComputeShip(f, f2, ni, nj);
          values                = std::move(ship.values);
          missingValue          = ship.missingValue;
       }

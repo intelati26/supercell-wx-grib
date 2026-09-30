@@ -3726,7 +3726,7 @@ void MainWindowImpl::ExportGribLoop(map::GribCategory       category,
          const bool loaded = waitFor(
             [&](auto onReady)
             {
-               const auto connection =
+               auto connection =
                   QObject::connect(gribManager.get(),
                                    &manager::GribManager::FrameReady,
                                    mainWindow_,
