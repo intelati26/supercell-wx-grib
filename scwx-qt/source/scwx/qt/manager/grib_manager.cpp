@@ -2203,7 +2203,9 @@ void GribManager::PrefetchRrfsForecastHours(const std::set<int>& hours)
 
          const std::string key = provider::RrfsDataProvider::BuildKey(
             cycle, hour, product.rrfsFileFamily);
-         if (std::filesystem::exists(CachedDownloadPath(key)))
+         // Already cached: nothing to download, and marked in use so cache
+         // eviction leaves it alone while the loop plays.
+         if (UseCachedDownload(CachedDownloadPath(key)))
          {
             continue;
          }
