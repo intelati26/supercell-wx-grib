@@ -72,29 +72,16 @@ std::shared_ptr<common::ColorTable> LoadPalette()
 
 } // namespace
 
-void DrawLegend(QImage&                image,
-               manager::GribManager&   gribManager,
-               map::GribCategory       category,
-               const std::string&      categoryLabel)
+void DrawLegend(QImage&               image,
+                manager::GribManager& gribManager,
+                map::GribCategory     category,
+                const std::string&    categoryLabel)
 {
-   const auto productIndex = gribManager.CurrentProductIndex();
-   if (!productIndex)
+   const auto activeIndices = gribManager.ActiveProductIndices();
+   if (activeIndices.empty())
    {
-      // Rrfs/Nbm with nothing checked yet -- same "nothing to show" bail
-      // as the no-decoded-frame case just below, just for the other way
-      // this category can have nothing yet.
+      // Rrfs/Nbm with nothing checked -- nothing to show.
       logger_->info("No product active for {}, skipping legend", categoryLabel);
-      return;
-   }
-
-   const std::string framePath =
-      map::GetGribFramePath(category, *productIndex);
-
-   const auto colorRange = map::ReadGribFrameColorRange(framePath);
-   if (colorRange.colorScale == 0.0f)
-   {
-      logger_->info("No decoded frame yet for {}, skipping legend",
-                    categoryLabel);
       return;
    }
 
@@ -105,68 +92,89 @@ void DrawLegend(QImage&                image,
       return;
    }
 
-   const std::string validTime = map::ReadGribFrameValidTime(framePath);
-
    QPainter painter(&image);
    painter.setRenderHint(QPainter::Antialiasing, true);
 
-   const int barX = kMargin;
-   const int barY = image.height() - kMargin - kBarHeight;
+   // One panel per drawn product, stacked upward from the bottom-left
+   // corner in product order.
+   constexpr int kPanelHeight  = 2 * kLineHeight + kBarHeight + 20;
+   constexpr int kPanelSpacing = 8;
+   int           barY          = image.height() - kMargin - kBarHeight;
 
-   // Background panel so the legend stays legible over any map content.
-   const QRect panelRect(barX - 8,
-                         barY - 2 * kLineHeight - 12,
-                         kBarWidth + 16,
-                         2 * kLineHeight + kBarHeight + 20);
-   painter.fillRect(panelRect, QColor(0, 0, 0, 160));
-
-   // Gradient bar -- one column per pixel, reproducing the exact formula
-   // GribProductLayer's shader uses to turn a raw value into a color (see
-   // kPaletteDomainOffset_/Scale_'s own doc above).
-   for (int x = 0; x < kBarWidth; ++x)
+   for (const std::size_t productIndex : activeIndices)
    {
-      const float t =
-         static_cast<float>(x) / static_cast<float>(kBarWidth - 1);
-      const float domainValue =
-         kPaletteDomainOffset_ + t * kPaletteDomainScale_;
-      const auto pixel = colorTable->Color(domainValue);
+      const std::string framePath =
+         map::GetGribFramePath(category, productIndex);
 
-      painter.setPen(QColor(pixel[0], pixel[1], pixel[2], pixel[3]));
-      painter.drawLine(barX + x, barY, barX + x, barY + kBarHeight - 1);
-   }
+      const auto colorRange = map::ReadGribFrameColorRange(framePath);
+      if (colorRange.colorScale == 0.0f)
+      {
+         logger_->info("No decoded frame yet for {} {}, skipping its legend",
+                       categoryLabel,
+                       gribManager.ProductName(productIndex));
+         continue;
+      }
 
-   painter.setPen(QColor(255, 255, 255));
-   painter.drawRect(QRect(barX, barY, kBarWidth - 1, kBarHeight - 1));
+      const std::string validTime = map::ReadGribFrameValidTime(framePath);
+      const int         barX      = kMargin;
 
-   const std::string minLabel = gribManager.FormatValue(colorRange.colorOffset);
-   const std::string maxLabel = gribManager.FormatValue(
-      colorRange.colorOffset + colorRange.colorScale);
+      // Background panel so the legend stays legible over any map content.
+      const QRect panelRect(
+         barX - 8, barY - 2 * kLineHeight - 12, kBarWidth + 16, kPanelHeight);
+      painter.fillRect(panelRect, QColor(0, 0, 0, 160));
 
-   QFont font = painter.font();
-   font.setPointSize(10);
-   painter.setFont(font);
-   painter.setPen(QColor(255, 255, 255));
+      // Gradient bar -- one column per pixel, reproducing the exact
+      // formula GribProductLayer's shader uses to turn a raw value into a
+      // color (see kPaletteDomainOffset_/Scale_'s own doc above).
+      for (int x = 0; x < kBarWidth; ++x)
+      {
+         const float t =
+            static_cast<float>(x) / static_cast<float>(kBarWidth - 1);
+         const float domainValue =
+            kPaletteDomainOffset_ + t * kPaletteDomainScale_;
+         const auto pixel = colorTable->Color(domainValue);
 
-   painter.drawText(
-      barX, barY + kBarHeight + 14, QString::fromStdString(minLabel));
+         painter.setPen(QColor(pixel[0], pixel[1], pixel[2], pixel[3]));
+         painter.drawLine(barX + x, barY, barX + x, barY + kBarHeight - 1);
+      }
 
-   const QString maxText = QString::fromStdString(maxLabel);
-   const int maxTextWidth = painter.fontMetrics().horizontalAdvance(maxText);
-   painter.drawText(
-      barX + kBarWidth - maxTextWidth, barY + kBarHeight + 14, maxText);
+      painter.setPen(QColor(255, 255, 255));
+      painter.drawRect(QRect(barX, barY, kBarWidth - 1, kBarHeight - 1));
 
-   QFont titleFont = font;
-   titleFont.setBold(true);
-   painter.setFont(titleFont);
-   const std::string title = categoryLabel + " " + gribManager.CurrentProductName();
-   painter.drawText(
-      barX, barY - kLineHeight - 6, QString::fromStdString(title));
+      const std::string minLabel =
+         gribManager.FormatValue(productIndex, colorRange.colorOffset);
+      const std::string maxLabel = gribManager.FormatValue(
+         productIndex, colorRange.colorOffset + colorRange.colorScale);
 
-   painter.setFont(font);
-   if (!validTime.empty())
-   {
+      QFont font = painter.font();
+      font.setPointSize(10);
+      painter.setFont(font);
+      painter.setPen(QColor(255, 255, 255));
+
       painter.drawText(
-         barX, barY - 6, QString::fromStdString("Valid: " + validTime));
+         barX, barY + kBarHeight + 14, QString::fromStdString(minLabel));
+
+      const QString maxText  = QString::fromStdString(maxLabel);
+      const int maxTextWidth = painter.fontMetrics().horizontalAdvance(maxText);
+      painter.drawText(
+         barX + kBarWidth - maxTextWidth, barY + kBarHeight + 14, maxText);
+
+      QFont titleFont = font;
+      titleFont.setBold(true);
+      painter.setFont(titleFont);
+      const std::string title =
+         categoryLabel + " " + gribManager.ProductName(productIndex);
+      painter.drawText(
+         barX, barY - kLineHeight - 6, QString::fromStdString(title));
+
+      painter.setFont(font);
+      if (!validTime.empty())
+      {
+         painter.drawText(
+            barX, barY - 6, QString::fromStdString("Valid: " + validTime));
+      }
+
+      barY -= kPanelHeight + kPanelSpacing;
    }
 }
 

@@ -174,4 +174,59 @@ glm::dvec2 LambertInverse(const LambertGrid&      grid,
 // grib-helper/src/validate_lcc.cpp.
 glm::dvec2 LambertGridToLatLon(const LambertGrid& grid, double i, double j);
 
+// A geographic bounding box, in degrees.
+struct LatLonBox
+{
+   double south {};
+   double west {};
+   double north {};
+   double east {};
+};
+
+// Whether a frame's values can be stored in a 16-bit float GPU texture
+// (GL_R16F) instead of 32-bit without visibly changing what's drawn --
+// halving the texture's GPU memory (~98MB -> ~49MB for an MRMS CONUS
+// grid). Decided per frame from its own values:
+// - contour products (contourInterval > 0) always stay 32-bit: their
+//   isolines are drawn from fine value differences half precision would
+//   make jagged;
+// - every value that gets drawn (>= noDataThreshold) must fit half
+//   precision's range (|v| < 65504) -- MSLP in Pa doesn't;
+// - rounding to half precision (about 3 significant digits) must move a
+//   value by at most half of one of the color ramp's 256 steps
+//   (|colorScale| / 512), so no pixel shifts visibly in color.
+// Values below noDataThreshold (e.g. MRMS's -999 sentinel) are discarded
+// by the shader either way, so their precision doesn't matter. Nor does
+// that of `missingValue` (the frame header's eccodes missing-data marker,
+// often 9999) when it's drawn: it only needs to stay in range, since it
+// lands at the top of the color ramp regardless of rounding.
+bool FitsHalfFloatTexture(const float* values,
+                          std::size_t  count,
+                          float        noDataThreshold,
+                          float        colorScale,
+                          float        contourInterval,
+                          double       missingValue);
+
+// An inclusive range of grid indices, i in [iMin, iMax], j in [jMin, jMax].
+struct GridIndexBox
+{
+   long iMin {};
+   long iMax {-1};
+   long jMin {};
+   long jMax {-1};
+
+   [[nodiscard]] bool IsEmpty() const { return iMin > iMax || jMin > jMax; }
+};
+
+// The Lambert grid indices `box` spans, clamped to the grid ([0, nx - 1] x
+// [0, ny - 1]); empty if the box misses the grid entirely. Lets a layer
+// that draws per-point glyphs (wind barbs, hodographs) build only what's
+// near the viewport instead of the whole CONUS grid. A box too wide for
+// the cone to map cleanly (more than 90 degrees of longitude, i.e. a
+// continental or wider view) returns the whole grid.
+GridIndexBox LambertGridIndexBox(const LambertGrid& grid,
+                                 long               nx,
+                                 long               ny,
+                                 const LatLonBox&   box);
+
 } // namespace scwx::qt::map

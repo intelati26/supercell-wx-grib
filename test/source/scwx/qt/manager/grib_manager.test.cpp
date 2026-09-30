@@ -274,6 +274,32 @@ TEST(GribManagerTest, ProductsActiveByDefault)
    }
 }
 
+// The download cache's size budget: 40GB at most, shrunk so the disk keeps
+// max(5GB, 10%) free, never below a 2GB floor. Pure arithmetic, no I/O.
+TEST(GribManagerTest, DownloadCacheBudget)
+{
+   constexpr std::uintmax_t kGB = 1024ULL * 1024 * 1024;
+
+   // Plenty of room: the 40GB ceiling.
+   EXPECT_EQ(GribManager::DownloadCacheBudgetBytes(0, 500 * kGB, 1000 * kGB),
+             40 * kGB);
+
+   // 1TB disk, 110GB free, 10GB of cache: reserve is 100GB (10%), so the
+   // cache may reach 10 + 110 - 100 = 20GB.
+   EXPECT_EQ(
+      GribManager::DownloadCacheBudgetBytes(10 * kGB, 110 * kGB, 1000 * kGB),
+      20 * kGB);
+
+   // Small disk: 5GB minimum reserve beats 10% of 20GB.
+   EXPECT_EQ(GribManager::DownloadCacheBudgetBytes(1 * kGB, 12 * kGB, 20 * kGB),
+             8 * kGB);
+
+   // Nearly full: the 2GB floor.
+   EXPECT_EQ(
+      GribManager::DownloadCacheBudgetBytes(1 * kGB, 1 * kGB, 1000 * kGB),
+      2 * kGB);
+}
+
 // SetRrfsCycle()/SetRrfsForecastHour()/UseLatestRrfsCycle() are refused
 // (logged, not crashing) against a non-Rrfs instance -- Mrms/Rtma have no
 // forecast-hour axis at all (see the class comment on these methods).
