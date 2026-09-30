@@ -49,6 +49,23 @@ public:
 
    static std::shared_ptr<HodographManager> Instance();
 
+   // The live manager if one already exists, otherwise null -- never
+   // creates one. For callers that only want to *forward* state to
+   // hodographs if something is using them (the GRIB dock's RRFS cycle/hour
+   // pickers): Instance() there would construct a fresh manager per call
+   // when no hodograph layer exists, and SetForecastHour()/SetCycle() poll
+   // the network immediately.
+   static std::shared_ptr<HodographManager> InstanceIfExists();
+
+   // A HodographLayer reports whether it is currently *drawing*
+   // hodographs (its zoom tier is visible), keyed by an opaque owner
+   // pointer. The manager only polls/downloads/decodes while at least one
+   // owner is drawing -- a layer that is enabled but zoomed out (hodographs
+   // are not drawn below zoom 6) previously still pulled a ~320MB RRFS file
+   // and decoded 35 grids in the background for nothing. The first owner to
+   // start drawing triggers an immediate poll.
+   void SetDrawing(const void* owner, bool drawing);
+
    // One real, verified-live RRFS 2dfld wind level. heightMeters_ is
    // always AGL -- for aboveSea_ levels (heightAboveSea in the raw GRIB,
    // i.e. NOT already AGL), HodographLayer must subtract the terrain
@@ -120,6 +137,12 @@ public:
 
    // The band a given AGL height falls into, per HeightBands() above.
    [[nodiscard]] static const HeightBand& BandForHeight(float heightMeters);
+
+   // Bumped once per successful decode of a new RRFS file, just before
+   // HodographDataReady() fires. HodographLayer keys its shared parsed-frame
+   // cache on this, so every map pane can reuse one parsed copy of the
+   // frame files instead of each parsing its own.
+   [[nodiscard]] std::uint64_t DataGeneration() const;
 
 signals:
    // Emitted once every level's u/v frame plus the terrain frame have all

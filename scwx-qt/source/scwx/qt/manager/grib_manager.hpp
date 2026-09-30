@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -278,6 +279,16 @@ public:
    // only, same documented scoping limitation as PrefetchLoopRange().
    void PrefetchRrfsForecastHourRange();
 
+   // Same as above, but for an explicit, possibly non-contiguous set of
+   // hours (the dock's hour pick list): hours already in the download
+   // cache are skipped, hours past MaxRrfsForecastHour() are dropped.
+   void PrefetchRrfsForecastHours(const std::set<int>& hours);
+
+   // Which forecast hours 0..MaxRrfsForecastHour() of the current cycle are
+   // already downloaded for the current product's file family -- drives the
+   // hour buttons' downloaded/not-downloaded look. Filesystem probes only.
+   [[nodiscard]] std::set<int> CachedRrfsForecastHours() const;
+
    // Nbm-only cycle/forecast-hour selection -- same shape and reasoning as
    // the Rrfs block above (a second, orthogonal axis from the main
    // timeline, applied to every active provider, fetched immediately
@@ -312,6 +323,11 @@ signals:
    // in response, applying it in Render(), same as its existing
    // palette-changed handling.
    void FrameReady(std::size_t productIndex);
+
+   // Emitted (possibly from a fetch thread) after any RRFS download lands
+   // in the cache, whether or not it's the hour on screen -- lets the hour
+   // buttons flip to their downloaded look.
+   void RrfsCacheChanged();
 
    // Emitted on the calling (GUI) thread whenever SetProductActive()
    // actually changes which products are active -- which changes what

@@ -4,6 +4,8 @@
 #include <scwx/qt/gl/draw/draw_item.hpp>
 #include <scwx/gr/placefile.hpp>
 
+#include <functional>
+
 namespace scwx
 {
 namespace qt
@@ -28,6 +30,18 @@ public:
    void set_selected_time(std::chrono::system_clock::time_point selectedTime);
    void set_thresholded(bool thresholded);
 
+   /**
+    * Sets a function called from Render() when the current zoom no longer
+    * matches the level of detail, or the visible area, the lines were last
+    * built for (only the on-screen part plus a margin is built). It should
+    * rebuild the lines (StartLines(), AddLine() for each, FinishLines())
+    * on the same thread that normally builds them -- not from within the
+    * callback itself. Lines are drawn simplified for the zoom they were
+    * built at (see util::SimplifyLine()); the placefile's own line data and
+    * hover text are unchanged.
+    */
+   void set_rebuild_requested_callback(std::function<void()> callback);
+
    void Initialize() override;
    void Render(const QMapLibre::CustomLayerRenderParameters& params) override;
    void Deinitialize() override;
@@ -39,6 +53,13 @@ public:
                    const glm::vec2&                              mouseCoords,
                    const common::Coordinate&                     mouseGeoCoords,
                    std::shared_ptr<types::EventHandler>& eventHandler) override;
+
+   /**
+    * Tells the draw item a rebuild it asked for (see
+    * set_rebuild_requested_callback()) will not happen -- e.g. the placefile
+    * has gone away -- so it may ask again.
+    */
+   void AbortRebuild();
 
    /**
     * Resets and prepares the draw item for adding a new set of lines.

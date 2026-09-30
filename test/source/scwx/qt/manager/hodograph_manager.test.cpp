@@ -34,6 +34,11 @@ TEST(HodographManagerTest, CycleForecastHourSelection)
 
    auto hodographManager = HodographManager::Instance();
 
+   // The manager only polls while a layer reports it is drawing; stand in
+   // for one, or SetCycle()/SetForecastHour() below would (correctly) do
+   // nothing.
+   hodographManager->SetDrawing(&hodographManager, true);
+
    // NOAA only keeps roughly a day of cycles: newest 6-hourly cycle at
    // least 8 hours old (fully published, still retained).
    const auto t = floor<hours>(system_clock::now() - hours {8});

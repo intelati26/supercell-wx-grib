@@ -2,11 +2,14 @@
 #include <scwx/qt/manager/grib_manager.hpp>
 #include <scwx/qt/manager/status_manager.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
+#include <scwx/qt/util/file.hpp>
 #include <scwx/provider/rrfs_data_provider.hpp>
 #include <scwx/util/logger.hpp>
 
+#include <atomic>
 #include <filesystem>
 #include <mutex>
+#include <set>
 
 #include <boost/asio/post.hpp>
 #include <boost/asio/thread_pool.hpp>
@@ -128,6 +131,14 @@ public:
    {
    }
 
+   // See HodographManager::DataGeneration(). Written from a fetchPool_
+   // thread, read from the GUI thread.
+   std::atomic<std::uint64_t> dataGeneration_ {0};
+
+   // Owners currently drawing hodographs -- see SetDrawing().
+   std::mutex                drawersMutex_;
+   std::set<const void*>     drawers_;
+
    // Same idiom GribManager::Impl/WindBarbManager::Impl use: stop+join in
    // the destructor's *body*, since fetchPool_'s posted lambdas capture
    // `this`.
@@ -160,11 +171,14 @@ HodographManager::HodographManager() : p(std::make_unique<Impl>())
 
 HodographManager::~HodographManager() = default;
 
+namespace
+{
+std::weak_ptr<HodographManager> instanceRef_ {};
+std::mutex                      instanceMutex_ {};
+} // namespace
+
 std::shared_ptr<HodographManager> HodographManager::Instance()
 {
-   static std::weak_ptr<HodographManager> instanceRef_ {};
-   static std::mutex                      instanceMutex_ {};
-
    std::unique_lock lock(instanceMutex_);
 
    std::shared_ptr<HodographManager> instance = instanceRef_.lock();
@@ -177,8 +191,43 @@ std::shared_ptr<HodographManager> HodographManager::Instance()
    return instance;
 }
 
+std::shared_ptr<HodographManager> HodographManager::InstanceIfExists()
+{
+   std::unique_lock lock(instanceMutex_);
+   return instanceRef_.lock();
+}
+
+void HodographManager::SetDrawing(const void* owner, bool drawing)
+{
+   bool wasDrawing = false;
+   bool nowDrawing = false;
+   {
+      std::lock_guard lock(p->drawersMutex_);
+      wasDrawing = !p->drawers_.empty();
+      if (drawing)
+      {
+         p->drawers_.insert(owner);
+      }
+      else
+      {
+         p->drawers_.erase(owner);
+      }
+      nowDrawing = !p->drawers_.empty();
+   }
+
+   if (!wasDrawing && nowDrawing)
+   {
+      // Deferred: this is called from a layer's Render(), and Poll() does
+      // blocking network I/O that must not stall painting.
+      QTimer::singleShot(0, this, &HodographManager::Poll);
+   }
+}
+
 const std::vector<HodographManager::Level>& HodographManager::Levels()
 { return LevelTable(); }
+
+std::uint64_t HodographManager::DataGeneration() const
+{ return p->dataGeneration_; }
 
 std::string HodographManager::GetUFramePath(std::size_t levelIndex)
 { return UFramePath(levelIndex); }
@@ -226,6 +275,17 @@ HodographManager::BandForHeight(float heightMeters)
 
 void HodographManager::Poll()
 {
+   {
+      // Nothing is drawing hodographs (no layer yet, or every one is zoomed
+      // out / hidden): don't list S3, download or decode. SetDrawing() polls
+      // as soon as one starts.
+      std::lock_guard lock(p->drawersMutex_);
+      if (p->drawers_.empty())
+      {
+         return;
+      }
+   }
+
    auto [newObjects, totalObjects] = p->provider_->Refresh();
    logger_->debug(
       "Refresh: {} new / {} total objects", newObjects, totalObjects);
@@ -343,7 +403,7 @@ bool HodographManager::ApplyCachedDownload(const std::string& key)
       }
 
       std::error_code ec;
-      std::filesystem::rename(tmpPath, outputPath, ec);
+      util::ReplaceFileWithRetry(tmpPath, outputPath, ec);
       if (ec)
       {
          logger_->warn("Could not replace {}: {}", outputPath, ec.message());
@@ -394,7 +454,7 @@ bool HodographManager::ApplyCachedDownload(const std::string& key)
       else
       {
          std::error_code ec;
-         std::filesystem::rename(tmpPath, TerrainFramePath(), ec);
+         util::ReplaceFileWithRetry(tmpPath, TerrainFramePath(), ec);
          if (ec)
          {
             logger_->warn(
@@ -408,6 +468,7 @@ bool HodographManager::ApplyCachedDownload(const std::string& key)
    if (allOk)
    {
       logger_->info("Updated hodograph frames ({} levels)", levels.size());
+      ++p->dataGeneration_;
       Q_EMIT HodographDataReady();
       return true;
    }

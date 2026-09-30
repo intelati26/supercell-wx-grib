@@ -2,11 +2,13 @@
 #include <scwx/qt/manager/placefile_manager.hpp>
 #include <scwx/qt/manager/status_manager.hpp>
 #include <scwx/qt/main/application_paths.hpp>
+#include <scwx/qt/util/file.hpp>
 #include <scwx/qt/util/network.hpp>
 #include <scwx/gr/outlook_placefile.hpp>
 #include <scwx/network/cpr.hpp>
 #include <scwx/util/logger.hpp>
 
+#include <filesystem>
 #include <fstream>
 
 #include <boost/asio/post.hpp>
@@ -154,6 +156,101 @@ const std::vector<OutlookSource>& Sources()
    return sources;
 }
 
+std::filesystem::path OutlookCachePath(const OutlookSource& source)
+{
+   return main::ApplicationPaths::GetLocation(
+             main::ApplicationPaths::StandardLocation::Cache) /
+          "outlooks" / source.cacheFileName;
+}
+
+// The exact key PlacefileManager stores this source under -- normalized the
+// same way AddUrl() does internally, since lookups by name (enabled state,
+// Refresh) use the raw string with no normalization of their own.
+std::string OutlookPlacefileKey(const OutlookSource& source)
+{ return util::network::NormalizeUrl(OutlookCachePath(source).string()); }
+
+// Downloads and converts one source on the (single-threaded) fetch pool.
+void PostFetch(boost::asio::thread_pool& pool, const OutlookSource& source)
+{
+   boost::asio::post(
+      pool,
+      [source]()
+      {
+         auto              statusManager = manager::StatusManager::Instance();
+         const std::string statusId      = "outlook-" + source.cacheFileName;
+
+         // Binary-safe regardless of format -- cpr::Response::text is
+         // just the raw response body, appended byte-for-byte with no
+         // text-mode interpretation, so a KMZ (a zip archive) downloads
+         // through the exact same call as GeoJSON text.
+         auto [downloaded, statusCode] = network::cpr::DownloadToString(
+            source.url,
+            common::ApplicationState::IsRunning(),
+            [&statusManager, &statusId, &source](std::int64_t bytesReceived,
+                                                 std::int64_t totalBytes)
+            {
+               statusManager->ReportProgress(
+                  statusId, source.title, bytesReceived, totalBytes);
+            });
+         statusManager->ReportComplete(statusId);
+
+         if (statusCode != 200)
+         {
+            logger_->warn("Failed to download {} ({})", source.url, statusCode);
+            return;
+         }
+
+         const std::string placefileText =
+            (source.format == OutlookSourceFormat::Kmz) ?
+               gr::ConvertOutlookKmzToPlacefile(downloaded,
+                                                source.title,
+                                                kPollIntervalMs_ / 1000,
+                                                kOutlookRenderMode_,
+                                                kContourLineWidth_) :
+               gr::ConvertOutlookGeoJsonToPlacefile(downloaded,
+                                                    source.title,
+                                                    kPollIntervalMs_ / 1000,
+                                                    source.dnColorTable,
+                                                    kOutlookRenderMode_,
+                                                    kContourLineWidth_);
+         if (placefileText.empty())
+         {
+            logger_->warn("Could not convert {} to a placefile", source.url);
+            return;
+         }
+
+         const std::filesystem::path cachePath = OutlookCachePath(source);
+         std::filesystem::create_directories(cachePath.parent_path());
+
+         const std::filesystem::path tmpPath = cachePath.string() + ".tmp";
+
+         {
+            std::ofstream out {tmpPath, std::ios::binary | std::ios::trunc};
+            out << placefileText;
+         }
+
+         std::error_code ec;
+         util::ReplaceFileWithRetry(tmpPath, cachePath, ec);
+         if (ec)
+         {
+            logger_->warn(
+               "Could not replace {}: {}", cachePath.string(), ec.message());
+            std::filesystem::remove(tmpPath);
+            return;
+         }
+
+         // Refresh() forces PlacefileManager to pick up the just-written
+         // content rather than waiting on its own refresh timer. It looks up
+         // by raw string with no normalization of its own, so this must be
+         // the exact key RegisterSources() stored the outlook under.
+         const std::string pathString       = OutlookPlacefileKey(source);
+         auto              placefileManager = PlacefileManager::Instance();
+         placefileManager->Refresh(pathString);
+
+         logger_->info("Updated {}", source.title);
+      });
+}
+
 class OutlookManager::Impl
 {
 public:
@@ -168,6 +265,21 @@ public:
       fetchPool_.join();
    }
 
+   // Held for this manager's whole life, not just borrowed via Instance()
+   // when needed: PlacefileManager::Instance() only keeps a weak_ptr, so if
+   // this were the only reference and it were a local, the manager would be
+   // destroyed the moment the constructor returned -- while its own init
+   // thread is still waiting on application startup, which deadlocks
+   // MainWindow's construction.
+   std::shared_ptr<PlacefileManager> placefileManager_ {
+      PlacefileManager::Instance()};
+
+   // Set once PlacefileManager has read its persisted settings. Enabled
+   // outlooks announce themselves (PlacefileEnabled) while that read is
+   // still applying, and the first Poll() right after covers them -- so
+   // enable events before this point would only fetch each a second time.
+   bool initialized_ {false};
+
    QTimer* timer_ {nullptr};
 
    boost::asio::thread_pool fetchPool_ {1};
@@ -179,10 +291,39 @@ OutlookManager::OutlookManager() : p(std::make_unique<Impl>())
    connect(p->timer_, &QTimer::timeout, this, &OutlookManager::Poll);
    p->timer_->start(kPollIntervalMs_);
 
-   // Deferred for the same reason as GribManager/WindBarbManager's first
-   // poll -- Poll() does blocking network I/O, and this manager is
-   // constructed during MainWindow startup.
-   QTimer::singleShot(0, this, &OutlookManager::Poll);
+   // Registration has to wait for PlacefileManager to finish reading the
+   // persisted placefile settings, or it would race that read; the first
+   // poll then only downloads whichever outlooks were left enabled.
+   connect(p->placefileManager_.get(),
+           &PlacefileManager::PlacefilesInitialized,
+           this,
+           [this]()
+           {
+              p->initialized_ = true;
+              RegisterSources();
+              Poll();
+           });
+
+   // Switching an outlook on fetches just that one right away instead of
+   // waiting up to a full poll interval for its first content.
+   connect(p->placefileManager_.get(),
+           &PlacefileManager::PlacefileEnabled,
+           this,
+           [this](const std::string& name, bool enabled)
+           {
+              if (!enabled || !p->initialized_)
+              {
+                 return;
+              }
+              for (const OutlookSource& source : Sources())
+              {
+                 if (OutlookPlacefileKey(source) == name)
+                 {
+                    PostFetch(p->fetchPool_, source);
+                    break;
+                 }
+              }
+           });
 }
 
 OutlookManager::~OutlookManager() = default;
@@ -204,117 +345,38 @@ std::shared_ptr<OutlookManager> OutlookManager::Instance()
    return instance;
 }
 
-void OutlookManager::Poll()
+void OutlookManager::RegisterSources()
 {
-   // One post per source rather than one job looping over all of them --
-   // fetchPool_ is single-threaded (see Impl), so they still run one at a
-   // time, but a slow/hung fetch for one source can't also delay this
-   // method's own return, and a status-bar entry per source (see the
-   // statusId below) can show independently rather than one combined
-   // "Outlooks" entry hiding which specific source is slow.
+   // Registered up front (disabled, no download) so every outlook shows up
+   // in the Outlooks tab immediately and its enabled state persists, instead
+   // of an outlook only existing once its first download had succeeded --
+   // which also meant every one had to be downloaded whether wanted or not.
+   // AddUrl() with a title and enabled=false queues no fetch of its own.
+   auto& placefileManager = p->placefileManager_;
    for (const OutlookSource& source : Sources())
    {
-      boost::asio::post(
-         p->fetchPool_,
-         [source]()
-         {
-            auto statusManager         = manager::StatusManager::Instance();
-            const std::string statusId = "outlook-" + source.cacheFileName;
+      const std::string key = OutlookPlacefileKey(source);
+      placefileManager->AddUrl(
+         key, source.title, false, false, kOutlookCategory_);
+      // AddUrl no-ops if this path is already registered -- covers a record
+      // created before AddUrl even had a category parameter.
+      placefileManager->set_placefile_category(key, kOutlookCategory_);
+   }
+}
 
-            // Binary-safe regardless of format -- cpr::Response::text is
-            // just the raw response body, appended byte-for-byte with no
-            // text-mode interpretation, so a KMZ (a zip archive) downloads
-            // through the exact same call as GeoJSON text.
-            auto [downloaded, statusCode] = network::cpr::DownloadToString(
-               source.url,
-               common::ApplicationState::IsRunning(),
-               [&statusManager, &statusId, &source](std::int64_t bytesReceived,
-                                                    std::int64_t totalBytes)
-               {
-                  statusManager->ReportProgress(
-                     statusId, source.title, bytesReceived, totalBytes);
-               });
-            statusManager->ReportComplete(statusId);
-
-            if (statusCode != 200)
-            {
-               logger_->warn(
-                  "Failed to download {} ({})", source.url, statusCode);
-               return;
-            }
-
-            const std::string placefileText =
-               (source.format == OutlookSourceFormat::Kmz) ?
-                  gr::ConvertOutlookKmzToPlacefile(downloaded,
-                                                   source.title,
-                                                   kPollIntervalMs_ / 1000,
-                                                   kOutlookRenderMode_,
-                                                   kContourLineWidth_) :
-                  gr::ConvertOutlookGeoJsonToPlacefile(downloaded,
-                                                       source.title,
-                                                       kPollIntervalMs_ / 1000,
-                                                       source.dnColorTable,
-                                                       kOutlookRenderMode_,
-                                                       kContourLineWidth_);
-            if (placefileText.empty())
-            {
-               logger_->warn("Could not convert {} to a placefile", source.url);
-               return;
-            }
-
-            const std::filesystem::path cacheDir =
-               main::ApplicationPaths::GetLocation(
-                  main::ApplicationPaths::StandardLocation::Cache) /
-               "outlooks";
-            std::filesystem::create_directories(cacheDir);
-
-            const std::filesystem::path cachePath =
-               cacheDir / source.cacheFileName;
-            const std::filesystem::path tmpPath = cachePath.string() + ".tmp";
-
-            {
-               std::ofstream out {tmpPath, std::ios::binary | std::ios::trunc};
-               out << placefileText;
-            }
-
-            std::error_code ec;
-            std::filesystem::rename(tmpPath, cachePath, ec);
-            if (ec)
-            {
-               logger_->warn(
-                  "Could not replace {}: {}", cachePath.string(), ec.message());
-               std::filesystem::remove(tmpPath);
-               return;
-            }
-
-            // AddUrl is a no-op if this path is already registered
-            // (built-in and disabled by default -- the user opts in via
-            // the same placefile settings UI any other placefile uses);
-            // Refresh() forces PlacefileManager to pick up the
-            // just-written content rather than waiting on its own
-            // refresh timer. Both must use the exact key AddUrl stores
-            // under -- PlacefileManager::Impl normalizes internally via
-            // util::network::NormalizeUrl and Refresh() looks up by raw
-            // string with no normalization of its own, so normalizing
-            // here first keeps the two calls consistent regardless of
-            // what normalization actually does to a native path
-            // (currently a no-op on Linux, but not guaranteed).
-            const std::string pathString =
-               util::network::NormalizeUrl(cachePath.string());
-            auto placefileManager = PlacefileManager::Instance();
-            placefileManager->AddUrl(
-               pathString, source.title, false, false, kOutlookCategory_);
-            // AddUrl no-ops if this path is already registered -- covers
-            // a record created before AddUrl even had a category
-            // parameter (a real case: this app's own placefiles.json
-            // already had the ERO entry from an earlier build,
-            // un-tagged).
-            placefileManager->set_placefile_category(pathString,
-                                                     kOutlookCategory_);
-            placefileManager->Refresh(pathString);
-
-            logger_->info("Updated {}", source.title);
-         });
+void OutlookManager::Poll()
+{
+   // Only enabled outlooks are worth a download + conversion + placefile
+   // reload. A disabled (or not yet registered) outlook costs nothing here;
+   // switching one on fetches it immediately (see the constructor's
+   // PlacefileEnabled connection), so nothing waits on the next poll.
+   auto& placefileManager = p->placefileManager_;
+   for (const OutlookSource& source : Sources())
+   {
+      if (placefileManager->placefile_enabled(OutlookPlacefileKey(source)))
+      {
+         PostFetch(p->fetchPool_, source);
+      }
    }
 }
 

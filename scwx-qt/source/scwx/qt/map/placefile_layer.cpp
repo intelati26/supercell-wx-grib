@@ -39,6 +39,27 @@ public:
           std::make_shared<gl::draw::PlacefileTriangles>(glContext)},
        placefileText_ {std::make_shared<gl::draw::PlacefileText>(placefileName)}
    {
+      // Lines are drawn simplified for the current zoom level; when the zoom
+      // moves to another, rebuild just the lines. Posted to the same
+      // single-threaded pool as ReloadDataSync(), never run on the render
+      // thread that raised it.
+      placefileLines_->set_rebuild_requested_callback(
+         [this]()
+         {
+            boost::asio::post(threadPool_,
+                              [this]()
+                              {
+                                 try
+                                 {
+                                    ReloadLinesSync();
+                                 }
+                                 catch (const std::exception& ex)
+                                 {
+                                    logger_->error(ex.what());
+                                 }
+                              });
+         });
+
       ConnectSignals();
    }
    ~Impl() { threadPool_.join(); }
@@ -50,6 +71,7 @@ public:
 
    void ConnectSignals();
    void ReloadDataSync();
+   void ReloadLinesSync();
 
    boost::asio::thread_pool threadPool_ {1};
 
@@ -187,6 +209,44 @@ void PlacefileLayer::ReloadData()
                            logger_->error(ex.what());
                         }
                      });
+}
+
+void PlacefileLayer::Impl::ReloadLinesSync()
+{
+   std::unique_lock lock {dataMutex_};
+
+   auto placefile =
+      manager::PlacefileManager::Instance()->placefile(placefileName_);
+   if (placefile == nullptr)
+   {
+      // Nothing to rebuild from; let the draw item ask again later.
+      placefileLines_->AbortRebuild();
+      return;
+   }
+
+   placefileLines_->StartLines();
+
+   try
+   {
+      for (auto& drawItem : placefile->GetDrawItems())
+      {
+         if (drawItem->itemType_ == gr::Placefile::ItemType::Line)
+         {
+            placefileLines_->AddLine(
+               std::static_pointer_cast<gr::Placefile::LineDrawItem>(
+                  drawItem));
+         }
+      }
+   }
+   catch (...)
+   {
+      // Always finish what StartLines() began, or the draw item would treat
+      // a rebuild as pending forever.
+      placefileLines_->FinishLines();
+      throw;
+   }
+
+   placefileLines_->FinishLines();
 }
 
 void PlacefileLayer::Impl::ReloadDataSync()

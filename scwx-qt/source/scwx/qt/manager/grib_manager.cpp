@@ -1,6 +1,7 @@
 #include <scwx/qt/manager/grib_manager.hpp>
 #include <scwx/qt/manager/status_manager.hpp>
 #include <scwx/qt/manager/timeline_manager.hpp>
+#include <scwx/qt/util/file.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
 #include <scwx/qt/settings/unit_settings.hpp>
 #include <scwx/qt/types/unit_types.hpp>
@@ -83,7 +84,12 @@ constexpr int kDecodeTimeoutMs_ = 10 * 60 * 1000;
 // A unique temporary name next to `framePath` for decode_grib to write to
 // before the result is renamed into place -- unique per decode, since two
 // decodes for the same product can overlap (the fetch pool runs two jobs,
-// plus the decode pool) and must not write the same temporary file.
+// plus the decode pool) and must not write the same temporary file. Seen
+// live: during the RRFS hour-picks Play loop, a prefetch finishing just as
+// playback reaches that hour decoded the same key twice at once, and on
+// Windows the two writers to one fixed `<frame>.tmp` corrupted it -- the
+// loop "advanced but showed stale/wrong frames". Ends in ".tmp" so
+// GribManager::Impl::RemoveStaleTmpFrames() finds leftovers.
 std::string UniqueTmpFramePath(const std::string& framePath)
 {
    static std::atomic<std::uint64_t> counter {0};
@@ -238,14 +244,23 @@ static const std::vector<ProductConfig> kMrmsProducts_ {
    // Each is a real MRMS product with no per-site-radar equivalent
    // (unlike composite reflectivity, which single-site NEXRAD already
    // shows) -- that's deliberate, see the comment above this table.
-   // Unlike reflectivity, 0 is a real, meaningful data value for all
-   // three (0 rotation, 0mm hail, 0mm rain isn't "no data"), so
-   // noDataThreshold sits at -1.0 for all three rather than at 0 like
+   // Rotation Track's "no rotation" is a real, meaningful 0 (not "no
+   // data"), so its noDataThreshold sits at -1.0 rather than at 0 like
    // reflectivity's does -- verified against live data (2026-09-20) that
-   // MESH/QPE actually use -3 as their sentinel, not -999 like
-   // reflectivity; -1.0 still correctly separates it from legitimate
-   // values either way, since real magnitude-type data for all three
-   // can't be negative at all.
+   // its sentinel is -3/-999, comfortably below -1.0.
+   //
+   // MESH does NOT share that: a fresh live survey (2026-09-29) found its
+   // real sentinel split in two -- -3 for "no radar coverage" but -1 for
+   // "in coverage, no hail detected" (the vast majority of the domain on
+   // a quiet day). A -1.0 noDataThreshold only excludes values strictly
+   // *below* -1.0 (see grib.frag's `value < uNoDataThreshold`), so it let
+   // that literal -1 sentinel through as real data, rendering as a dark
+   // wash across the entire composite radar footprint -- visible live as
+   // a "grey shading over the radar area" baked into the product itself.
+   // MESH's noDataThreshold is 0.0 instead (hail size can't be
+   // meaningfully negative, and the same -1/-3 split shows up across
+   // most of the MRMS entries added below -- see the block comment
+   // there for the general rule this became).
 
    // Rotational velocity difference. Verified against live data
    // (2026-09-20, an active severe weather day) that the file's raw
@@ -267,7 +282,7 @@ static const std::vector<ProductConfig> kMrmsProducts_ {
    // just "millimeters of something", and Accumulation's Inches/
    // Millimeters options are exactly the right pair either way.
    {"Max Hail Size (60 min)",
-    "MESH_Max_60min_00.50", "", 0.0f, 100.0f, -1.0f,
+    "MESH_Max_60min_00.50", "", 0.0f, 100.0f, 0.0f,
     PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "", -1, -1},
 
    // 1-hour radar-only precip estimate, mm. Verified against live data:
@@ -277,6 +292,382 @@ static const std::vector<ProductConfig> kMrmsProducts_ {
    {"1-Hour Precip Estimate",
     "RadarOnly_QPE_01H_00.00", "", 0.0f, 80.0f, -1.0f,
     PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "", -1, -1},
+
+   // Everything below was added from a live 2026-09-29 survey (grib_ls +
+   // grib_get_data against a real file per product): observed min/max/
+   // most-common-values informed every offset/scale/noDataThreshold below
+   // the same way the entries above were tuned by hand. MRMS GRIB2 files
+   // carry no eccodes name/units metadata (grib_ls reports "unknown" for
+   // all three) since they use local, non-WMO parameter tables, so units
+   // and physical meaning below come from NSSL/MRMS product documentation,
+   // not the file itself -- noted per group where that matters.
+   //
+   // Sentinel convention seen across nearly all of these: -1 means "below
+   // this product's detection threshold" (a real, meaningful "none"), -3
+   // or -999 means "no radar/model coverage at all". Both are always <0,
+   // and every field below is a non-negative physical magnitude. Where a
+   // product's own -1 "below threshold" sentinel is a dominant value
+   // (MESH/POSH/SHI/EchoTop/VIL/VII/HeightCompositeReflectivity/
+   // BrightBand -- verified per-product against the live survey, not
+   // assumed), noDataThreshold is 0.0f rather than -1.0f: grib.frag's
+   // cutoff is strict `value < uNoDataThreshold`, so -1.0f would let a
+   // literal -1 sentinel through as real data, painting the entire
+   // composite radar footprint a dark "no echo" wash (see the MESH
+   // comment above this table for how that showed up live). 0.0f drops
+   // both -1 and -3/-999 while still rendering a genuine 0. Where a
+   // product's -1 is instead real signal, not a sentinel (rotation, gauge
+   // influence, azimuthal shear all have legitimate negative/zero
+   // values), the old -1.0f convention is kept and noted inline.
+
+   // FLASH (NSSL flash-flood system) Average Recurrence Interval: how
+   // rare (in years) the accumulated precip is vs. NOAA Atlas 14. Capped
+   // at 200 years in the source data itself (verified live: 3h+ windows
+   // all hit exactly 200.0 at their max), hence colorScale 200 for those;
+   // shorter windows scaled to their own observed max with headroom.
+   {"FLASH ARI (30 min)", "FLASH_QPE_ARI30M_00.00", "", 0.0f, 25.0f, -1.0f,
+    PhysicalQuantity::None, "years", 0.0f, "", "", -1, -1},
+   {"FLASH ARI (1 hr)", "FLASH_QPE_ARI01H_00.00", "", 0.0f, 200.0f, -1.0f,
+    PhysicalQuantity::None, "years", 0.0f, "", "", -1, -1},
+   {"FLASH ARI (3 hr)", "FLASH_QPE_ARI03H_00.00", "", 0.0f, 200.0f, -1.0f,
+    PhysicalQuantity::None, "years", 0.0f, "", "", -1, -1},
+   {"FLASH ARI (6 hr)", "FLASH_QPE_ARI06H_00.00", "", 0.0f, 200.0f, -1.0f,
+    PhysicalQuantity::None, "years", 0.0f, "", "", -1, -1},
+   {"FLASH ARI (12 hr)", "FLASH_QPE_ARI12H_00.00", "", 0.0f, 200.0f, -1.0f,
+    PhysicalQuantity::None, "years", 0.0f, "", "", -1, -1},
+   {"FLASH ARI (24 hr)", "FLASH_QPE_ARI24H_00.00", "", 0.0f, 200.0f, -1.0f,
+    PhysicalQuantity::None, "years", 0.0f, "", "", -1, -1},
+   {"FLASH ARI (Max)", "FLASH_QPE_ARIMAX_00.00", "", 0.0f, 200.0f, -1.0f,
+    PhysicalQuantity::None, "years", 0.0f, "", "", -1, -1},
+
+   // FLASH Flood Guidance: the rainfall depth (mm) needed in this window
+   // to cause flooding. Observed live max (215-310mm depending on window)
+   // is too large to be the QPE/FFG ratio some NSSL docs also call this --
+   // treated as the guidance depth itself, using the same Accumulation
+   // quantity as other rainfall-depth fields above.
+   {"FLASH Flood Guidance (1 hr)", "FLASH_QPE_FFG01H_00.00", "", 0.0f,
+    250.0f, -1.0f, PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f,
+    "", "", -1, -1},
+   {"FLASH Flood Guidance (3 hr)", "FLASH_QPE_FFG03H_00.00", "", 0.0f,
+    350.0f, -1.0f, PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f,
+    "", "", -1, -1},
+   {"FLASH Flood Guidance (6 hr)", "FLASH_QPE_FFG06H_00.00", "", 0.0f,
+    330.0f, -1.0f, PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f,
+    "", "", -1, -1},
+   {"FLASH Flood Guidance (Max)", "FLASH_QPE_FFGMAX_00.00", "", 0.0f,
+    350.0f, -1.0f, PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f,
+    "", "", -1, -1},
+
+   // FLASH hydrologic model output: three independent models (CREST,
+   // SAC-SMA, HP) each produce max simulated streamflow (m^3/s), max
+   // streamflow per unit basin area (m^3/s/km^2), and (CREST/SAC only)
+   // max soil saturation (%). Live max streamflow hit tens of thousands
+   // of m^3/s at a handful of major-river cells -- colorScale is set for
+   // useful contrast on flash-flood-relevant (not major-river) flows and
+   // deliberately clips that rare extreme tail rather than compressing
+   // everything else toward black.
+   {"FLASH CREST Max Streamflow", "FLASH_CREST_MAXSTREAMFLOW_00.00", "",
+    0.0f, 500.0f, -1.0f, PhysicalQuantity::None, "m³/s", 0.0f, "", "",
+    -1, -1},
+   {"FLASH CREST Max Unit Streamflow",
+    "FLASH_CREST_MAXUNITSTREAMFLOW_00.00", "", 0.0f, 5.0f, -1.0f,
+    PhysicalQuantity::None, "m³/s/km²", 0.0f, "", "", -1, -1},
+   {"FLASH CREST Max Soil Saturation", "FLASH_CREST_MAXSOILSAT_00.00", "",
+    0.0f, 100.0f, -1.0f, PhysicalQuantity::None, "%", 0.0f, "", "", -1,
+    -1},
+   {"FLASH SAC Max Streamflow", "FLASH_SAC_MAXSTREAMFLOW_00.00", "", 0.0f,
+    500.0f, -1.0f, PhysicalQuantity::None, "m³/s", 0.0f, "", "", -1,
+    -1},
+   {"FLASH SAC Max Unit Streamflow", "FLASH_SAC_MAXUNITSTREAMFLOW_00.00",
+    "", 0.0f, 5.0f, -1.0f, PhysicalQuantity::None, "m³/s/km²",
+    0.0f, "", "", -1, -1},
+   {"FLASH SAC Max Soil Saturation", "FLASH_SAC_MAXSOILSAT_00.00", "",
+    0.0f, 100.0f, -1.0f, PhysicalQuantity::None, "%", 0.0f, "", "", -1,
+    -1},
+   {"FLASH HP Max Streamflow", "FLASH_HP_MAXSTREAMFLOW_00.00", "", 0.0f,
+    500.0f, -1.0f, PhysicalQuantity::None, "m³/s", 0.0f, "", "", -1,
+    -1},
+   {"FLASH HP Max Unit Streamflow", "FLASH_HP_MAXUNITSTREAMFLOW_00.00", "",
+    0.0f, 5.0f, -1.0f, PhysicalQuantity::None, "m³/s/km²", 0.0f,
+    "", "", -1, -1},
+
+   // Radar-only QPE at other durations (01H is already above). Each
+   // colorScale is its own observed live max plus ~10-15% headroom.
+   {"15-Min Precip Estimate", "RadarOnly_QPE_15M_00.00", "", 0.0f, 30.0f,
+    -1.0f, PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "",
+    -1, -1},
+   {"3-Hour Precip Estimate", "RadarOnly_QPE_03H_00.00", "", 0.0f, 110.0f,
+    -1.0f, PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "",
+    -1, -1},
+   {"6-Hour Precip Estimate", "RadarOnly_QPE_06H_00.00", "", 0.0f, 180.0f,
+    -1.0f, PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "",
+    -1, -1},
+   {"12-Hour Precip Estimate", "RadarOnly_QPE_12H_00.00", "", 0.0f, 270.0f,
+    -1.0f, PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "",
+    -1, -1},
+   {"24-Hour Precip Estimate", "RadarOnly_QPE_24H_00.00", "", 0.0f, 550.0f,
+    -1.0f, PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "",
+    -1, -1},
+   {"48-Hour Precip Estimate", "RadarOnly_QPE_48H_00.00", "", 0.0f,
+    1200.0f, -1.0f, PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f,
+    "", "", -1, -1},
+   {"72-Hour Precip Estimate", "RadarOnly_QPE_72H_00.00", "", 0.0f,
+    1800.0f, -1.0f, PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f,
+    "", "", -1, -1},
+   {"Precip Estimate Since 12Z", "RadarOnly_QPE_Since12Z_00.00", "", 0.0f,
+    450.0f, -1.0f, PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f,
+    "", "", -1, -1},
+
+   // Multi-sensor QPE (radar + gauge bias correction, Pass 2 = the final,
+   // most gauge-corrected pass). Each window's colorScale set the same
+   // way as radar-only QPE above.
+   {"1-Hour Precip Estimate (Multi-Sensor)",
+    "MultiSensor_QPE_01H_Pass2_00.00", "", 0.0f, 75.0f, -1.0f,
+    PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "", -1, -1},
+   {"3-Hour Precip Estimate (Multi-Sensor)",
+    "MultiSensor_QPE_03H_Pass2_00.00", "", 0.0f, 115.0f, -1.0f,
+    PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "", -1, -1},
+   {"6-Hour Precip Estimate (Multi-Sensor)",
+    "MultiSensor_QPE_06H_Pass2_00.00", "", 0.0f, 190.0f, -1.0f,
+    PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "", -1, -1},
+   {"12-Hour Precip Estimate (Multi-Sensor)",
+    "MultiSensor_QPE_12H_Pass2_00.00", "", 0.0f, 190.0f, -1.0f,
+    PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "", -1, -1},
+   {"24-Hour Precip Estimate (Multi-Sensor)",
+    "MultiSensor_QPE_24H_Pass2_00.00", "", 0.0f, 330.0f, -1.0f,
+    PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "", -1, -1},
+   {"48-Hour Precip Estimate (Multi-Sensor)",
+    "MultiSensor_QPE_48H_Pass2_00.00", "", 0.0f, 430.0f, -1.0f,
+    PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "", -1, -1},
+   {"72-Hour Precip Estimate (Multi-Sensor)",
+    "MultiSensor_QPE_72H_Pass2_00.00", "", 0.0f, 700.0f, -1.0f,
+    PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "", -1, -1},
+
+   // Precip rate (instantaneous, mm/hr -- not a depth, so PhysicalQuantity
+   // stays None rather than the Accumulation depth setting) and QC/
+   // diagnostic layers.
+   {"Instantaneous Precip Rate", "PrecipRate_00.00", "", 0.0f, 200.0f,
+    -1.0f, PhysicalQuantity::None, "mm/hr", 0.0f, "", "", -1, -1},
+   // Categorical precip-type code (0=none, 1=warm stratiform, 3=snow,
+   // 6=convective, 7=hail mix, 10=cold stratiform, 91/96=tropical), not a
+   // smooth physical quantity -- colorScale covers the common 0-10 code
+   // range; rare tropical codes above that clip to the top color.
+   {"Precip Type (MRMS)", "PrecipFlag_00.00", "", 0.0f, 10.0f, -1.0f,
+    PhysicalQuantity::None, "code", 0.0f, "", "", -1, -1},
+   {"Radar Quality Index", "RadarQualityIndex_00.00", "", 0.0f, 1.0f,
+    -1.0f, PhysicalQuantity::None, "", 0.0f, "", "", -1, -1},
+   {"Warm Rain Probability", "WarmRainProbability_00.50", "", 0.0f, 100.0f,
+    -1.0f, PhysicalQuantity::None, "%", 0.0f, "", "", -1, -1},
+   // Gauge influence on the multi-sensor bias correction, -1 (pure radar)
+   // to +1 (pure gauge) -- colorOffset/-Scale map that full range, and
+   // -1.0f still correctly drops the deeper -3 "no coverage" sentinel
+   // since it's strictly below every real value here.
+   {"Gauge Influence Index (1 hr)", "GaugeInflIndex_01H_Pass2_00.00", "",
+    -1.0f, 2.0f, -1.0f, PhysicalQuantity::None, "", 0.0f, "", "", -1, -1},
+   {"Gauge Influence Index (24 hr)", "GaugeInflIndex_24H_Pass2_00.00", "",
+    -1.0f, 2.0f, -1.0f, PhysicalQuantity::None, "", 0.0f, "", "", -1, -1},
+
+   // Hail: MESH at other windows (60min is already above), plus POSH
+   // (probability of severe hail, %) and SHI (Severe Hail Index, an
+   // unitless intensity score). colorScale kept at 100 across every MESH
+   // window to match the existing 60min entry, even though shorter
+   // windows' live max is smaller -- consistent sizes make windows
+   // visually comparable to each other. noDataThreshold is 0.0f, not
+   // -1.0f -- see the MESH comment above this table and the general-rule
+   // comment at the top of this block for why (all four share the same
+   // -1/-3 sentinel split).
+   {"Max Hail Size (Instant)", "MESH_00.50", "", 0.0f, 100.0f, 0.0f,
+    PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "", -1, -1},
+   {"Max Hail Size (30 min)", "MESH_Max_30min_00.50", "", 0.0f, 100.0f,
+    0.0f, PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "",
+    -1, -1},
+   {"Max Hail Size (120 min)", "MESH_Max_120min_00.50", "", 0.0f, 100.0f,
+    0.0f, PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "",
+    -1, -1},
+   {"Max Hail Size (240 min)", "MESH_Max_240min_00.50", "", 0.0f, 100.0f,
+    0.0f, PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "",
+    -1, -1},
+   {"Max Hail Size (360 min)", "MESH_Max_360min_00.50", "", 0.0f, 100.0f,
+    0.0f, PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "",
+    -1, -1},
+   {"Max Hail Size (24 hr)", "MESH_Max_1440min_00.50", "", 0.0f, 100.0f,
+    0.0f, PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "",
+    -1, -1},
+   {"Probability of Severe Hail", "POSH_00.50", "", 0.0f, 100.0f, 0.0f,
+    PhysicalQuantity::None, "%", 0.0f, "", "", -1, -1},
+   {"Severe Hail Index", "SHI_00.50", "", 0.0f, 100.0f, 0.0f,
+    PhysicalQuantity::None, "", 0.0f, "", "", -1, -1},
+
+   // Rotation Track at other windows (ML 30min is already above) --
+   // colorScale set per-window from its own live observed max, same
+   // "raw units (x1000/s)" pre-scaling as the shipped entry. AzShear
+   // (0-2km and 3-6km layers) is signed, so unlike everything else in
+   // this table its colorOffset is negative and its noDataThreshold
+   // can't use the -1.0f convention -- real values run well negative
+   // (observed live to -34), so it's set far enough below that to only
+   // catch the actual -999 "no coverage" sentinel.
+   {"Rotation Track (30 min)", "RotationTrack30min_00.50", "", 0.0f, 50.0f,
+    -1.0f, PhysicalQuantity::None, "raw units (x1000 /s)", 0.0f, "", "",
+    -1, -1},
+   {"Rotation Track (60 min)", "RotationTrack60min_00.50", "", 0.0f, 50.0f,
+    -1.0f, PhysicalQuantity::None, "raw units (x1000 /s)", 0.0f, "", "",
+    -1, -1},
+   {"Rotation Track (120 min)", "RotationTrack120min_00.50", "", 0.0f,
+    60.0f, -1.0f, PhysicalQuantity::None, "raw units (x1000 /s)", 0.0f, "",
+    "", -1, -1},
+   {"Rotation Track (240 min)", "RotationTrack240min_00.50", "", 0.0f,
+    60.0f, -1.0f, PhysicalQuantity::None, "raw units (x1000 /s)", 0.0f, "",
+    "", -1, -1},
+   {"Rotation Track (360 min)", "RotationTrack360min_00.50", "", 0.0f,
+    60.0f, -1.0f, PhysicalQuantity::None, "raw units (x1000 /s)", 0.0f, "",
+    "", -1, -1},
+   {"Rotation Track (24 hr)", "RotationTrack1440min_00.50", "", 0.0f,
+    130.0f, -1.0f, PhysicalQuantity::None, "raw units (x1000 /s)", 0.0f,
+    "", "", -1, -1},
+   {"Rotation Track ML (60 min)", "RotationTrackML60min_00.50", "", 0.0f,
+    30.0f, -1.0f, PhysicalQuantity::None, "raw units (x1000 /s)", 0.0f, "",
+    "", -1, -1},
+   {"Rotation Track ML (120 min)", "RotationTrackML120min_00.50", "", 0.0f,
+    50.0f, -1.0f, PhysicalQuantity::None, "raw units (x1000 /s)", 0.0f, "",
+    "", -1, -1},
+   {"Rotation Track ML (240 min)", "RotationTrackML240min_00.50", "", 0.0f,
+    50.0f, -1.0f, PhysicalQuantity::None, "raw units (x1000 /s)", 0.0f, "",
+    "", -1, -1},
+   {"Rotation Track ML (360 min)", "RotationTrackML360min_00.50", "", 0.0f,
+    50.0f, -1.0f, PhysicalQuantity::None, "raw units (x1000 /s)", 0.0f, "",
+    "", -1, -1},
+   {"Rotation Track ML (24 hr)", "RotationTrackML1440min_00.50", "", 0.0f,
+    55.0f, -1.0f, PhysicalQuantity::None, "raw units (x1000 /s)", 0.0f, "",
+    "", -1, -1},
+   {"Azimuthal Shear (0-2km)", "MergedAzShear_0-2kmAGL_00.50", "", -40.0f,
+    80.0f, -900.0f, PhysicalQuantity::None, "raw units (x1000 /s)", 0.0f,
+    "", "", -1, -1},
+   {"Azimuthal Shear (3-6km)", "MergedAzShear_3-6kmAGL_00.50", "", -20.0f,
+    40.0f, -900.0f, PhysicalQuantity::None, "raw units (x1000 /s)", 0.0f,
+    "", "", -1, -1},
+
+   // Reflectivity/storm-structure family. Every dBZ product here reuses
+   // Composite Reflectivity's -20/95 color range and 0.0f noDataThreshold
+   // from the top of this table (dBZ is never legitimately negative
+   // below about -30, so 0.0f cleanly drops MRMS's -99/-999 sentinels the
+   // same way it does for Composite Reflectivity).
+   {"Reflectivity at Lowest Altitude", "ReflectivityAtLowestAltitude_00.50",
+    "", -20.0f, 95.0f, 0.0f, PhysicalQuantity::None, "dBZ", 0.0f, "", "",
+    -1, -1},
+   {"Composite Reflectivity (1-hr Max)", "CREF_1HR_MAX_00.50", "", -20.0f,
+    95.0f, 0.0f, PhysicalQuantity::None, "dBZ", 0.0f, "", "", -1, -1},
+   {"Base Reflectivity (1-hr Max)", "BREF_1HR_MAX_00.50", "", -20.0f,
+    95.0f, 0.0f, PhysicalQuantity::None, "dBZ", 0.0f, "", "", -1, -1},
+   {"Low-Level Composite Reflectivity", "LowLevelCompositeReflectivity_00.50",
+    "", -20.0f, 95.0f, 0.0f, PhysicalQuantity::None, "dBZ", 0.0f, "", "",
+    -1, -1},
+   {"Layer Composite Reflectivity (Low)",
+    "LayerCompositeReflectivity_Low_00.50", "", -20.0f, 95.0f, 0.0f,
+    PhysicalQuantity::None, "dBZ", 0.0f, "", "", -1, -1},
+   {"Layer Composite Reflectivity (High)",
+    "LayerCompositeReflectivity_High_00.50", "", -20.0f, 95.0f, 0.0f,
+    PhysicalQuantity::None, "dBZ", 0.0f, "", "", -1, -1},
+   {"Layer Composite Reflectivity (Super)",
+    "LayerCompositeReflectivity_Super_00.50", "", -20.0f, 95.0f, 0.0f,
+    PhysicalQuantity::None, "dBZ", 0.0f, "", "", -1, -1},
+   {"Reflectivity at 0C", "Reflectivity_0C_00.50", "", -20.0f, 95.0f, 0.0f,
+    PhysicalQuantity::None, "dBZ", 0.0f, "", "", -1, -1},
+   {"Reflectivity at -10C", "Reflectivity_-10C_00.50", "", -20.0f, 95.0f,
+    0.0f, PhysicalQuantity::None, "dBZ", 0.0f, "", "", -1, -1},
+   {"Reflectivity at -20C", "Reflectivity_-20C_00.50", "", -20.0f, 95.0f,
+    0.0f, PhysicalQuantity::None, "dBZ", 0.0f, "", "", -1, -1},
+   {"Seamless Hybrid Scan Reflectivity", "SeamlessHSR_00.00", "", -20.0f,
+    95.0f, 0.0f, PhysicalQuantity::None, "dBZ", 0.0f, "", "", -1, -1},
+
+   // Heights and vertically-integrated fields -- all non-negative
+   // magnitudes. Every one of these except Seamless HSR Height showed the
+   // same -1/-3 sentinel split as MESH in the live survey (Seamless HSR
+   // Height's survey sample never showed -1, so it keeps the -1.0f
+   // convention), so they get the same 0.0f fix.
+   {"Composite Reflectivity Height", "HeightCompositeReflectivity_00.50",
+    "", 0.0f, 20000.0f, 0.0f, PhysicalQuantity::None, "m", 0.0f, "", "",
+    -1, -1},
+   {"Seamless HSR Height", "SeamlessHSRHeight_00.00", "", 0.0f, 18.0f,
+    -1.0f, PhysicalQuantity::None, "km", 0.0f, "", "", -1, -1},
+   {"Echo Top (18 dBZ)", "EchoTop_18_00.50", "", 0.0f, 20.0f, 0.0f,
+    PhysicalQuantity::None, "km", 0.0f, "", "", -1, -1},
+   {"Echo Top (30 dBZ)", "EchoTop_30_00.50", "", 0.0f, 20.0f, 0.0f,
+    PhysicalQuantity::None, "km", 0.0f, "", "", -1, -1},
+   {"Echo Top (50 dBZ)", "EchoTop_50_00.50", "", 0.0f, 10.0f, 0.0f,
+    PhysicalQuantity::None, "km", 0.0f, "", "", -1, -1},
+   {"Echo Top (60 dBZ)", "EchoTop_60_00.50", "", 0.0f, 5.0f, 0.0f,
+    PhysicalQuantity::None, "km", 0.0f, "", "", -1, -1},
+   {"Vertically Integrated Liquid", "VIL_00.50", "", 0.0f, 35.0f, 0.0f,
+    PhysicalQuantity::None, "kg/m²", 0.0f, "", "", -1, -1},
+   {"VIL Density", "VIL_Density_00.50", "", 0.0f, 3.0f, 0.0f,
+    PhysicalQuantity::None, "g/m³", 0.0f, "", "", -1, -1},
+   {"VIL (2-hr Max)", "VIL_Max_120min_00.50", "", 0.0f, 50.0f, 0.0f,
+    PhysicalQuantity::None, "kg/m²", 0.0f, "", "", -1, -1},
+   {"VIL (24-hr Max)", "VIL_Max_1440min_00.50", "", 0.0f, 70.0f, 0.0f,
+    PhysicalQuantity::None, "kg/m²", 0.0f, "", "", -1, -1},
+   {"Vertically Integrated Ice", "VII_00.50", "", 0.0f, 20.0f, 0.0f,
+    PhysicalQuantity::None, "kg/m²", 0.0f, "", "", -1, -1},
+
+   // Melting-layer / freezing-height diagnostics. H50/H60 use a different
+   // sentinel pair (-99/-999, not -1/-3) that -1.0f already excludes
+   // correctly, so they're unaffected by the MESH-style fix below. H60
+   // pair had zero real signal on survey day (a quiet day for extreme
+   // 60 dBZ echoes aloft -- the product itself is legitimate, just
+   // unverified live); scaled the same as their H50 counterparts since
+   // both share the same "height above a temperature level" physical
+   // meaning.
+   {"50 dBZ Height Above 0C", "H50_Above_0C_00.50", "", 0.0f, 8.0f, -1.0f,
+    PhysicalQuantity::None, "km", 0.0f, "", "", -1, -1},
+   {"50 dBZ Height Above -20C", "H50_Above_-20C_00.50", "", 0.0f, 3.0f,
+    -1.0f, PhysicalQuantity::None, "km", 0.0f, "", "", -1, -1},
+   {"60 dBZ Height Above 0C", "H60_Above_0C_00.50", "", 0.0f, 8.0f, -1.0f,
+    PhysicalQuantity::None, "km", 0.0f, "", "", -1, -1},
+   {"60 dBZ Height Above -20C", "H60_Above_-20C_00.50", "", 0.0f, 3.0f,
+    -1.0f, PhysicalQuantity::None, "km", 0.0f, "", "", -1, -1},
+   // Bright Band Top/Bottom Height DO show the -1/-3 split (-1 here means
+   // "no bright band detected", still a real MESH-style sentinel), so
+   // 0.0f like the rest of this fix.
+   {"Bright Band Top Height", "BrightBandTopHeight_00.00", "", 0.0f,
+    7000.0f, 0.0f, PhysicalQuantity::None, "m", 0.0f, "", "", -1, -1},
+   {"Bright Band Bottom Height", "BrightBandBottomHeight_00.00", "", 0.0f,
+    6000.0f, 0.0f, PhysicalQuantity::None, "m", 0.0f, "", "", -1, -1},
+
+   // Lightning. Probability fields (%) use a plain 0.0f noDataThreshold
+   // since the sentinel here is an enormous -99900 (far below any real
+   // percentage or density); the jump flag is a simple 0/1 boolean so
+   // -0.5f sits cleanly between "no jump" (0) and the negative sentinels.
+   {"Lightning Probability (30 min)",
+    "LightningProbabilityNext30minGrid_scale_1", "", 0.0f, 100.0f, 0.0f,
+    PhysicalQuantity::None, "%", 0.0f, "", "", -1, -1},
+   {"Lightning Probability (60 min)",
+    "LightningProbabilityNext60minGrid_scale_1", "", 0.0f, 100.0f, 0.0f,
+    PhysicalQuantity::None, "%", 0.0f, "", "", -1, -1},
+   {"Lightning Jump (5 min)", "LtgJumpGrid_Max_005min_scale_1", "", 0.0f,
+    1.0f, -0.5f, PhysicalQuantity::None, "", 0.0f, "", "", -1, -1},
+   {"CG Lightning Density (1 min)", "NLDN_CG_001min_AvgDensity_00.00", "",
+    0.0f, 2.0f, 0.0f, PhysicalQuantity::None, "strikes/min/km²", 0.0f,
+    "", "", -1, -1},
+   {"CG Lightning Density (5 min)", "NLDN_CG_005min_AvgDensity_00.00", "",
+    0.0f, 2.0f, 0.0f, PhysicalQuantity::None, "strikes/min/km²", 0.0f,
+    "", "", -1, -1},
+   {"CG Lightning Density (15 min)", "NLDN_CG_015min_AvgDensity_00.00", "",
+    0.0f, 4.0f, 0.0f, PhysicalQuantity::None, "strikes/min/km²", 0.0f,
+    "", "", -1, -1},
+   {"CG Lightning Density (30 min)", "NLDN_CG_030min_AvgDensity_00.00", "",
+    0.0f, 5.5f, 0.0f, PhysicalQuantity::None, "strikes/min/km²", 0.0f,
+    "", "", -1, -1},
+
+   // Model-derived background fields feeding MRMS's own precip-type/
+   // melting-layer algorithms. Temperatures are already in Celsius in the
+   // raw file (live range -4 to 31C, nowhere near Kelvin magnitudes), so
+   // these use PhysicalQuantity::None with an explicit "C" unit rather
+   // than TemperatureKelvin -- that enum assumes a raw Kelvin value and
+   // would apply the wrong conversion here.
+   {"Model Freezing Level Height", "Model_0degC_Height_00.50", "", 0.0f,
+    6500.0f, -1.0f, PhysicalQuantity::None, "m", 0.0f, "", "", -1, -1},
+   {"Model Surface Temp", "Model_SurfaceTemp_00.50", "", -10.0f, 45.0f,
+    -100.0f, PhysicalQuantity::None, "°C", 0.0f, "", "", -1, -1},
+   {"Model Wet Bulb Temp", "Model_WetBulbTemp_00.50", "", -10.0f, 40.0f,
+    -100.0f, PhysicalQuantity::None, "°C", 0.0f, "", "", -1, -1},
 };
 
 // RTMA: rolling surface analysis, map::GribCategory::Rtma. noDataThreshold
@@ -328,6 +719,19 @@ static const std::vector<ProductConfig> kRtmaProducts_ {
 // 2dfld, fixed at RrfsDataProvider's resolved synoptic-cycle F000, no
 // forecast-hour selection yet. Same no-coverage-gaps convention as RTMA
 // above -- RRFS's fields are full model grids too.
+// RRFS's fields are full model grids with no missing cells, so unlike MRMS
+// there is no "no coverage" sentinel to drop -- but a field whose zero means
+// "nothing here" (no rain, no CAPE, clear sky, no echo) still can't be drawn
+// at zero: every such cell would be painted the bottom colour of the shared
+// reflectivity palette, a grey blanket over the whole domain (in a real F000
+// file 92% of simulated-reflectivity cells are <= 0 dBZ, 88% of precip-rate
+// and 51% of CAPE cells are 0). Those products set noDataThreshold just above
+// the meaningless floor so that part is transparent. Cutoffs were read off a
+// live file's distributions where the field is in F000 (reflectivity, VIL,
+// precip rate, CAPE, cloud cover); accumulated precipitation and lightning
+// threat aren't in F000, so theirs are conservative guesses. Continuous
+// fields (temperature, wind, pressure, heights, satellite bands) are meant
+// to fill the domain and are unchanged.
 static const std::vector<ProductConfig> kRrfsProducts_ {
    // Mean sea level pressure (ETA reduction), Pa. Verified against live
    // data on two separate days: 100203-103017 Pa (2026-09-20) and
@@ -353,7 +757,7 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // eccodes (no definition table entry for this parameter combination
    // yet) -- decode_grib selects by shortName, so that field isn't
    // usable this way; LTNG is the one that works.
-   {"Lightning Threat", "", "ltng", 0.0f, 50.0f, -999.0f,
+   {"Lightning Threat", "", "ltng", 0.0f, 50.0f, 0.1f,
     PhysicalQuantity::None, "index", 0.0f, "", "", -1, -1},
 
    // Significant Tornado Parameter, fixed-layer form (Thompson et al.
@@ -367,7 +771,7 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // real range -1.11 to 2.26 on a quiet (non-severe) day; scaled to
    // -2 to 6 for headroom toward a genuinely favorable severe-weather
    // setup, which this one observed day wasn't.
-   {"STP (Fixed-Layer)", "", "", -2.0f, 8.0f, -9000.0f,
+   {"STP (Fixed-Layer)", "", "", -2.0f, 8.0f, 0.1f,
     PhysicalQuantity::None, "index", 0.0f, "stp", "", -1, -1},
 
    // Everything below verified against the same real downloaded 2dfld
@@ -384,16 +788,16 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // tilts); each level is its own product since eccodes has no single
    // "composite" message for it. Same -20/95 range as MRMS reflectivity
    // (kMrmsProducts_ above) so it reads on the same visual scale.
-   {"Simulated Reflectivity (1km AGL)", "", "rare", -20.0f, 95.0f, -999.0f,
+   {"Simulated Reflectivity (1km AGL)", "", "rare", -20.0f, 95.0f, 0.0f,
     PhysicalQuantity::None, "dBZ", 0.0f, "", "heightAboveGround", 1000, 1000},
-   {"Simulated Reflectivity (4km AGL)", "", "rare", -20.0f, 95.0f, -999.0f,
+   {"Simulated Reflectivity (4km AGL)", "", "rare", -20.0f, 95.0f, 0.0f,
     PhysicalQuantity::None, "dBZ", 0.0f, "", "heightAboveGround", 4000, 4000},
-   {"Simulated Reflectivity (-10C level)", "", "rare", -20.0f, 95.0f, -999.0f,
+   {"Simulated Reflectivity (-10C level)", "", "rare", -20.0f, 95.0f, 0.0f,
     PhysicalQuantity::None, "dBZ", 0.0f, "", "isothermal", 263, 263},
 
    // Vertically Integrated Liquid, kg/m^2. Verified: real range
    // 0.001-197.3; scaled to 0-220 for headroom.
-   {"VIL", "", "veril", 0.0f, 220.0f, -999.0f,
+   {"VIL", "", "veril", 0.0f, 220.0f, 0.5f,
     PhysicalQuantity::None, "kg/m^2", 0.0f, "", "", -1, -1},
 
    // RRFS's own forecast surface visibility, metres -- distinct from
@@ -421,7 +825,7 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // real range 0-0.0791; scaled to 0-0.1 for headroom. Quantity is None
    // (raw rate), not AccumulationMillimeters -- that setting is for
    // totals, converting a rate through it would be wrong.
-   {"Precipitation Rate", "", "prate", 0.0f, 0.1f, -999.0f,
+   {"Precipitation Rate", "", "prate", 0.0f, 0.1f, 0.000028f,
     PhysicalQuantity::None, "kg/m^2/s", 0.0f, "", "", -1, -1},
 
    // 1-hour accumulated precipitation, kg/m^2 (== mm). RRFS's 2dfld file
@@ -432,7 +836,7 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // via grib_ls against a real forecast-hour-5 file, not assumed).
    // Verified: real range 0-107.8 at that hour; scaled to 0-120 for
    // headroom.
-   {"1-Hour Precipitation", "", "tp", 0.0f, 120.0f, -999.0f,
+   {"1-Hour Precipitation", "", "tp", 0.0f, 120.0f, 0.1f,
     PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "", -1, -1,
     -1, 1},
 
@@ -445,7 +849,7 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // (it is a running total over the whole forecast, up to 84h), so a
    // long-enough run's true max could still exceed this; only checked at
    // one (early) forecast hour, not the full range.
-   {"Total Precipitation", "", "tp", 0.0f, 300.0f, -999.0f,
+   {"Total Precipitation", "", "tp", 0.0f, 300.0f, 0.1f,
     PhysicalQuantity::AccumulationMillimeters, "mm", 0.0f, "", "", -1, -1,
     0, -1},
 
@@ -517,7 +921,7 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // headroom toward SPC's own documented "very high" (>4) ceiling,
    // which this one observed day wasn't close to, same reasoning as
    // STP's own headroom above.
-   {"SHIP", "", "", 0.0f, 6.0f, -9000.0f, PhysicalQuantity::None, "index",
+   {"SHIP", "", "", 0.0f, 6.0f, 0.1f, PhysicalQuantity::None, "index",
     0.0f, "ship", "", -1, -1},
 
    // Planetary boundary layer height, metres AGL. Verified: real range
@@ -542,20 +946,20 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // (boundaryLayerCloudLayer and atmosphereSingleLayer) -- picked
    // atmosphereSingleLayer as the more standard "whole column" total,
    // disambiguated explicitly rather than trusting message order.
-   {"Total Cloud Cover", "", "tcc", 0.0f, 100.0f, -999.0f,
+   {"Total Cloud Cover", "", "tcc", 0.0f, 100.0f, 5.0f,
     PhysicalQuantity::None, "%", 0.0f, "", "atmosphereSingleLayer", 0, 0},
-   {"Low Cloud Cover", "", "lcc", 0.0f, 100.0f, -999.0f,
+   {"Low Cloud Cover", "", "lcc", 0.0f, 100.0f, 5.0f,
     PhysicalQuantity::None, "%", 0.0f, "", "", -1, -1},
-   {"Mid Cloud Cover", "", "mcc", 0.0f, 100.0f, -999.0f,
+   {"Mid Cloud Cover", "", "mcc", 0.0f, 100.0f, 5.0f,
     PhysicalQuantity::None, "%", 0.0f, "", "", -1, -1},
-   {"High Cloud Cover", "", "hcc", 0.0f, 100.0f, -999.0f,
+   {"High Cloud Cover", "", "hcc", 0.0f, 100.0f, 5.0f,
     PhysicalQuantity::None, "%", 0.0f, "", "", -1, -1},
 
    // Surface-based CAPE/CIN, J/kg -- the file also carries 3 mixed-layer
    // CAPE/CIN variants (90/180/255 mb) sharing the same "cape"/"cin"
    // shortName; "surface" disambiguates to the SB (not MU) variant.
    // Verified: CAPE 0-5006, CIN -874-0; scaled with headroom.
-   {"SBCAPE", "", "cape", 0.0f, 5500.0f, -999.0f,
+   {"SBCAPE", "", "cape", 0.0f, 5500.0f, 50.0f,
     PhysicalQuantity::None, "J/kg", 0.0f, "", "surface", 0, 0},
    {"SBCIN", "", "cin", -1000.0f, 1000.0f, -999.0f,
     PhysicalQuantity::None, "J/kg", 0.0f, "", "surface", 0, 0},
@@ -564,7 +968,7 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
    // formula uses, see decode_grib.cpp; SHIP itself stays deferred until
    // prslev support exists, but MUCAPE/MUCIN are useful fields alone).
    // Verified: CAPE 0-4224, CIN -1364-0.
-   {"MUCAPE", "", "cape", 0.0f, 4600.0f, -999.0f,
+   {"MUCAPE", "", "cape", 0.0f, 4600.0f, 50.0f,
     PhysicalQuantity::None, "J/kg", 0.0f, "", "pressureFromGroundLayer",
     18000, 0},
    {"MUCIN", "", "cin", -1500.0f, 1500.0f, -999.0f,
@@ -763,6 +1167,19 @@ MakeProvider(map::GribCategory category, const ProductConfig& product)
 namespace
 {
 
+// providers_ holds the common AwsNexradDataProvider base, but each
+// category only ever constructs one concrete type (see MakeProvider()), so
+// every fetch path has to get that concrete type back. One checked cast
+// here instead of a hand-written static_cast at each of ~15 call sites:
+// clang-tidy flagged those (cppcoreguidelines-pro-type-static-cast-
+// downcast), and a mismatched category would have been silent undefined
+// behavior -- this throws std::bad_cast instead.
+template<typename Derived>
+Derived& ProviderAs(provider::AwsNexradDataProvider& base)
+{
+   return dynamic_cast<Derived&>(base);
+}
+
 void EnsureDateListed(provider::AwsNexradDataProvider&      provider,
                       std::chrono::system_clock::time_point date)
 {
@@ -796,6 +1213,46 @@ std::string CachedDownloadPath(const std::string& key)
    }
    return CacheDir() + "/" + path;
 }
+
+// StatusManager's own doc names this gap directly: a slow fetch already
+// reports byte progress, but "a stuck decode_grib call... look[s]
+// identical to nothing happening" once the download itself finishes --
+// true today because every QueueDownload()/QueueNbmDownload() completion
+// handler calls ReportComplete() right before handing off to
+// ApplyCachedDownload()/ApplyShipDownload(), which report nothing of
+// their own. That gap matters more than it used to: a decode that's
+// normally ~25-30ms (see ApplyCachedDownload()'s own doc) can stall for
+// seconds under real memory pressure -- exactly the low-RAM scenario a
+// blank status bar is least helpful for.
+//
+// This is the decode-side entry: same status id space as the download
+// that fed it (see ApplyCachedDownload()/ApplyShipDownload()'s own call
+// sites), so the one status-bar line effectively continues from
+// "downloading" into "decoding" rather than needing a second slot.
+// RAII rather than an explicit ReportComplete() at every return, since
+// both apply functions have multiple early-return failure paths and a
+// missed one would leave a stale "still decoding" line behind.
+class ScopedDecodeStatus
+{
+public:
+   ScopedDecodeStatus(std::string id, const std::string& displayName)
+      : id_ {std::move(id)}
+   {
+      manager::StatusManager::Instance()->ReportProgress(
+         id_, displayName + " (decoding)", 0, -1);
+   }
+
+   ~ScopedDecodeStatus()
+   {
+      manager::StatusManager::Instance()->ReportComplete(id_);
+   }
+
+   ScopedDecodeStatus(const ScopedDecodeStatus&)            = delete;
+   ScopedDecodeStatus& operator=(const ScopedDecodeStatus&) = delete;
+
+private:
+   std::string id_;
+};
 
 // Shared by every manager downloading into CacheDir() (GribManager,
 // HodographManager, WindBarbManager -- see GribManager::
@@ -1054,6 +1511,11 @@ public:
    // archive scrubbing doesn't list S3 once per intermediate step. Never
    // erased, so a re-activated product can't reuse an old job's number.
    std::map<std::size_t, std::uint64_t> lookupSeq_;
+
+   // Serializes committing a decoded frame against deactivating its
+   // product -- see CommitDecodedFrame(). Always taken before fetchMutex_,
+   // never while holding it.
+   std::mutex commitMutex_;
 
    // Background download pool (2: enough to overlap a couple of prefetch
    // downloads without hammering S3/local bandwidth much harder than a
@@ -1429,6 +1891,10 @@ void GribManager::SetProductActive(const std::string& displayName, bool active)
 
          p->activeProducts_.erase(i);
          p->providers_.erase(i);
+
+         // Same lock CommitDecodedFrame() holds across its check and rename
+         // -- see there. Held through the frame file's removal below.
+         std::lock_guard commitLock(p->commitMutex_);
          {
             std::lock_guard lock(p->fetchMutex_);
             p->activeSnapshot_.erase(i);
@@ -1512,7 +1978,7 @@ std::vector<std::string> GribManager::ActiveProductNames() const
 void GribManager::SyncRrfsProviderState(
    provider::AwsNexradDataProvider& provider) const
 {
-   auto& rrfsProvider = static_cast<provider::RrfsDataProvider&>(provider);
+   auto& rrfsProvider = ProviderAs<provider::RrfsDataProvider>(provider);
 
    if (p->rrfsUseLatestCycle_)
    {
@@ -1540,7 +2006,7 @@ void GribManager::FetchRrfsSelection()
    }
 
    auto& rrfsProvider =
-      static_cast<provider::RrfsDataProvider&>(*p->providers_.at(*index));
+      ProviderAs<provider::RrfsDataProvider>(*p->providers_.at(*index));
 
    const auto time =
       rrfsProvider.CurrentCycle() + hours {rrfsProvider.ForecastHour()};
@@ -1605,7 +2071,7 @@ std::chrono::system_clock::time_point GribManager::CurrentRrfsCycle() const
       return {};
    }
 
-   return static_cast<provider::RrfsDataProvider&>(*p->providers_.at(*index))
+   return ProviderAs<provider::RrfsDataProvider>(*p->providers_.at(*index))
       .CurrentCycle();
 }
 
@@ -1677,6 +2143,30 @@ void GribManager::PrefetchRrfsForecastHourRange()
       return;
    }
 
+   const int maxHour   = MaxRrfsForecastHour();
+   const int startHour = std::clamp(p->rrfsLoopStartHour_, 0, maxHour);
+   const int endHour   = (p->rrfsLoopEndHour_ < 0) ?
+                            maxHour :
+                            std::clamp(p->rrfsLoopEndHour_, startHour, maxHour);
+
+   std::set<int> hours;
+   for (int hour = startHour; hour <= endHour; ++hour)
+   {
+      hours.insert(hour);
+   }
+   PrefetchRrfsForecastHours(hours);
+}
+
+void GribManager::PrefetchRrfsForecastHours(const std::set<int>& hours)
+{
+   if (p->category_ != map::GribCategory::Rrfs)
+   {
+      logger_->warn(
+         "PrefetchRrfsForecastHours() is only meaningful for "
+         "GribCategory::Rrfs");
+      return;
+   }
+
    // Nothing to prefetch with no product active (e.g. Play pressed the
    // instant a category is enabled, before any product is checked).
    if (p->activeProducts_.empty())
@@ -1688,21 +2178,12 @@ void GribManager::PrefetchRrfsForecastHourRange()
    const int  maxHour =
       provider::RrfsDataProvider::MaxForecastHourForCycle(cycle);
 
-   const int startHour = std::clamp(p->rrfsLoopStartHour_, 0, maxHour);
-   const int endHour   = (p->rrfsLoopEndHour_ < 0) ?
-                            maxHour :
-                            std::clamp(p->rrfsLoopEndHour_, startHour, maxHour);
-
-   logger_->debug("Prefetching {} RRFS forecast hour(s) for cycle {} ({}-{}h)",
-                  endHour - startHour + 1,
-                  scwx::util::TimeString(cycle),
-                  startHour,
-                  endHour);
-
    // Every checked product, since they're all drawn during playback.
    // Products in the same file family share each hour's file, which
-   // QueueDownload() downloads once for all of them. SHIP is skipped: its
-   // two inputs go through its own dispatch (see FetchShipSelection()).
+   // QueueDownload() downloads once for all of them; hours already in the
+   // download cache are skipped. SHIP is skipped: its two inputs go through
+   // its own dispatch (see FetchShipSelection()).
+   int queued = 0;
    for (const std::size_t index : p->activeProducts_)
    {
       const ProductConfig& product = Products(p->category_)[index];
@@ -1712,14 +2193,60 @@ void GribManager::PrefetchRrfsForecastHourRange()
       }
 
       const auto productProvider = p->providers_.at(index);
-      for (int hour = startHour; hour <= endHour; ++hour)
+      for (const int hour : hours)
       {
-         QueueDownload(index,
-                       provider::RrfsDataProvider::BuildKey(
-                          cycle, hour, product.rrfsFileFamily),
-                       productProvider);
+         if (hour < 0 || hour > maxHour)
+         {
+            continue;
+         }
+
+         const std::string key = provider::RrfsDataProvider::BuildKey(
+            cycle, hour, product.rrfsFileFamily);
+         // Already cached: nothing to download, and marked in use so cache
+         // eviction leaves it alone while the loop plays.
+         if (UseCachedDownload(CachedDownloadPath(key)))
+         {
+            continue;
+         }
+
+         QueueDownload(index, key, productProvider);
+         ++queued;
       }
    }
+
+   logger_->debug(
+      "Prefetching {} download(s) for {} picked RRFS hour(s) of "
+      "cycle {}",
+      queued,
+      hours.size(),
+      scwx::util::TimeString(cycle));
+}
+
+std::set<int> GribManager::CachedRrfsForecastHours() const
+{
+   std::set<int> cached;
+
+   const auto index = CurrentProductIndex();
+   if (p->category_ != map::GribCategory::Rrfs || !index)
+   {
+      return cached;
+   }
+
+   const auto cycle   = CurrentRrfsCycle();
+   const auto family  = Products(p->category_)[*index].rrfsFileFamily;
+   const int  maxHour =
+      provider::RrfsDataProvider::MaxForecastHourForCycle(cycle);
+
+   for (int hour = 0; hour <= maxHour; ++hour)
+   {
+      if (std::filesystem::exists(CachedDownloadPath(
+             provider::RrfsDataProvider::BuildKey(cycle, hour, family))))
+      {
+         cached.insert(hour);
+      }
+   }
+
+   return cached;
 }
 
 void GribManager::Poll()
@@ -1956,7 +2483,7 @@ bool GribManager::FetchArchiveFrameForProduct(
       // which file this selection wants needs no network call at all
       // (only downloading it does, and RequestFrame()/QueueDownload()
       // already handle a file that turns out not to exist gracefully).
-      auto& rrfsProvider = static_cast<provider::RrfsDataProvider&>(*provider);
+      auto& rrfsProvider = ProviderAs<provider::RrfsDataProvider>(*provider);
       const auto family  = Products(p->category_)[productIndex].rrfsFileFamily;
       key                = provider::RrfsDataProvider::BuildKey(
          rrfsProvider.CurrentCycle(), rrfsProvider.ForecastHour(), family);
@@ -2129,7 +2656,7 @@ void GribManager::QueueLookup(
 void GribManager::FetchShipSelection(std::size_t productIndex)
 {
    auto& rrfsProvider =
-      static_cast<provider::RrfsDataProvider&>(*p->providers_.at(productIndex));
+      ProviderAs<provider::RrfsDataProvider>(*p->providers_.at(productIndex));
 
    const auto key2dfld =
       provider::RrfsDataProvider::BuildKey(rrfsProvider.CurrentCycle(),
@@ -2181,7 +2708,7 @@ void GribManager::ApplyShipIfReady(
    std::size_t                                             productIndex,
    const std::shared_ptr<provider::AwsNexradDataProvider>& provider)
 {
-   auto& rrfsProvider = static_cast<provider::RrfsDataProvider&>(*provider);
+   auto& rrfsProvider = ProviderAs<provider::RrfsDataProvider>(*provider);
 
    const auto key2dfld =
       provider::RrfsDataProvider::BuildKey(rrfsProvider.CurrentCycle(),
@@ -2260,7 +2787,7 @@ void GribManager::QueueShipInput(std::size_t        productIndex,
          };
 
          auto& rrfsProvider =
-            static_cast<provider::RrfsDataProvider&>(*provider);
+            ProviderAs<provider::RrfsDataProvider>(*provider);
          auto downloaded =
             rrfsProvider.DownloadRaw(key, cachedPath, progressCallback);
          statusManager->ReportComplete(statusId);
@@ -2294,7 +2821,10 @@ bool GribManager::ApplyShipDownload(std::size_t        productIndex,
    const ProductConfig& product = Products(p->category_)[productIndex];
    const std::string    framePath =
       map::GetGribFramePath(p->category_, productIndex);
-   const std::string tmpFramePath = UniqueTmpFramePath(framePath);
+   const std::string        tmpFramePath = UniqueTmpFramePath(framePath);
+   const ScopedDecodeStatus decodeStatus(
+      fmt::format("grib-{}-{}", static_cast<int>(p->category_), productIndex),
+      product.displayName);
 
    QStringList decodeArgs;
    decodeArgs << "--derived" << "ship"
@@ -2339,7 +2869,7 @@ bool GribManager::ApplyShipDownload(std::size_t        productIndex,
 void GribManager::SyncNbmProviderState(
    provider::AwsNexradDataProvider& provider) const
 {
-   auto& nbmProvider = static_cast<provider::NbmDataProvider&>(provider);
+   auto& nbmProvider = ProviderAs<provider::NbmDataProvider>(provider);
 
    if (p->nbmUseLatestCycle_)
    {
@@ -2365,7 +2895,7 @@ void GribManager::FetchNbmSelection()
    }
 
    auto& nbmProvider =
-      static_cast<provider::NbmDataProvider&>(*p->providers_.at(*index));
+      ProviderAs<provider::NbmDataProvider>(*p->providers_.at(*index));
 
    // FetchArchiveFrameForProduct()'s own Nbm branch ignores this `time`
    // argument entirely, resolving each product's key from its own
@@ -2389,7 +2919,7 @@ void GribManager::FetchNbmSelection()
 void GribManager::FetchNbmSelectionForProduct(std::size_t productIndex)
 {
    auto& nbmProvider =
-      static_cast<provider::NbmDataProvider&>(*p->providers_.at(productIndex));
+      ProviderAs<provider::NbmDataProvider>(*p->providers_.at(productIndex));
 
    const std::string key = provider::NbmDataProvider::BuildKey(
       nbmProvider.CurrentCycle(), nbmProvider.ForecastHour());
@@ -2464,7 +2994,7 @@ void GribManager::QueueNbmDownload(std::size_t        productIndex,
          };
 
          auto downloaded =
-            static_cast<provider::NbmDataProvider&>(*provider).FetchField(
+            ProviderAs<provider::NbmDataProvider>(*provider).FetchField(
                key,
                product.nbmParameter,
                product.nbmLevel,
@@ -2573,7 +3103,7 @@ std::chrono::system_clock::time_point GribManager::CurrentNbmCycle() const
       return {};
    }
 
-   return static_cast<provider::NbmDataProvider&>(*p->providers_.at(*index))
+   return ProviderAs<provider::NbmDataProvider>(*p->providers_.at(*index))
       .CurrentCycle();
 }
 
@@ -2741,18 +3271,18 @@ void GribManager::QueueDownload(
          {
          case map::GribCategory::Mrms:
             downloaded =
-               static_cast<provider::MrmsDataProvider&>(*provider)
+               ProviderAs<provider::MrmsDataProvider>(*provider)
                   .DownloadAndDecompress(key, cachedPath, progressCallback);
             break;
          case map::GribCategory::Rrfs:
             downloaded =
-               static_cast<provider::RrfsDataProvider&>(*provider).DownloadRaw(
+               ProviderAs<provider::RrfsDataProvider>(*provider).DownloadRaw(
                   key, cachedPath, progressCallback);
             break;
          case map::GribCategory::Rtma:
          default:
             downloaded =
-               static_cast<provider::RtmaDataProvider&>(*provider).DownloadRaw(
+               ProviderAs<provider::RtmaDataProvider>(*provider).DownloadRaw(
                   key, cachedPath, progressCallback);
             break;
          }
@@ -2779,6 +3309,13 @@ void GribManager::QueueDownload(
 
          NoteCachedDownload(cachedPath);
 
+         // Lets the RRFS hour buttons flip to their downloaded look,
+         // whether or not this hour is the one on screen.
+         if (p->category_ == map::GribCategory::Rrfs)
+         {
+            Q_EMIT RrfsCacheChanged();
+         }
+
          // Decode it for each of them -- QueueCachedDecode() skips any whose
          // request has since moved on (playback/scrubbing, or the product
          // was unchecked), which would otherwise show a stale frame. The
@@ -2804,6 +3341,9 @@ bool GribManager::ApplyCachedDownload(std::size_t        productIndex,
                                       long               startStep,
                                       long               lengthOfTimeRange)
 {
+   const ScopedDecodeStatus decodeStatus(
+      fmt::format("grib-{}-{}", static_cast<int>(p->category_), productIndex),
+      Products(p->category_)[productIndex].displayName);
    const std::string cachedPath = CachedDownloadPath(key);
    const std::string framePath =
       map::GetGribFramePath(p->category_, productIndex);
@@ -2905,30 +3445,33 @@ bool GribManager::CommitDecodedFrame(std::size_t        productIndex,
                                      const std::string& tmpFramePath,
                                      const std::string& framePath)
 {
-   std::error_code ec;
-   bool            wanted = false;
+   // Held across the check *and* the rename, so this can't interleave with
+   // SetProductActive() deactivating the product (it takes this same lock
+   // to clear activeSnapshot_/lastRequestedKeys_ and delete the frame
+   // file) or with another commit for the same product: a decode that
+   // outlived its product is dropped rather than resurrecting a frame for a
+   // product that's no longer shown, and an older decode finishing late
+   // can't replace a newer frame. Its own lock, not fetchMutex_, since the
+   // rename can retry for a couple of seconds on Windows (see
+   // util::ReplaceFileWithRetry()) and fetchMutex_ is taken on the GUI
+   // thread for every request.
+   std::lock_guard commitLock(p->commitMutex_);
+
+   bool wanted = false;
    {
-      // Checked and applied under one lock, so this can't interleave with
-      // SetProductActive() deactivating the product (it clears
-      // activeSnapshot_/lastRequestedKeys_ under this same lock, then
-      // deletes the frame file) or with a newer request: a decode that
-      // outlived either is dropped rather than resurrecting a frame for a
-      // product that's no longer shown, or replacing a newer frame with
-      // an older one that happened to finish decoding later.
       std::lock_guard lock(p->fetchMutex_);
       const auto      requested = p->lastRequestedKeys_.find(productIndex);
       wanted                    = p->activeSnapshot_.contains(productIndex) &&
                requested != p->lastRequestedKeys_.cend() &&
                requested->second == key;
+   }
 
-      if (wanted)
-      {
-         std::filesystem::rename(tmpFramePath, framePath, ec);
-         if (!ec)
-         {
-            p->lastKeys_[productIndex] = key;
-         }
-      }
+   std::error_code ec;
+   if (wanted)
+   {
+      // Retries while Windows refuses to replace a frame a reader has open
+      // (the map layer, the dock, or the PNG export reading it).
+      util::ReplaceFileWithRetry(tmpFramePath, framePath, ec);
    }
 
    if (!wanted || ec)
@@ -2942,6 +3485,10 @@ bool GribManager::CommitDecodedFrame(std::size_t        productIndex,
       return false;
    }
 
+   {
+      std::lock_guard lock(p->fetchMutex_);
+      p->lastKeys_[productIndex] = key;
+   }
    return true;
 }
 

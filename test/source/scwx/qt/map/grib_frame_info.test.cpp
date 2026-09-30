@@ -25,40 +25,14 @@ const LambertGrid kRtmaGrid {-95.0,
 constexpr long    kRtmaNx = 2345;
 constexpr long    kRtmaNy = 1597;
 
+// What a 1920x1080 view centered on Oklahoma City at zoom 9 shows.
+const LatLonBox kOklahomaCityView {34.229, -99.033, 36.692, -96.007};
+
 } // namespace
-
-TEST(GribFrameInfo, ViewportLatLonBoxCentersOnView)
-{
-   const LatLonBox box = ViewportLatLonBox(35.47, -97.52, 9.0, 1920, 1080, 1.0);
-
-   EXPECT_LT(box.south, 35.47);
-   EXPECT_GT(box.north, 35.47);
-   EXPECT_LT(box.west, -97.52);
-   EXPECT_GT(box.east, -97.52);
-
-   // Longitude is linear in Web Mercator, so the box is symmetric in it.
-   EXPECT_NEAR(-97.52 - box.west, box.east - -97.52, 1e-9);
-
-   // A padded box contains the unpadded one.
-   EXPECT_TRUE(
-      ViewportLatLonBox(35.47, -97.52, 9.0, 1920, 1080, 2.0).Contains(box));
-   EXPECT_FALSE(
-      box.Contains(ViewportLatLonBox(35.47, -97.52, 9.0, 1920, 1080, 2.0)));
-}
-
-TEST(GribFrameInfo, ViewportLatLonBoxClampsToWorld)
-{
-   const LatLonBox box = ViewportLatLonBox(0.0, 0.0, 0.0, 4096, 4096, 1.0);
-
-   EXPECT_GE(box.west, -180.0);
-   EXPECT_LE(box.east, 180.0);
-   EXPECT_GE(box.south, -85.06);
-   EXPECT_LE(box.north, 85.06);
-}
 
 TEST(GribFrameInfo, LambertGridIndexBoxCoversViewport)
 {
-   const LatLonBox box = ViewportLatLonBox(35.47, -97.52, 9.0, 1920, 1080, 1.0);
+   const LatLonBox    box = kOklahomaCityView;
    const GridIndexBox window =
       LambertGridIndexBox(kRtmaGrid, kRtmaNx, kRtmaNy, box);
 
@@ -97,7 +71,7 @@ TEST(GribFrameInfo, LambertGridIndexBoxAcceptsZeroTo360Longitudes)
    grid.lov += 360.0;
    grid.lon1 += 360.0;
 
-   const LatLonBox box = ViewportLatLonBox(35.47, -97.52, 9.0, 1920, 1080, 1.0);
+   const LatLonBox    box = kOklahomaCityView;
    const GridIndexBox normalized =
       LambertGridIndexBox(kRtmaGrid, kRtmaNx, kRtmaNy, box);
    const GridIndexBox shifted =
@@ -111,12 +85,9 @@ TEST(GribFrameInfo, LambertGridIndexBoxAcceptsZeroTo360Longitudes)
 
 TEST(GribFrameInfo, LambertGridIndexBoxWholeAndEmpty)
 {
-   // A continental view spans the whole grid.
-   const GridIndexBox whole =
-      LambertGridIndexBox(kRtmaGrid,
-                          kRtmaNx,
-                          kRtmaNy,
-                          ViewportLatLonBox(39.0, -97.0, 3.0, 1920, 1080, 1.0));
+   // A continental (wider than 90 degrees) view spans the whole grid.
+   const GridIndexBox whole = LambertGridIndexBox(
+      kRtmaGrid, kRtmaNx, kRtmaNy, LatLonBox {10.0, -150.0, 65.0, -45.0});
    EXPECT_EQ(whole.iMin, 0);
    EXPECT_EQ(whole.iMax, kRtmaNx - 1);
    EXPECT_EQ(whole.jMin, 0);
@@ -124,10 +95,8 @@ TEST(GribFrameInfo, LambertGridIndexBoxWholeAndEmpty)
 
    // A view nowhere near CONUS misses it.
    EXPECT_TRUE(
-      LambertGridIndexBox(kRtmaGrid,
-                          kRtmaNx,
-                          kRtmaNy,
-                          ViewportLatLonBox(51.5, 0.0, 9.0, 1920, 1080, 1.0))
+      LambertGridIndexBox(
+         kRtmaGrid, kRtmaNx, kRtmaNy, LatLonBox {50.5, -1.5, 52.5, 1.5})
          .IsEmpty());
 }
 

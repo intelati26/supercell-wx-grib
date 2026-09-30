@@ -1,5 +1,6 @@
 #include <scwx/qt/map/wind_barb_layer.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
+#include <scwx/qt/map/viewport_bounds.hpp>
 #include <scwx/qt/gl/draw/geo_icons.hpp>
 #include <scwx/qt/manager/wind_barb_manager.hpp>
 #include <scwx/qt/settings/wind_barb_settings.hpp>
@@ -7,9 +8,11 @@
 #include <scwx/util/logger.hpp>
 
 #include <cmath>
+#include <limits>
 #include <cstdint>
 #include <fstream>
-#include <limits>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <vector>
@@ -38,11 +41,6 @@ static constexpr int kWindBarbSheetCount_ = 21;
 // icons.
 static constexpr std::int32_t kBarbHotX_ = 32;
 static constexpr std::int32_t kBarbHotY_ = 56;
-
-// How far past the viewport barbs are built, as a multiple of the
-// viewport's own extent (see ViewportLatLonBox) -- enough slack that
-// ordinary panning doesn't trigger a rebuild every frame.
-static constexpr double kBuildBoxScale_ = 2.0;
 
 namespace
 {
@@ -168,6 +166,21 @@ std::optional<ParsedFrame> ParseFrame(const std::string& path)
    }
 }
 
+// The three parsed RTMA frames, shared by every map pane's WindBarbLayer.
+// Each pane used to parse its own copy (~7.5MB per grid at 16 bits, see
+// EncodeValue()); a weak_ptr keeps them alive only while some pane still
+// needs them.
+struct BarbFrames
+{
+   std::uint64_t generation {};
+   ParsedFrame   dir;
+   ParsedFrame   speed;
+   ParsedFrame   gust;
+};
+
+std::mutex                       sharedFramesMutex_;
+std::weak_ptr<const BarbFrames>  sharedFrames_;
+
 // Picks which grid points get a barb: every `stride`-th row and column
 // within `window`. RTMA's full 2.5km CONUS grid (~2345 x 1597) is far too
 // dense to plot one icon per point, so the caller picks `stride` based on
@@ -206,6 +219,10 @@ std::vector<std::pair<long, long>> SelectBarbPoints(const GridIndexBox& window,
 // Decimation stride and icon scale for one zoom band -- paired together
 // since denser points and larger icons both need more screen room, and
 // sparser/smaller need less (see TierForZoom).
+// How much larger than the visible view the built area is. 2.0 lets the view
+// pan by roughly half its own size before geometry is rebuilt.
+constexpr double kBuildMargin_ = 2.0;
+
 struct ZoomTier
 {
    long  stride;
@@ -274,7 +291,7 @@ public:
 
    void SetIconSheets();
    void ReloadBarbs();
-   void RebuildIcons(ZoomTier tier);
+   void RebuildIcons(ZoomTier tier, const GeoBounds& bounds);
 
    WindBarbLayer* self_;
 
@@ -287,9 +304,7 @@ public:
    // (also called from Render() on a zoom-tier change) -- keeps a zoom
    // change from re-reading/re-parsing the frame files off disk, only the
    // already-decoded values need to change on that path.
-   std::optional<ParsedFrame> dirFrame_;
-   std::optional<ParsedFrame> speedFrame_;
-   std::optional<ParsedFrame> gustFrame_;
+   std::shared_ptr<const BarbFrames> frames_;
 
    // Tier actually built into geoIcons_ right now (post density/icon-scale
    // multiplier -- see Render()); Render() only calls RebuildIcons() when
@@ -299,13 +314,10 @@ public:
    // tier, guaranteeing the first Render() call rebuilds.
    ZoomTier lastTier_ {0, 0.0f};
 
-   // Area geoIcons_ was last built for -- a padded box around the viewport
-   // (see Render()), not the whole grid: at the closest zoom tier the full
-   // CONUS grid is several hundred thousand barbs (each with its own hover
-   // string and GPU vertices), nearly all of them off screen. Render()
-   // rebuilds once the viewport leaves this box. Unset until the first
-   // Render(), which leaves RebuildIcons() building nothing before then.
-   std::optional<LatLonBox> builtBox_;
+   // The area geoIcons_ was last built for (see VisibleBounds()); Render()
+   // rebuilds when the view pans/zooms out of it. Unlimited until the first
+   // real build.
+   GeoBounds builtBounds_ {};
 };
 
 void WindBarbLayer::Impl::SetIconSheets()
@@ -330,43 +342,76 @@ void WindBarbLayer::Impl::SetIconSheets()
 
 void WindBarbLayer::Impl::ReloadBarbs()
 {
-   auto dirFrame =
-      ParseFrame(manager::WindBarbManager::GetWindDirectionFramePath());
-   auto speedFrame =
-      ParseFrame(manager::WindBarbManager::GetWindSpeedFramePath());
-   auto gustFrame =
-      ParseFrame(manager::WindBarbManager::GetWindGustFramePath());
-
-   if (!dirFrame || !speedFrame || !gustFrame ||
-       dirFrame->grid_nx != speedFrame->grid_nx ||
-       dirFrame->grid_ny != speedFrame->grid_ny ||
-       dirFrame->grid_nx != gustFrame->grid_nx ||
-       dirFrame->grid_ny != gustFrame->grid_ny)
+   const auto generation = windBarbManager_->DataGeneration();
+   if (frames_ && frames_->generation == generation)
    {
-      logger_->warn("Could not load wind barb frames");
+      RebuildIcons(lastTier_, builtBounds_);
       return;
+   }
+
+   // Drop our own reference first so the old grids are freed before the new
+   // ones are parsed, not after.
+   frames_.reset();
+
+   {
+      // Held across the parse on purpose: a second pane arriving for the
+      // same generation waits here and then reuses the result.
+      std::lock_guard lock(sharedFramesMutex_);
+
+      if (auto shared = sharedFrames_.lock();
+          shared && shared->generation == generation)
+      {
+         frames_ = std::move(shared);
+      }
+      else
+      {
+         auto dirFrame =
+            ParseFrame(manager::WindBarbManager::GetWindDirectionFramePath());
+         auto speedFrame =
+            ParseFrame(manager::WindBarbManager::GetWindSpeedFramePath());
+         auto gustFrame =
+            ParseFrame(manager::WindBarbManager::GetWindGustFramePath());
+
+         if (!dirFrame || !speedFrame || !gustFrame ||
+             dirFrame->grid_nx != speedFrame->grid_nx ||
+             dirFrame->grid_ny != speedFrame->grid_ny ||
+             dirFrame->grid_nx != gustFrame->grid_nx ||
+             dirFrame->grid_ny != gustFrame->grid_ny)
+         {
+            logger_->warn("Could not load wind barb frames");
+            return;
+         }
+
+         auto fresh        = std::make_shared<BarbFrames>();
+         fresh->generation = generation;
+         fresh->dir        = std::move(*dirFrame);
+         fresh->speed      = std::move(*speedFrame);
+         fresh->gust       = std::move(*gustFrame);
+
+         sharedFrames_ = fresh;
+         frames_       = std::move(fresh);
+      }
    }
 
    logger_->debug("ReloadBarbs()");
 
-   dirFrame_   = std::move(dirFrame);
-   speedFrame_ = std::move(speedFrame);
-   gustFrame_  = std::move(gustFrame);
-
-   RebuildIcons(lastTier_);
+   RebuildIcons(lastTier_, builtBounds_);
 }
 
-void WindBarbLayer::Impl::RebuildIcons(ZoomTier tier)
+void WindBarbLayer::Impl::RebuildIcons(ZoomTier tier, const GeoBounds& bounds)
 {
-   if (!dirFrame_ || !speedFrame_ || !gustFrame_)
+   if (!frames_)
    {
       return;
    }
 
-   logger_->debug(
-      "RebuildIcons(stride={}, iconScale={})", tier.stride, tier.iconScale);
+   logger_->debug("RebuildIcons(stride={}, iconScale={}, culled={})",
+                  tier.stride,
+                  tier.iconScale,
+                  bounds.limited);
 
-   lastTier_ = tier;
+   lastTier_    = tier;
+   builtBounds_ = bounds;
 
    // Read once per rebuild, not per point -- SettingsVariable access
    // isn't free, and this doesn't change mid-loop.
@@ -375,31 +420,47 @@ void WindBarbLayer::Impl::RebuildIcons(ZoomTier tier)
 
    geoIcons_->StartIcons();
 
-   const GridIndexBox window = builtBox_.has_value() ?
-                                  LambertGridIndexBox(dirFrame_->grid,
-                                                      dirFrame_->grid_nx,
-                                                      dirFrame_->grid_ny,
-                                                      *builtBox_) :
-                                  GridIndexBox {};
+   // Only build what's on screen (plus margin) -- this grid covers all of
+   // CONUS at every zoom, and every barb costs GeoIcons buffer space. The
+   // grid-index window bounding `bounds` limits which points are visited at
+   // all (rather than projecting every point of the grid to test it); the
+   // per-point Contains() below then trims the window's corners, since a
+   // lat/lon rectangle isn't a rectangle in grid indices.
+   const GridIndexBox window =
+      bounds.limited ?
+         LambertGridIndexBox(
+            frames_->dir.grid,
+            frames_->dir.grid_nx,
+            frames_->dir.grid_ny,
+            LatLonBox {bounds.south, bounds.west, bounds.north, bounds.east}) :
+         GridIndexBox {
+            0, frames_->dir.grid_nx - 1, 0, frames_->dir.grid_ny - 1};
 
    for (const auto& [i, j] : SelectBarbPoints(window, tier.stride))
    {
+      const glm::dvec2 latLon = LambertGridToLatLon(
+         frames_->dir.grid, static_cast<double>(i), static_cast<double>(j));
+      if (!bounds.Contains(latLon.x, latLon.y))
+      {
+         continue;
+      }
+
       const auto index = static_cast<std::size_t>(j) *
-                            static_cast<std::size_t>(dirFrame_->grid_nx) +
+                            static_cast<std::size_t>(frames_->dir.grid_nx) +
                          static_cast<std::size_t>(i);
-      if (index >= dirFrame_->values.size() ||
-          index >= speedFrame_->values.size() ||
-          index >= gustFrame_->values.size())
+      if (index >= frames_->dir.values.size() ||
+          index >= frames_->speed.values.size() ||
+          index >= frames_->gust.values.size())
       {
          continue;
       }
 
       const std::optional<float> direction =
-         DecodeValue(dirFrame_->values[index]);
+         DecodeValue(frames_->dir.values[index]);
       const std::optional<float> speedMs =
-         DecodeValue(speedFrame_->values[index]);
+         DecodeValue(frames_->speed.values[index]);
       const std::optional<float> gustMs =
-         DecodeValue(gustFrame_->values[index]);
+         DecodeValue(frames_->gust.values[index]);
       if (!direction.has_value() || !speedMs.has_value())
       {
          continue;
@@ -409,9 +470,6 @@ void WindBarbLayer::Impl::RebuildIcons(ZoomTier tier)
       const double speedKnots   = *speedMs * kMetersPerSecondToKnots_;
       const double gustKnots =
          gustMs.has_value() ? *gustMs * kMetersPerSecondToKnots_ : 0.0;
-
-      const glm::dvec2 latLon = LambertGridToLatLon(
-         dirFrame_->grid, static_cast<double>(i), static_cast<double>(j));
 
       // Negated: GeoIcons' shared shader rotates opposite to standard
       // compass/meteorological convention (0=N, clockwise) -- confirmed
@@ -463,11 +521,11 @@ void WindBarbLayer::Impl::RebuildIcons(ZoomTier tier)
                         speedKnots,
                         directionDeg,
                         gustKnots,
-                        dirFrame_->validTime) :
+                        frames_->dir.validTime) :
             fmt::format("{:.0f} kt @ {:03.0f}°\nValid: {}",
                         speedKnots,
                         directionDeg,
-                        dirFrame_->validTime));
+                        frames_->dir.validTime));
    }
 
    geoIcons_->FinishIcons();
@@ -513,23 +571,13 @@ void WindBarbLayer::Render(const std::shared_ptr<MapContext>& mapContext,
          1, static_cast<long>(std::floor(baseTier.stride / densityScale))),
       baseTier.iconScale * static_cast<float>(iconScaleFactor)};
 
-   const LatLonBox visibleBox = ViewportLatLonBox(params.latitude,
-                                                  params.longitude,
-                                                  params.zoom,
-                                                  params.width,
-                                                  params.height,
-                                                  1.0);
-
-   if (tier != p->lastTier_ || !p->builtBox_.has_value() ||
-       !p->builtBox_->Contains(visibleBox))
+   // Rebuilt for a new tier, or once the view has panned/zoomed out of the
+   // area last built (which is larger than the view -- see kBuildMargin_ --
+   // so ordinary panning doesn't rebuild every frame).
+   if (tier != p->lastTier_ ||
+       !p->builtBounds_.ContainsBounds(VisibleBounds(params, 1.0)))
    {
-      p->builtBox_ = ViewportLatLonBox(params.latitude,
-                                       params.longitude,
-                                       params.zoom,
-                                       params.width,
-                                       params.height,
-                                       kBuildBoxScale_);
-      p->RebuildIcons(tier);
+      p->RebuildIcons(tier, VisibleBounds(params, kBuildMargin_));
    }
 
    DrawLayer::Render(mapContext, params);

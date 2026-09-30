@@ -52,7 +52,8 @@ set(SRC_QT_MANAGER_TESTS source/scwx/qt/manager/grib_manager.test.cpp
 set(SRC_QT_MAP_TESTS source/scwx/qt/map/grib_frame_info.test.cpp
                      source/scwx/qt/map/map_annotation_layer.test.cpp
                      source/scwx/qt/map/map_annotation_model.test.cpp
-                     source/scwx/qt/map/map_provider.test.cpp)
+                     source/scwx/qt/map/map_provider.test.cpp
+                     source/scwx/qt/map/viewport_bounds.test.cpp)
 set(SRC_QT_MODEL_TESTS source/scwx/qt/model/imgui_context_model.test.cpp
                        source/scwx/qt/model/layer_model.test.cpp
                        source/scwx/qt/model/marker_model.test.cpp)
@@ -62,8 +63,10 @@ set(SRC_QT_SETTINGS_TESTS source/scwx/qt/settings/settings_container.test.cpp
                           source/scwx/qt/settings/settings_variable.test.cpp
                           source/scwx/qt/settings/ui_settings.test.cpp
                           source/scwx/qt/settings/unit_settings.test.cpp)
-set(SRC_QT_UTIL_TESTS source/scwx/qt/util/q_file_input_stream.test.cpp
+set(SRC_QT_UTIL_TESTS source/scwx/qt/util/file.test.cpp
+                      source/scwx/qt/util/q_file_input_stream.test.cpp
                       source/scwx/qt/util/geographic_lib.test.cpp
+                      source/scwx/qt/util/line_simplification.test.cpp
                       source/scwx/qt/util/network.test.cpp)
 set(SRC_TYPES_TESTS source/scwx/types/ondas_types.test.cpp)
 set(SRC_UTIL_TESTS source/scwx/util/float.test.cpp

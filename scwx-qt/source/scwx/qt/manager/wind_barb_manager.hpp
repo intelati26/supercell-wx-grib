@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -38,6 +39,12 @@ public:
    [[nodiscard]] static std::string GetWindDirectionFramePath();
    [[nodiscard]] static std::string GetWindSpeedFramePath();
    [[nodiscard]] static std::string GetWindGustFramePath();
+
+   // Bumped once per successful decode of a new RTMA file, just before
+   // WindDataReady() fires. WindBarbLayer keys its shared parsed-frame cache
+   // on this so every map pane reuses one parsed copy of the three frame
+   // files instead of each parsing its own.
+   [[nodiscard]] std::uint64_t DataGeneration() const;
 
 signals:
    // Emitted once all three frame files have been refreshed for a new

@@ -273,54 +273,6 @@ bool FitsHalfFloatTexture(const float* values,
    return maxRoundingError <= std::abs(colorScale) / 512.0f;
 }
 
-bool LatLonBox::Contains(const LatLonBox& other) const
-{
-   return other.south >= south && other.north <= north && other.west >= west &&
-          other.east <= east;
-}
-
-LatLonBox ViewportLatLonBox(double centerLat,
-                            double centerLon,
-                            double zoom,
-                            double widthPx,
-                            double heightPx,
-                            double scale)
-{
-   // Same constants MapLibre uses (mbgl::util::tileSize_D/LATITUDE_MAX),
-   // restated here so this stays free of MapLibre/Qt headers.
-   static constexpr double kTileSize    = 512.0;
-   static constexpr double kLatitudeMax = 85.051128779806604;
-
-   // Web Mercator x/y in "degrees" (x = longitude; y = the Mercator
-   // ordinate scaled to the same units), so one pixel is the same size in
-   // both at a given zoom.
-   auto toMercatorY = [](double latDeg)
-   {
-      const double phi =
-         glm::radians(std::clamp(latDeg, -kLatitudeMax, kLatitudeMax));
-      return glm::degrees(
-         std::log(std::tan(glm::quarter_pi<double>() + phi / 2.0)));
-   };
-   auto fromMercatorY = [](double y)
-   {
-      return glm::degrees(2.0 * std::atan(std::exp(glm::radians(y))) -
-                          glm::half_pi<double>());
-   };
-
-   const double pixelsPerDegree = std::pow(2.0, zoom) * kTileSize / 360.0;
-   const double halfExtent =
-      std::hypot(widthPx, heightPx) / 2.0 / pixelsPerDegree * scale;
-
-   const double centerY = toMercatorY(centerLat);
-
-   LatLonBox box;
-   box.south = std::max(fromMercatorY(centerY - halfExtent), -kLatitudeMax);
-   box.north = std::min(fromMercatorY(centerY + halfExtent), kLatitudeMax);
-   box.west  = std::max(centerLon - halfExtent, -180.0);
-   box.east  = std::min(centerLon + halfExtent, 180.0);
-   return box;
-}
-
 GridIndexBox LambertGridIndexBox(const LambertGrid& grid,
                                  long               nx,
                                  long               ny,

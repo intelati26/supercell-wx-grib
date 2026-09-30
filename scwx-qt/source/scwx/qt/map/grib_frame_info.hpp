@@ -180,23 +180,7 @@ struct LatLonBox
    double west {};
    double north {};
    double east {};
-
-   [[nodiscard]] bool Contains(const LatLonBox& other) const;
 };
-
-// The part of the map a view can show, as a lat/lon box: centered on
-// (centerLat, centerLon) at MapLibre zoom `zoom` (Web Mercator, 512px
-// tiles), covering a circle of radius hypot(width, height) / 2 pixels so
-// the result holds at any bearing, then multiplied by `scale` (> 1 pads the
-// box beyond what's on screen). Longitudes are clamped to [-180, 180] and
-// latitudes to Web Mercator's own limit. Pitch is ignored, as it is by the
-// GRIB layers' own rendering.
-LatLonBox ViewportLatLonBox(double centerLat,
-                            double centerLon,
-                            double zoom,
-                            double widthPx,
-                            double heightPx,
-                            double scale);
 
 // Whether a frame's values can be stored in a 16-bit float GPU texture
 // (GL_R16F) instead of 32-bit without visibly changing what's drawn --

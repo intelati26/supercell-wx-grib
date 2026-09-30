@@ -1,11 +1,16 @@
 #include <scwx/qt/gl/draw/placefile_lines.hpp>
+#include <scwx/qt/map/viewport_bounds.hpp>
+#include <scwx/qt/util/line_simplification.hpp>
 #include <scwx/qt/util/geographic_lib.hpp>
 #include <scwx/qt/util/maplibre.hpp>
 #include <scwx/qt/util/tooltip.hpp>
 #include <scwx/util/logger.hpp>
 #include <scwx/util/time.hpp>
 
+#include <algorithm>
+#include <atomic>
 #include <execution>
+#include <mutex>
 
 namespace scwx
 {
@@ -27,6 +32,14 @@ static constexpr std::size_t kPointsPerVertex      = 9;
 static constexpr std::size_t kIntegersPerVertex_ = 3;
 
 static const boost::gil::rgba8_pixel_t kBlack_ {0, 0, 0, 255};
+
+// Zoom tier lines are simplified for until the first Render() reports the
+// real one (typical working zoom).
+static constexpr int kDefaultTier_ = 7;
+
+// How much larger than the visible view the built area is; 2.0 lets the view
+// pan by roughly half its own size before lines are rebuilt.
+static constexpr double kBuildMargin_ = 2.0;
 
 class PlacefileLines::Impl
 {
@@ -64,7 +77,7 @@ public:
                    const GLint                         startTime,
                    const GLint                         endTime,
                    bool                                bufferHover = false);
-   void
+   std::size_t
    UpdateBuffers(const std::shared_ptr<const gr::Placefile::LineDrawItem>& di);
    void Update();
 
@@ -79,6 +92,32 @@ public:
 
    std::size_t currentNumLines_ {};
    std::size_t newNumLines_ {};
+
+   // Zoom tier the lines are simplified for. requestedTier_ is what the map
+   // is at now (written by Render()); buildTier_ is what the build in
+   // progress uses (captured in StartLines(), so one build is consistent
+   // even if the zoom changes under it); builtTier_ is what the drawn
+   // buffers were built for (-1 until the first build finishes).
+   std::atomic<int> requestedTier_ {kDefaultTier_};
+   std::atomic<int> builtTier_ {-1};
+   int              buildTier_ {kDefaultTier_};
+
+   // The same idea for the visible area: only segments inside (a margin
+   // around) the map view are buffered -- a QPF file's ~75k vertices cover
+   // all of CONUS. latestBuildBounds_ is the view Render() last saw (grown by
+   // the margin), buildBounds_ what the build in progress uses, builtBounds_
+   // what the drawn buffers cover. Unlimited until a Render() has reported a
+   // view, so the very first build is uncropped and is redone once one has.
+   std::mutex      boundsMutex_ {};
+   map::GeoBounds  latestBuildBounds_ {};
+   map::GeoBounds  builtBounds_ {};
+   map::GeoBounds  buildBounds_ {};
+
+   // A rebuild has been asked for and hasn't finished; Render() runs every
+   // frame and must not queue one per frame while it waits.
+   std::atomic<bool> rebuildPending_ {false};
+
+   std::function<void()> rebuildRequested_ {};
 
    std::vector<float> currentLinesBuffer_ {};
    std::vector<GLint> currentIntegerBuffer_ {};
@@ -120,6 +159,12 @@ void PlacefileLines::set_selected_time(
 void PlacefileLines::set_thresholded(bool thresholded)
 {
    p->thresholded_ = thresholded;
+}
+
+void PlacefileLines::set_rebuild_requested_callback(
+   std::function<void()> callback)
+{
+   p->rebuildRequested_ = std::move(callback);
 }
 
 void PlacefileLines::Initialize()
@@ -217,6 +262,30 @@ void PlacefileLines::Initialize()
 void PlacefileLines::Render(
    const QMapLibre::CustomLayerRenderParameters& params)
 {
+   // The lines are buffered simplified for a zoom level and cropped to the
+   // visible area; when the map moves to another tier, or out of the built
+   // area, ask for a rebuild (once -- see rebuildPending_). Nothing to redo
+   // until a first build has finished.
+   const int  tier    = util::SimplificationTier(params.zoom);
+   const auto visible = map::VisibleBounds(params, 1.0);
+   p->requestedTier_  = tier;
+
+   bool needsRebuild = false;
+   {
+      std::lock_guard boundsLock {p->boundsMutex_};
+      p->latestBuildBounds_ = map::VisibleBounds(params, kBuildMargin_);
+
+      needsRebuild = p->builtTier_ >= 0 &&
+                     (tier != p->builtTier_ ||
+                      !p->builtBounds_.ContainsBounds(visible) ||
+                      (!p->builtBounds_.limited && visible.limited));
+   }
+   if (needsRebuild && p->rebuildRequested_ &&
+       !p->rebuildPending_.exchange(true))
+   {
+      p->rebuildRequested_();
+   }
+
    std::unique_lock lock {p->lineMutex_};
 
    if (p->currentNumLines_ > 0)
@@ -278,6 +347,16 @@ void PlacefileLines::StartLines()
    p->newHoverLines_.clear();
 
    p->newNumLines_ = 0u;
+   p->buildTier_   = p->requestedTier_;
+   {
+      std::lock_guard boundsLock {p->boundsMutex_};
+      p->buildBounds_ = p->latestBuildBounds_;
+   }
+}
+
+void PlacefileLines::AbortRebuild()
+{
+   p->rebuildPending_ = false;
 }
 
 void PlacefileLines::AddLine(
@@ -285,8 +364,7 @@ void PlacefileLines::AddLine(
 {
    if (di != nullptr && !di->elements_.empty())
    {
-      p->UpdateBuffers(di);
-      p->newNumLines_ += (di->elements_.size() - 1) * 2;
+      p->newNumLines_ += p->UpdateBuffers(di);
    }
 }
 
@@ -299,10 +377,19 @@ void PlacefileLines::FinishLines()
    p->currentIntegerBuffer_.swap(p->newIntegerBuffer_);
    p->currentHoverLines_.swap(p->newHoverLines_);
 
-   // Clear the new buffers
-   p->newLinesBuffer_.clear();
-   p->newIntegerBuffer_.clear();
-   p->newHoverLines_.clear();
+   // Release the new buffers rather than just clear() them: after the swap
+   // they hold the *previous* frame's storage, and clear() keeps that
+   // capacity, so every line buffer used to cost twice what it needed to.
+   std::vector<float>().swap(p->newLinesBuffer_);
+   std::vector<GLint>().swap(p->newIntegerBuffer_);
+   std::vector<Impl::LineHoverEntry>().swap(p->newHoverLines_);
+
+   p->builtTier_ = p->buildTier_;
+   {
+      std::lock_guard boundsLock {p->boundsMutex_};
+      p->builtBounds_ = p->buildBounds_;
+   }
+   p->rebuildPending_ = false;
 
    // Update the number of lines
    p->currentNumLines_ = p->newNumLines_;
@@ -313,7 +400,7 @@ void PlacefileLines::FinishLines()
    p->dirty_ = true;
 }
 
-void PlacefileLines::Impl::UpdateBuffers(
+std::size_t PlacefileLines::Impl::UpdateBuffers(
    const std::shared_ptr<const gr::Placefile::LineDrawItem>& di)
 {
    // Threshold value
@@ -330,29 +417,90 @@ void PlacefileLines::Impl::UpdateBuffers(
                             di->endTime_.time_since_epoch())
                             .count());
 
-   std::vector<units::angle::degrees<double>> angles {};
-   angles.reserve(di->elements_.size() - 1);
-
-   // For each element pair inside a Line statement, render a black line
-   for (std::size_t i = 0; i < di->elements_.size() - 1; ++i)
+   // Draw only the vertices that matter at this zoom. Contour-style lines
+   // (outlooks, QPF) carry far more vertices than a low zoom can show, which
+   // reads as noise and costs buffer space; the line itself, and the hover
+   // text attached to every segment of it, are unchanged.
+   // Skip a whole line that is nowhere near the view before spending time
+   // simplifying it (bounding box vs. the built area).
+   if (buildBounds_.limited)
    {
-      // Latitude and longitude coordinates in degrees
-      const float lat1 = static_cast<float>(di->elements_[i].latitude_);
-      const float lon1 = static_cast<float>(di->elements_[i].longitude_);
-      const float lat2 = static_cast<float>(di->elements_[i + 1].latitude_);
-      const float lon2 = static_cast<float>(di->elements_[i + 1].longitude_);
+      double minLat = 90.0;
+      double maxLat = -90.0;
+      double minLon = 180.0;
+      double maxLon = -180.0;
+      for (const auto& e : di->elements_)
+      {
+         minLat = std::min(minLat, e.latitude_);
+         maxLat = std::max(maxLat, e.latitude_);
+         minLon = std::min(minLon, e.longitude_);
+         maxLon = std::max(maxLon, e.longitude_);
+      }
+      if (maxLat < buildBounds_.south || minLat > buildBounds_.north ||
+          maxLon < buildBounds_.west || minLon > buildBounds_.east)
+      {
+         return 0;
+      }
+   }
+
+   if (util::IsNegligibleAtTier(di->elements_, buildTier_))
+   {
+      return 0;
+   }
+
+   const std::vector<std::size_t> kept = util::SimplifyLine(
+      di->elements_, util::SimplificationTolerance(buildTier_));
+   if (kept.size() < 2)
+   {
+      return 0;
+   }
+
+   // A segment is buffered only if its bounding box touches the built area
+   // (conservative: never drops one that crosses it).
+   struct Segment
+   {
+      const gr::Placefile::LineDrawItem::Element* e1_;
+      const gr::Placefile::LineDrawItem::Element* e2_;
+
+      units::angle::degrees<double> angle_;
+   };
+
+   std::vector<Segment> segments {};
+   segments.reserve(kept.size() - 1);
+
+   for (std::size_t k = 0; k + 1 < kept.size(); ++k)
+   {
+      const auto& e1 = di->elements_[kept[k]];
+      const auto& e2 = di->elements_[kept[k + 1]];
+
+      if (buildBounds_.limited &&
+          (std::max(e1.latitude_, e2.latitude_) < buildBounds_.south ||
+           std::min(e1.latitude_, e2.latitude_) > buildBounds_.north ||
+           std::max(e1.longitude_, e2.longitude_) < buildBounds_.west ||
+           std::min(e1.longitude_, e2.longitude_) > buildBounds_.east))
+      {
+         continue;
+      }
 
       // Calculate angle
-      const units::angle::degrees<double> angle =
-         util::GeographicLib::GetAngle(lat1, lon1, lat2, lon2);
-      angles.push_back(angle);
+      segments.push_back(
+         {&e1,
+          &e2,
+          util::GeographicLib::GetAngle(static_cast<float>(e1.latitude_),
+                                        static_cast<float>(e1.longitude_),
+                                        static_cast<float>(e2.latitude_),
+                                        static_cast<float>(e2.longitude_))});
+   }
 
-      // Buffer line with hover text
+   // For each element pair inside a Line statement, render a black line
+   // (with hover text)
+   for (const auto& segment : segments)
+   {
       BufferLine(di,
-                 di->elements_[i],
-                 di->elements_[i + 1],
+                 *segment.e1_,
+                 *segment.e2_,
                  di->width_ + 2,
-                 angle,
+                 segment.angle_,
                  kBlack_,
                  thresholdValue,
                  startTime,
@@ -361,18 +509,20 @@ void PlacefileLines::Impl::UpdateBuffers(
    }
 
    // For each element pair inside a Line statement, render a colored line
-   for (std::size_t i = 0; i < di->elements_.size() - 1; ++i)
+   for (const auto& segment : segments)
    {
       BufferLine(di,
-                 di->elements_[i],
-                 di->elements_[i + 1],
+                 *segment.e1_,
+                 *segment.e2_,
                  di->width_,
-                 angles[i],
+                 segment.angle_,
                  di->color_,
                  thresholdValue,
                  startTime,
                  endTime);
    }
+
+   return segments.size() * 2;
 }
 
 void PlacefileLines::Impl::BufferLine(
