@@ -246,4 +246,40 @@ TEST_F(GribDockWidgetTest, ImportingAModelUpdatesAnOpenDockWithoutARestart)
    MaybeSnapshot(dock, "dock-after-import");
 }
 
+TEST_F(GribDockWidgetTest, OnlyRrfsOffersALoopExportAndEveryoneCanExportAnImage)
+{
+   GribDockWidget dock;
+   dock.resize(420, 1500);
+
+   const auto buttonNamed = [](QGroupBox* group, const QString& text)
+   {
+      QPushButton* found = nullptr;
+      for (auto* button : group->findChildren<QPushButton*>())
+      {
+         if (button->text() == text)
+         {
+            found = button;
+         }
+      }
+      return found;
+   };
+
+   const QString loopText = "Export loop (animated WebP)...";
+
+   for (const char* title : {"MRMS", "RTMA", "RRFS", "NBM", "Custom Models"})
+   {
+      auto* group = FindGroup(dock, title);
+      ASSERT_NE(group, nullptr) << title;
+      EXPECT_NE(buttonNamed(group, "Export image..."), nullptr) << title;
+      EXPECT_EQ(buttonNamed(group, loopText) != nullptr,
+                std::string(title) == "RRFS")
+         << title;
+   }
+
+   // The hour accessors the export steps through: a category with no hour
+   // slider reads as 0, and moving it is a harmless no-op.
+   dock.SetForecastHour(map::GribCategory::Mrms, 5);
+   EXPECT_EQ(dock.ForecastHour(map::GribCategory::Mrms), 0);
+}
+
 } // namespace scwx::qt::ui

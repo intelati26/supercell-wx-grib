@@ -479,6 +479,7 @@ set(HDR_UTIL source/scwx/qt/util/color.hpp
              source/scwx/qt/util/file.hpp
              source/scwx/qt/util/geographic_lib.hpp
              source/scwx/qt/util/grib_legend.hpp
+             source/scwx/qt/util/image_export.hpp
              source/scwx/qt/util/imgui.hpp
              source/scwx/qt/util/json.hpp
              source/scwx/qt/util/line_simplification.hpp
@@ -496,6 +497,7 @@ set(SRC_UTIL source/scwx/qt/util/color.cpp
              source/scwx/qt/util/file.cpp
              source/scwx/qt/util/geographic_lib.cpp
              source/scwx/qt/util/grib_legend.cpp
+             source/scwx/qt/util/image_export.cpp
              source/scwx/qt/util/imgui.cpp
              source/scwx/qt/util/json.cpp
              source/scwx/qt/util/maplibre.cpp

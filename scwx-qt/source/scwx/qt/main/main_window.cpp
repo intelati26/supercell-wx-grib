@@ -30,6 +30,7 @@
 #include <scwx/qt/model/radar_site_model.hpp>
 #include <scwx/qt/settings/general_settings.hpp>
 #include <scwx/qt/util/grib_legend.hpp>
+#include <scwx/qt/util/image_export.hpp>
 #include <scwx/qt/settings/map_settings.hpp>
 #include <scwx/qt/settings/product_settings.hpp>
 #include <scwx/qt/settings/ui_settings.hpp>
@@ -77,6 +78,7 @@
 #include <QActionGroup>
 #include <QDesktopServices>
 #include <QDialog>
+#include <QEventLoop>
 #include <QFileDialog>
 #include <QGuiApplication>
 #include <QJsonArray>
@@ -88,6 +90,7 @@
 #include <QMessageBox>
 #include <QPointer>
 #include <QPoint>
+#include <QProgressDialog>
 #include <QScreen>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -303,6 +306,11 @@ public:
    void ApplyStoredColorTableThreshold(map::MapWidget* mapWidget);
    void ExportGribSnapshot(map::GribCategory category,
                            const QString&    categoryLabel);
+   void ExportGribLoop(map::GribCategory       category,
+                       const QString&          categoryLabel,
+                       const std::vector<int>& hours);
+   [[nodiscard]] QImage CaptureGribImage(map::GribCategory category,
+                                         const QString&    categoryLabel);
    void HandleMapPaneLinkViewToggled(std::size_t     mapIndex,
                                      map::MapWidget* map,
                                      bool            linked);
@@ -525,6 +533,14 @@ MainWindow::MainWindow(QWidget* parent) :
            this,
            [this](map::GribCategory category, const QString& categoryLabel)
            { p->ExportGribSnapshot(category, categoryLabel); });
+
+   connect(p->gribDockWidget_,
+           &ui::GribDockWidget::ExportLoopRequested,
+           this,
+           [this](map::GribCategory       category,
+                  const QString&          categoryLabel,
+                  const std::vector<int>& hours)
+           { p->ExportGribLoop(category, categoryLabel, hours); });
 
    p->mapAnnotationDock_ =
       new ui::MapAnnotationDockWidget(p->mainWindow_->ui->centralwidget);
@@ -3501,6 +3517,18 @@ void MainWindowImpl::ApplyStoredColorTableThreshold(map::MapWidget* mapWidget)
    mapWidget->SetColorTableThreshold(threshold);
 }
 
+QImage MainWindowImpl::CaptureGribImage(map::GribCategory category,
+                                        const QString&    categoryLabel)
+{
+   QImage image = activeMap_->CaptureImage();
+
+   auto gribManager = manager::GribManager::Instance(category);
+   qt::util::grib_legend::DrawLegend(
+      image, *gribManager, category, categoryLabel.toStdString());
+
+   return image;
+}
+
 void MainWindowImpl::ExportGribSnapshot(map::GribCategory category,
                                         const QString&    categoryLabel)
 {
@@ -3509,11 +3537,9 @@ void MainWindowImpl::ExportGribSnapshot(map::GribCategory category,
       return;
    }
 
-   QImage image = activeMap_->CaptureImage();
+   const QImage image = CaptureGribImage(category, categoryLabel);
 
    auto gribManager = manager::GribManager::Instance(category);
-   qt::util::grib_legend::DrawLegend(
-      image, *gribManager, category, categoryLabel.toStdString());
 
    auto&             generalSettings = settings::GeneralSettings::Instance();
    const std::string defaultFolder =
@@ -3534,23 +3560,244 @@ void MainWindowImpl::ExportGribSnapshot(map::GribCategory category,
    const QString defaultPath = QString::fromStdString(fmt::format(
       "{}/{}_{}.png", defaultFolder, categoryLabel.toStdString(), productName));
 
-   const QString path = QFileDialog::getSaveFileName(mainWindow_,
-                                                      tr("Export GRIB Snapshot"),
-                                                      defaultPath,
-                                                      tr("PNG Image (*.png)"));
+   // Lossless WebP is always offered; choosing it without libwebp's cwebp
+   // installed says so below, instead of the list silently changing.
+   QString selectedFilter;
+   QString path =
+      QFileDialog::getSaveFileName(mainWindow_,
+                                   tr("Export GRIB Snapshot"),
+                                   defaultPath,
+                                   tr("PNG Image (*.png);;WebP Image (*.webp)"),
+                                   &selectedFilter);
 
    if (path.isEmpty())
    {
       return;
    }
 
-   if (!image.save(path))
+   // The dialog does not add an extension for a typed bare name
+   const QString extension =
+      selectedFilter.contains("webp", Qt::CaseInsensitive) ? ".webp" : ".png";
+   if (!path.endsWith(".png", Qt::CaseInsensitive) &&
+       !path.endsWith(".webp", Qt::CaseInsensitive))
    {
-      logger_->error("Unable to save GRIB snapshot: {}", path.toStdString());
+      path += extension;
+   }
+
+   QString error;
+   if (!qt::util::image_export::SaveImage(image, path, error))
+   {
+      logger_->error("Unable to save GRIB snapshot: {}: {}",
+                     path.toStdString(),
+                     error.toStdString());
+      QMessageBox::warning(mainWindow_,
+                           tr("Export GRIB Snapshot"),
+                           tr("The image could not be saved: %1").arg(error));
    }
    else
    {
       logger_->info("GRIB snapshot saved: {}", path.toStdString());
+   }
+}
+
+void MainWindowImpl::ExportGribLoop(map::GribCategory       category,
+                                    const QString&          categoryLabel,
+                                    const std::vector<int>& hours)
+{
+   namespace image_export = qt::util::image_export;
+
+   if (activeMap_ == nullptr || hours.size() < 2)
+   {
+      QMessageBox::information(
+         mainWindow_,
+         tr("Export Loop"),
+         tr("An animation needs at least two hours: pick two or more, or "
+            "widen the loop range."));
+      return;
+   }
+
+   // Ask for the tool before any downloading or stepping
+   if (!image_export::CanSaveAnimation())
+   {
+      QMessageBox::warning(
+         mainWindow_, tr("Export Loop"), image_export::InstallHint("img2webp"));
+      return;
+   }
+
+   auto gribManager = manager::GribManager::Instance(category);
+
+   std::string productName = gribManager->CurrentProductName();
+   std::replace(productName.begin(), productName.end(), ' ', '_');
+
+   const QString defaultPath = QString::fromStdString(fmt::format(
+      "{}/{}_{}_loop.webp",
+      settings::GeneralSettings::Instance().screen_capture_folder().GetValue(),
+      categoryLabel.toStdString(),
+      productName));
+
+   QString path = QFileDialog::getSaveFileName(mainWindow_,
+                                               tr("Export Loop"),
+                                               defaultPath,
+                                               tr("Animated WebP (*.webp)"));
+   if (path.isEmpty())
+   {
+      return;
+   }
+   if (!path.endsWith(".webp", Qt::CaseInsensitive))
+   {
+      path += ".webp";
+   }
+
+   // Longest a single hour may take to download, decode and appear
+   constexpr int kHourTimeoutMs = 180'000;
+   // Lets the map layer pick up the new frame before it is grabbed
+   constexpr int kSettleMs = 300;
+   // Matches the dock's Play speed
+   constexpr int kFrameDelayMs = 500;
+
+   const int originalHour = gribDockWidget_->ForecastHour(category);
+
+   QProgressDialog progress(tr("Preparing..."),
+                            tr("Cancel"),
+                            0,
+                            static_cast<int>(hours.size()) + 1,
+                            mainWindow_);
+   progress.setWindowTitle(tr("Export Loop"));
+   progress.setWindowModality(Qt::WindowModal);
+   progress.setMinimumDuration(0);
+   progress.setValue(0);
+
+   // Runs the event loop until `done` is signalled, `ms` passes, or the
+   // user cancels; returns whether it was `done` that ended it.
+   const auto waitFor = [&progress](auto&& connectDone, int ms)
+   {
+      QEventLoop loop;
+      QTimer     timeout;
+      QTimer     cancelPoll;
+      bool       done = false;
+      timeout.setSingleShot(true);
+      QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+      QObject::connect(&cancelPoll,
+                       &QTimer::timeout,
+                       &loop,
+                       [&]()
+                       {
+                          if (progress.wasCanceled())
+                          {
+                             loop.quit();
+                          }
+                       });
+      const QMetaObject::Connection connection = connectDone(
+         [&]()
+         {
+            done = true;
+            loop.quit();
+         });
+      timeout.start(ms);
+      cancelPoll.start(100);
+      loop.exec();
+      QObject::disconnect(connection);
+      return done;
+   };
+
+   std::vector<QImage> frames;
+   QString             failure;
+
+   for (std::size_t i = 0; i < hours.size() && failure.isEmpty(); ++i)
+   {
+      const int hour = hours[i];
+      progress.setLabelText(tr("Loading F%1 (%2 of %3)...")
+                               .arg(hour, 3, 10, QLatin1Char('0'))
+                               .arg(i + 1)
+                               .arg(hours.size()));
+      progress.setValue(static_cast<int>(i));
+
+      // Selecting an hour decodes it into the category's frame file and then
+      // announces FrameReady -- unless it was already the selected hour,
+      // which announces nothing and is already on screen.
+      if (gribDockWidget_->ForecastHour(category) != hour)
+      {
+         const bool loaded = waitFor(
+            [&](auto onReady)
+            {
+               const auto connection =
+                  QObject::connect(gribManager.get(),
+                                   &manager::GribManager::FrameReady,
+                                   mainWindow_,
+                                   [onReady](std::size_t) { onReady(); });
+               gribDockWidget_->SetForecastHour(category, hour);
+               return connection;
+            },
+            kHourTimeoutMs);
+
+         if (progress.wasCanceled())
+         {
+            failure = "cancelled";
+            break;
+         }
+         if (!loaded)
+         {
+            failure = tr("F%1 did not finish loading in %2 seconds.")
+                         .arg(hour, 3, 10, QLatin1Char('0'))
+                         .arg(kHourTimeoutMs / 1000);
+            break;
+         }
+      }
+
+      // Give the layer a moment to apply the frame, then draw and grab it
+      waitFor([](auto) { return QMetaObject::Connection {}; }, kSettleMs);
+      if (progress.wasCanceled())
+      {
+         failure = "cancelled";
+         break;
+      }
+
+      frames.push_back(CaptureGribImage(category, categoryLabel));
+   }
+
+   gribDockWidget_->SetForecastHour(category, originalHour);
+
+   if (failure == "cancelled")
+   {
+      return;
+   }
+   if (failure.isEmpty() &&
+       std::any_of(frames.cbegin(),
+                   frames.cend(),
+                   [&frames](const QImage& frame)
+                   { return frame.size() != frames.front().size(); }))
+   {
+      failure =
+         tr("The map window was resized during the export. Try "
+            "again without resizing it.");
+   }
+
+   if (failure.isEmpty())
+   {
+      progress.setLabelText(tr("Encoding WebP..."));
+      progress.setValue(static_cast<int>(hours.size()));
+      QCoreApplication::processEvents();
+
+      if (!image_export::SaveAnimation(frames, kFrameDelayMs, path, failure) &&
+          failure.isEmpty())
+      {
+         failure = tr("the encoder reported no reason");
+      }
+   }
+
+   progress.close();
+
+   if (!failure.isEmpty())
+   {
+      logger_->error("Unable to export GRIB loop: {}", failure.toStdString());
+      QMessageBox::warning(mainWindow_,
+                           tr("Export Loop"),
+                           tr("The loop could not be saved: %1").arg(failure));
+   }
+   else
+   {
+      logger_->info(
+         "GRIB loop saved: {} ({} frames)", path.toStdString(), frames.size());
    }
 }
 

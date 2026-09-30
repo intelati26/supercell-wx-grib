@@ -204,6 +204,8 @@ struct CategorySection
    // Captures the map view plus this section's own current product as a
    // PNG (see GribDockWidget::ExportSnapshotRequested).
    QPushButton* exportButton {};
+   // RRFS-only: steps the picked hours and saves them as an animated WebP
+   QPushButton* exportLoopButton {};
 
    // GribCategory::User only: which imported model this section serves, the
    // button that imports another, and a note about folders that didn't load.
@@ -329,7 +331,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
    }
    groupLayout->addWidget(section.comboBox);
 
-   section.exportButton = new QPushButton(tr("Export PNG..."), groupBox);
+   section.exportButton = new QPushButton(tr("Export image..."), groupBox);
    groupLayout->addWidget(section.exportButton);
 
    if (category == map::GribCategory::Rrfs)
@@ -401,6 +403,14 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
       pickRow->addWidget(section.pickSummaryLabel, 1);
       pickRow->addWidget(section.clearPicksButton);
       groupLayout->addLayout(pickRow);
+
+      section.exportLoopButton =
+         new QPushButton(tr("Export loop (animated WebP)..."), groupBox);
+      section.exportLoopButton->setToolTip(
+         tr("Saves the picked hours (or the loop range when none are picked) "
+            "as a looping animated WebP. Needs img2webp from libwebp's "
+            "command-line tools."));
+      groupLayout->addWidget(section.exportLoopButton);
 
       RerangeRrfsLoop(section, initialMaxHour);
 
@@ -500,6 +510,40 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
               Q_EMIT self_->ExportSnapshotRequested(
                  category, QString::fromStdString(CategoryDisplayName(category)));
            });
+
+   if (stored.exportLoopButton != nullptr)
+   {
+      connect(stored.exportLoopButton,
+              &QPushButton::clicked,
+              self_,
+              [this, &stored, category]()
+              {
+                 const std::vector<int> hours = PlaybackHours(stored);
+                 if (hours.empty())
+                 {
+                    return;
+                 }
+
+                 // The export steps the slider itself; a running Play would
+                 // fight it for the same slider.
+                 if (stored.animationTimer->isActive())
+                 {
+                    stored.animationTimer->stop();
+                    stored.playButton->setText(tr("Play"));
+                 }
+
+                 // Start every hour's download now, in parallel, rather than
+                 // one at a time as the export reaches each.
+                 stored.gribManager->PrefetchRrfsForecastHours(
+                    std::set<int>(hours.begin(), hours.end()));
+                 RefreshHourButtons(stored);
+
+                 Q_EMIT self_->ExportLoopRequested(
+                    category,
+                    QString::fromStdString(CategoryDisplayName(category)),
+                    hours);
+              });
+   }
 
    connect(stored.gribManager.get(),
            &manager::GribManager::FrameReady,
@@ -1261,5 +1305,28 @@ GribDockWidget::GribDockWidget(QWidget* parent) :
 }
 
 GribDockWidget::~GribDockWidget() = default;
+
+int GribDockWidget::ForecastHour(map::GribCategory category) const
+{
+   for (const auto& section : p->sections_)
+   {
+      if (section.category == category && section.hourSlider != nullptr)
+      {
+         return section.hourSlider->value();
+      }
+   }
+   return 0;
+}
+
+void GribDockWidget::SetForecastHour(map::GribCategory category, int hour)
+{
+   for (auto& section : p->sections_)
+   {
+      if (section.category == category && section.hourSlider != nullptr)
+      {
+         section.hourSlider->setValue(hour);
+      }
+   }
+}
 
 } // namespace scwx::qt::ui

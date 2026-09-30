@@ -3,6 +3,7 @@
 #include <scwx/qt/map/grib_frame_info.hpp>
 
 #include <memory>
+#include <vector>
 
 #include <QDockWidget>
 #include <QString>
@@ -26,6 +27,12 @@ public:
    explicit GribDockWidget(QWidget* parent = nullptr);
    ~GribDockWidget();
 
+   // RRFS forecast hour on the section's slider (0 for a category with none),
+   // and moving it -- which selects that hour exactly as the user dragging it
+   // would. Used to step through a loop when exporting it.
+   [[nodiscard]] int ForecastHour(map::GribCategory category) const;
+   void              SetForecastHour(map::GribCategory category, int hour);
+
 signals:
    // Emitted by the "Map View" panel's preset buttons -- MainWindow owns
    // the actual MapWidget instances (this dock never has a direct
@@ -36,12 +43,18 @@ signals:
                            double northLatitude,
                            double eastLongitude);
 
-   // Emitted by a category section's "Export PNG" button. `categoryLabel`
+   // Emitted by a category section's "Export image" button. `categoryLabel`
    // is that section's own display name (e.g. "RRFS") -- passed through
    // rather than recomputed on the receiving end, since CategoryDisplayName()
    // is file-local to grib_dock_widget.cpp.
    void ExportSnapshotRequested(map::GribCategory category,
                                 QString            categoryLabel);
+
+   // Emitted by RRFS's "Export loop" button with the forecast hours to save,
+   // in order (Play has already been stopped and their downloads started).
+   void ExportLoopRequested(map::GribCategory category,
+                            QString           categoryLabel,
+                            std::vector<int>  hours);
 
 private:
    class Impl;
