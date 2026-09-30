@@ -64,6 +64,7 @@ set(SRC_QT_SETTINGS_TESTS source/scwx/qt/settings/settings_container.test.cpp
                           source/scwx/qt/settings/unit_settings.test.cpp)
 set(SRC_QT_UTIL_TESTS source/scwx/qt/util/q_file_input_stream.test.cpp
                       source/scwx/qt/util/geographic_lib.test.cpp
+                      source/scwx/qt/util/line_simplification.test.cpp
                       source/scwx/qt/util/network.test.cpp)
 set(SRC_TYPES_TESTS source/scwx/types/ondas_types.test.cpp)
 set(SRC_UTIL_TESTS source/scwx/util/float.test.cpp

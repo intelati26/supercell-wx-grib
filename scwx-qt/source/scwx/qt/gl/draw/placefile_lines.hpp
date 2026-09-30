@@ -4,6 +4,8 @@
 #include <scwx/qt/gl/draw/draw_item.hpp>
 #include <scwx/gr/placefile.hpp>
 
+#include <functional>
+
 namespace scwx
 {
 namespace qt
@@ -27,6 +29,17 @@ public:
 
    void set_selected_time(std::chrono::system_clock::time_point selectedTime);
    void set_thresholded(bool thresholded);
+
+   /**
+    * Sets a function called from Render() when the current zoom no longer
+    * matches the level of detail the lines were last built for. It should
+    * rebuild the lines (StartLines(), AddLine() for each, FinishLines())
+    * on the same thread that normally builds them -- not from within the
+    * callback itself. Lines are drawn simplified for the zoom they were
+    * built at (see util::SimplifyLine()); the placefile's own line data and
+    * hover text are unchanged.
+    */
+   void set_rebuild_requested_callback(std::function<void()> callback);
 
    void Initialize() override;
    void Render(const QMapLibre::CustomLayerRenderParameters& params) override;

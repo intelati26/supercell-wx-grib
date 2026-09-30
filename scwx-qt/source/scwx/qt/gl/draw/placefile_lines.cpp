@@ -1,10 +1,12 @@
 #include <scwx/qt/gl/draw/placefile_lines.hpp>
+#include <scwx/qt/util/line_simplification.hpp>
 #include <scwx/qt/util/geographic_lib.hpp>
 #include <scwx/qt/util/maplibre.hpp>
 #include <scwx/qt/util/tooltip.hpp>
 #include <scwx/util/logger.hpp>
 #include <scwx/util/time.hpp>
 
+#include <atomic>
 #include <execution>
 
 namespace scwx
@@ -27,6 +29,10 @@ static constexpr std::size_t kPointsPerVertex      = 9;
 static constexpr std::size_t kIntegersPerVertex_ = 3;
 
 static const boost::gil::rgba8_pixel_t kBlack_ {0, 0, 0, 255};
+
+// Zoom tier lines are simplified for until the first Render() reports the
+// real one (typical working zoom).
+static constexpr int kDefaultTier_ = 7;
 
 class PlacefileLines::Impl
 {
@@ -64,7 +70,7 @@ public:
                    const GLint                         startTime,
                    const GLint                         endTime,
                    bool                                bufferHover = false);
-   void
+   std::size_t
    UpdateBuffers(const std::shared_ptr<const gr::Placefile::LineDrawItem>& di);
    void Update();
 
@@ -79,6 +85,18 @@ public:
 
    std::size_t currentNumLines_ {};
    std::size_t newNumLines_ {};
+
+   // Zoom tier the lines are simplified for. requestedTier_ is what the map
+   // is at now (written by Render()); buildTier_ is what the build in
+   // progress uses (captured in StartLines(), so one build is consistent
+   // even if the zoom changes under it); builtTier_ is what the drawn
+   // buffers were built for (-1 until the first build finishes).
+   std::atomic<int> requestedTier_ {kDefaultTier_};
+   std::atomic<int> builtTier_ {-1};
+   int              buildTier_ {kDefaultTier_};
+   int              rebuildRequestedFor_ {-1};
+
+   std::function<void()> rebuildRequested_ {};
 
    std::vector<float> currentLinesBuffer_ {};
    std::vector<GLint> currentIntegerBuffer_ {};
@@ -120,6 +138,12 @@ void PlacefileLines::set_selected_time(
 void PlacefileLines::set_thresholded(bool thresholded)
 {
    p->thresholded_ = thresholded;
+}
+
+void PlacefileLines::set_rebuild_requested_callback(
+   std::function<void()> callback)
+{
+   p->rebuildRequested_ = std::move(callback);
 }
 
 void PlacefileLines::Initialize()
@@ -217,6 +241,18 @@ void PlacefileLines::Initialize()
 void PlacefileLines::Render(
    const QMapLibre::CustomLayerRenderParameters& params)
 {
+   // The lines are buffered simplified for a zoom level; when the map moves
+   // to another, ask for a rebuild (once per change). Nothing to redo until
+   // a first build has finished.
+   const int tier = util::SimplificationTier(params.zoom);
+   p->requestedTier_ = tier;
+   if (p->builtTier_ >= 0 && tier != p->builtTier_ &&
+       tier != p->rebuildRequestedFor_ && p->rebuildRequested_)
+   {
+      p->rebuildRequestedFor_ = tier;
+      p->rebuildRequested_();
+   }
+
    std::unique_lock lock {p->lineMutex_};
 
    if (p->currentNumLines_ > 0)
@@ -278,6 +314,7 @@ void PlacefileLines::StartLines()
    p->newHoverLines_.clear();
 
    p->newNumLines_ = 0u;
+   p->buildTier_   = p->requestedTier_;
 }
 
 void PlacefileLines::AddLine(
@@ -285,8 +322,7 @@ void PlacefileLines::AddLine(
 {
    if (di != nullptr && !di->elements_.empty())
    {
-      p->UpdateBuffers(di);
-      p->newNumLines_ += (di->elements_.size() - 1) * 2;
+      p->newNumLines_ += p->UpdateBuffers(di);
    }
 }
 
@@ -299,10 +335,14 @@ void PlacefileLines::FinishLines()
    p->currentIntegerBuffer_.swap(p->newIntegerBuffer_);
    p->currentHoverLines_.swap(p->newHoverLines_);
 
-   // Clear the new buffers
-   p->newLinesBuffer_.clear();
-   p->newIntegerBuffer_.clear();
-   p->newHoverLines_.clear();
+   // Release the new buffers rather than just clear() them: after the swap
+   // they hold the *previous* frame's storage, and clear() keeps that
+   // capacity, so every line buffer used to cost twice what it needed to.
+   std::vector<float>().swap(p->newLinesBuffer_);
+   std::vector<GLint>().swap(p->newIntegerBuffer_);
+   std::vector<Impl::LineHoverEntry>().swap(p->newHoverLines_);
+
+   p->builtTier_ = p->buildTier_;
 
    // Update the number of lines
    p->currentNumLines_ = p->newNumLines_;
@@ -313,7 +353,7 @@ void PlacefileLines::FinishLines()
    p->dirty_ = true;
 }
 
-void PlacefileLines::Impl::UpdateBuffers(
+std::size_t PlacefileLines::Impl::UpdateBuffers(
    const std::shared_ptr<const gr::Placefile::LineDrawItem>& di)
 {
    // Threshold value
@@ -330,17 +370,36 @@ void PlacefileLines::Impl::UpdateBuffers(
                             di->endTime_.time_since_epoch())
                             .count());
 
+   // Draw only the vertices that matter at this zoom. Contour-style lines
+   // (outlooks, QPF) carry far more vertices than a low zoom can show, which
+   // reads as noise and costs buffer space; the line itself, and the hover
+   // text attached to every segment of it, are unchanged.
+   if (util::IsNegligibleAtTier(di->elements_, buildTier_))
+   {
+      return 0;
+   }
+
+   const std::vector<std::size_t> kept = util::SimplifyLine(
+      di->elements_, util::SimplificationTolerance(buildTier_));
+   if (kept.size() < 2)
+   {
+      return 0;
+   }
+
    std::vector<units::angle::degrees<double>> angles {};
-   angles.reserve(di->elements_.size() - 1);
+   angles.reserve(kept.size() - 1);
 
    // For each element pair inside a Line statement, render a black line
-   for (std::size_t i = 0; i < di->elements_.size() - 1; ++i)
+   for (std::size_t k = 0; k + 1 < kept.size(); ++k)
    {
+      const auto& e1 = di->elements_[kept[k]];
+      const auto& e2 = di->elements_[kept[k + 1]];
+
       // Latitude and longitude coordinates in degrees
-      const float lat1 = static_cast<float>(di->elements_[i].latitude_);
-      const float lon1 = static_cast<float>(di->elements_[i].longitude_);
-      const float lat2 = static_cast<float>(di->elements_[i + 1].latitude_);
-      const float lon2 = static_cast<float>(di->elements_[i + 1].longitude_);
+      const float lat1 = static_cast<float>(e1.latitude_);
+      const float lon1 = static_cast<float>(e1.longitude_);
+      const float lat2 = static_cast<float>(e2.latitude_);
+      const float lon2 = static_cast<float>(e2.longitude_);
 
       // Calculate angle
       const units::angle::degrees<double> angle =
@@ -349,8 +408,8 @@ void PlacefileLines::Impl::UpdateBuffers(
 
       // Buffer line with hover text
       BufferLine(di,
-                 di->elements_[i],
-                 di->elements_[i + 1],
+                 e1,
+                 e2,
                  di->width_ + 2,
                  angle,
                  kBlack_,
@@ -361,18 +420,20 @@ void PlacefileLines::Impl::UpdateBuffers(
    }
 
    // For each element pair inside a Line statement, render a colored line
-   for (std::size_t i = 0; i < di->elements_.size() - 1; ++i)
+   for (std::size_t k = 0; k + 1 < kept.size(); ++k)
    {
       BufferLine(di,
-                 di->elements_[i],
-                 di->elements_[i + 1],
+                 di->elements_[kept[k]],
+                 di->elements_[kept[k + 1]],
                  di->width_,
-                 angles[i],
+                 angles[k],
                  di->color_,
                  thresholdValue,
                  startTime,
                  endTime);
    }
+
+   return (kept.size() - 1) * 2;
 }
 
 void PlacefileLines::Impl::BufferLine(

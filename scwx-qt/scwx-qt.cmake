@@ -479,6 +479,7 @@ set(HDR_UTIL source/scwx/qt/util/color.hpp
              source/scwx/qt/util/grib_legend.hpp
              source/scwx/qt/util/imgui.hpp
              source/scwx/qt/util/json.hpp
+             source/scwx/qt/util/line_simplification.hpp
              source/scwx/qt/util/maplibre.hpp
              source/scwx/qt/util/network.hpp
              source/scwx/qt/util/streams.hpp
