@@ -39,6 +39,7 @@ public:
    static std::shared_ptr<OutlookManager> Instance();
 
 private:
+   void RegisterSources();
    void Poll();
 
    class Impl;
