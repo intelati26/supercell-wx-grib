@@ -1,6 +1,7 @@
 #include <scwx/qt/ui/grib_dock_widget.hpp>
 #include <scwx/qt/manager/grib_manager.hpp>
 #include <scwx/qt/manager/hodograph_manager.hpp>
+#include <scwx/qt/manager/user_model_registry.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
 #include <scwx/qt/ui/checkable_combo_box.hpp>
 #include <scwx/qt/ui/widgets/focused_spin_box.hpp>
@@ -9,6 +10,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
+#include <initializer_list>
 #include <map>
 #include <set>
 #include <vector>
@@ -17,12 +20,15 @@
 #include <fmt/format.h>
 
 #include <QComboBox>
+#include <QFileDialog>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
 #include <QTimer>
@@ -45,10 +51,36 @@ std::string CategoryDisplayName(map::GribCategory category)
       return "RTMA";
    case map::GribCategory::Rrfs:
       return "RRFS";
+   case map::GribCategory::User:
+      return "Custom Models";
    case map::GribCategory::Nbm:
    default:
       return "NBM";
    }
+}
+
+// Sections whose fields come through an idx sidecar and so share the cycle
+// picker and forecast-hour slider (see GribManager's Idx* API).
+bool IsIdxSection(map::GribCategory category)
+{
+   return category == map::GribCategory::Nbm ||
+          category == map::GribCategory::User;
+}
+
+// A dialog body from a list of lines: the first `limit`, then a count of the
+// rest, so a file with fifty bad rows doesn't produce a screen-tall dialog.
+QString JoinLines(const std::vector<std::string>& lines, std::size_t limit = 12)
+{
+   QStringList shown;
+   for (std::size_t i = 0; i < lines.size() && i < limit; ++i)
+   {
+      shown << QString::fromStdString(lines[i]);
+   }
+   if (lines.size() > limit)
+   {
+      shown << QObject::tr("...and %1 more").arg(lines.size() - limit);
+   }
+   return shown.join('\n');
 }
 
 // One entry per hourly cycle covers "today so far" at RRFS's real cadence
@@ -76,6 +108,7 @@ constexpr int kRrfsHourButtonColumns_ = 8;
 
 // Same reasoning as kRrfsCycleHistoryHours_ -- NBM also cycles hourly.
 constexpr int kNbmCycleHistoryHours_ = 24;
+constexpr int kUserCycleHistoryHours_ = 72;
 
 struct MapCropPreset
 {
@@ -159,6 +192,12 @@ struct CategorySection
    // Captures the map view plus this section's own current product as a
    // PNG (see GribDockWidget::ExportSnapshotRequested).
    QPushButton* exportButton {};
+
+   // GribCategory::User only: which imported model this section serves, the
+   // button that imports another, and a note about folders that didn't load.
+   QComboBox*   modelComboBox {};
+   QPushButton* importButton {};
+   QLabel*      modelIssuesLabel {};
 };
 
 class GribDockWidget::Impl
@@ -177,6 +216,15 @@ public:
    [[nodiscard]] std::vector<int> PlaybackHours(CategorySection& section);
    void RebuildHourButtons(CategorySection& section);
    void RefreshHourButtons(CategorySection& section);
+
+   // Idx sections (NBM, custom models): the "Latest"-plus-recent-cycles picker
+   // filled from the manager, which knows which cycles the model really runs.
+   void PopulateCycleCombo(CategorySection& section);
+
+   // GribCategory::User only.
+   void RefreshModelControls(CategorySection& section);
+   void ReloadUserProducts(CategorySection& section);
+   void ImportUserModel(CategorySection& section);
 
    // Static (no live data, no manager, no signal wiring) -- just a color
    // key for HodographLayer's height-band coloring plus a range-ring
@@ -212,6 +260,27 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
    section.statusLabel->setTextInteractionFlags(
       Qt::TextInteractionFlag::TextSelectableByMouse);
    groupLayout->addWidget(section.statusLabel);
+
+   if (category == map::GribCategory::User)
+   {
+      auto* modelRow        = new QHBoxLayout();
+      section.modelComboBox = new QComboBox(groupBox);
+      section.importButton  = new QPushButton(tr("Import model..."), groupBox);
+      section.importButton->setToolTip(
+         tr("Choose a folder holding model.json and products.csv. Both are "
+            "copied into %1")
+            .arg(QString::fromStdString(
+               manager::UserModelRegistry::ModelsDirectory().string())));
+      modelRow->addWidget(section.modelComboBox, 1);
+      modelRow->addWidget(section.importButton);
+      groupLayout->addLayout(modelRow);
+
+      section.modelIssuesLabel = new QLabel(groupBox);
+      section.modelIssuesLabel->setWordWrap(true);
+      section.modelIssuesLabel->setTextInteractionFlags(
+         Qt::TextInteractionFlag::TextSelectableByMouse);
+      groupLayout->addWidget(section.modelIssuesLabel);
+   }
 
    section.comboBox = new CheckableComboBox(groupBox);
    section.comboBox->SetItems(section.gribManager->ProductNames());
@@ -301,35 +370,24 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
       section.animationTimer = new QTimer(self_);
       section.animationTimer->setInterval(kRrfsAnimationIntervalMs_);
    }
-   else if (category == map::GribCategory::Nbm)
+   else if (IsIdxSection(category))
    {
       // Same shape as the Rrfs block above, minus the loop-range
       // spinboxes and HodographManager coupling -- neither applies here
       // (see GribManager::SetIdxCycle()'s own doc: no loop-range
-      // equivalent, and NBM doesn't feed the hodograph).
+      // equivalent, and these models don't feed the hodograph).
       section.cycleComboBox = new QComboBox(groupBox);
-      section.cycleComboBox->addItem(tr("Latest"), QVariant());
-
-      const auto now = std::chrono::floor<std::chrono::hours>(
-         std::chrono::system_clock::now());
-      for (int i = 0; i < kNbmCycleHistoryHours_; ++i)
-      {
-         const auto cycleTime = now - std::chrono::hours {i};
-         const int  maxHour =
-            provider::NbmDataProvider::MaxForecastHourForCycle(cycleTime);
-         const std::string label = fmt::format(
-            "{:%Y-%m-%d %H}z ({}h)", fmt::gmtime(cycleTime), maxHour);
-         section.cycleComboBox->addItem(
-            QString::fromStdString(label),
-            QVariant::fromValue<qint64>(cycleTime.time_since_epoch().count()));
-      }
+      PopulateCycleCombo(section);
       groupLayout->addWidget(section.cycleComboBox);
 
       auto* hourRow      = new QHBoxLayout();
-      section.hourLabel  = new QLabel(tr("F001"), groupBox);
+      section.hourLabel  = new QLabel(
+         QString::fromStdString(fmt::format(
+            "F{:03d}", section.gribManager->MinIdxForecastHour())),
+         groupBox);
       section.hourSlider = new QSlider(Qt::Horizontal, groupBox);
-      // Starts at 1, not 0 -- NBM has no F000 file at all (see
-      // NbmDataProvider's own kMinForecastHour_ comment).
+      // Starts at the model's first real hour -- NBM has no F000 file at
+      // all (see NbmDataProvider's own kMinForecastHour_ comment).
       section.hourSlider->setRange(section.gribManager->MinIdxForecastHour(),
                                    section.gribManager->MaxIdxForecastHour());
       section.playButton = new QPushButton(tr("Play"), groupBox);
@@ -393,7 +451,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                     stored.loopEndSpinBox->value());
                  RebuildHourButtons(stored);
               }
-              else if (category == map::GribCategory::Nbm)
+              else if (IsIdxSection(category))
               {
                  stored.hourSlider->setRange(
                     stored.gribManager->MinIdxForecastHour(),
@@ -598,7 +656,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                                                                   *it);
               });
    }
-   else if (category == map::GribCategory::Nbm)
+   else if (IsIdxSection(category))
    {
       connect(
          stored.cycleComboBox,
@@ -690,7 +748,192 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
               });
    }
 
+   if (category == map::GribCategory::User)
+   {
+      auto registry = manager::UserModelRegistry::Instance();
+
+      // activated(), not currentIndexChanged(): only a choice the user makes,
+      // never RefreshModelControls() repopulating the list.
+      connect(stored.modelComboBox,
+              &QComboBox::activated,
+              self_,
+              [registry, &stored](int index)
+              {
+                 const auto name =
+                    stored.modelComboBox->itemData(index).toString().toStdString();
+                 if (!name.empty())
+                 {
+                    registry->SetSelectedModel(name);
+                 }
+              });
+
+      connect(stored.importButton,
+              &QPushButton::clicked,
+              self_,
+              [this, &stored]() { ImportUserModel(stored); });
+
+      // Both signals reload: a re-import of the same model changes its
+      // products without changing the selection.
+      connect(registry.get(),
+              &manager::UserModelRegistry::SelectedModelChanged,
+              self_,
+              [&stored]() { stored.gribManager->ReloadUserModel(); });
+      connect(registry.get(),
+              &manager::UserModelRegistry::ModelsChanged,
+              self_,
+              [this, &stored]()
+              {
+                 RefreshModelControls(stored);
+                 stored.gribManager->ReloadUserModel();
+              });
+
+      connect(stored.gribManager.get(),
+              &manager::GribManager::ProductsChanged,
+              self_,
+              [this, &stored]() { ReloadUserProducts(stored); });
+
+      RefreshModelControls(stored);
+   }
+
    RefreshSection(stored);
+}
+
+void GribDockWidget::Impl::PopulateCycleCombo(CategorySection& section)
+{
+   // Repopulating must not look like the user picking "Latest".
+   const QSignalBlocker blocker(section.cycleComboBox);
+
+   section.cycleComboBox->clear();
+   section.cycleComboBox->addItem(tr("Latest"), QVariant());
+
+   // A 6-hourly model has 4 cycles a day, so look back further to give it a
+   // few to choose from.
+   const int historyHours = (section.category == map::GribCategory::User) ?
+                               kUserCycleHistoryHours_ :
+                               kNbmCycleHistoryHours_;
+
+   for (const auto& cycleTime : section.gribManager->IdxCycleChoices(historyHours))
+   {
+      const std::string label =
+         fmt::format("{:%Y-%m-%d %H}z ({}h)",
+                     fmt::gmtime(cycleTime),
+                     section.gribManager->MaxIdxForecastHourFor(cycleTime));
+      section.cycleComboBox->addItem(
+         QString::fromStdString(label),
+         QVariant::fromValue<qint64>(cycleTime.time_since_epoch().count()));
+   }
+}
+
+void GribDockWidget::Impl::RefreshModelControls(CategorySection& section)
+{
+   auto registry     = manager::UserModelRegistry::Instance();
+   const auto models = registry->Models();
+   const bool haveModels = !models.empty();
+
+   {
+      const QSignalBlocker blocker(section.modelComboBox);
+      section.modelComboBox->clear();
+      if (!haveModels)
+      {
+         section.modelComboBox->addItem(tr("(no models imported)"), QString());
+      }
+      for (const auto& model : models)
+      {
+         const auto name = QString::fromStdString(model.config.name);
+         section.modelComboBox->addItem(name, name);
+      }
+      const int selected = section.modelComboBox->findData(
+         QString::fromStdString(registry->SelectedModelName()));
+      section.modelComboBox->setCurrentIndex(selected < 0 ? 0 : selected);
+   }
+
+   // Nothing to pick or play until a model exists.
+   for (QWidget* widget : std::initializer_list<QWidget*> {
+           section.modelComboBox,
+           section.comboBox,
+           section.cycleComboBox,
+           section.hourSlider,
+           section.playButton,
+           section.exportButton})
+   {
+      widget->setEnabled(haveModels);
+   }
+
+   // A folder that failed to load is easy to miss otherwise: say which and why.
+   std::vector<std::string> notLoaded;
+   for (const auto& issue : registry->Issues())
+   {
+      if (!issue.errors.empty())
+      {
+         notLoaded.push_back(issue.folderName + ": " + issue.errors.front());
+      }
+   }
+   section.modelIssuesLabel->setVisible(!notLoaded.empty());
+   if (!notLoaded.empty())
+   {
+      section.modelIssuesLabel->setText(
+         tr("Not loaded:\n%1").arg(JoinLines(notLoaded, 4)));
+   }
+
+   RefreshSection(section);
+}
+
+void GribDockWidget::Impl::ReloadUserProducts(CategorySection& section)
+{
+   // Every checkbox belonged to the previous model.
+   section.comboBox->SetItems(section.gribManager->ProductNames());
+   PopulateCycleCombo(section);
+
+   const int lo = section.gribManager->MinIdxForecastHour();
+   const int hi = section.gribManager->MaxIdxForecastHourFor(
+      std::chrono::floor<std::chrono::hours>(std::chrono::system_clock::now()));
+
+   const QSignalBlocker blocker(section.hourSlider);
+   section.hourSlider->setRange(lo, std::max(lo, hi));
+   section.hourSlider->setValue(lo);
+   section.hourLabel->setText(
+      QString::fromStdString(fmt::format("F{:03d}", lo)));
+   section.animationTimer->stop();
+   section.playButton->setText(tr("Play"));
+
+   RefreshSection(section);
+}
+
+void GribDockWidget::Impl::ImportUserModel(CategorySection& /* section */)
+{
+   const QString folder = QFileDialog::getExistingDirectory(
+      self_,
+      tr("Choose a model folder (model.json and products.csv)"),
+      QString {},
+      QFileDialog::ShowDirsOnly);
+   if (folder.isEmpty())
+   {
+      return;
+   }
+
+   const QByteArray utf8 = folder.toUtf8();
+   const auto       result = manager::UserModelRegistry::Instance()->Import(
+      std::filesystem::path(std::u8string(utf8.begin(), utf8.end())));
+
+   if (!result.ok)
+   {
+      QMessageBox::warning(
+         self_,
+         tr("Model not imported"),
+         tr("That folder can't be used as a model:\n\n%1")
+            .arg(JoinLines(result.errors)));
+      return;
+   }
+
+   QString message =
+      tr("Imported \"%1\". Pick its products from the list below it.")
+         .arg(QString::fromStdString(result.modelName));
+   if (!result.warnings.empty())
+   {
+      message += tr("\n\nSome rows were skipped:\n%1")
+                    .arg(JoinLines(result.warnings));
+   }
+   QMessageBox::information(self_, tr("Model imported"), message);
 }
 
 std::set<int>& GribDockWidget::Impl::Picks(CategorySection& section)
@@ -832,6 +1075,14 @@ void GribDockWidget::Impl::RefreshSection(CategorySection& section)
 {
    const auto activeNames = section.gribManager->ActiveProductNames();
 
+   if (section.category == map::GribCategory::User &&
+       manager::UserModelRegistry::Instance()->Models().empty())
+   {
+      section.statusLabel->setText(
+         tr("(no models imported -- use \"Import model...\")"));
+      return;
+   }
+
    if (activeNames.empty())
    {
       // Genuinely reachable now for Rrfs/Nbm, which start (and can be
@@ -954,14 +1205,16 @@ GribDockWidget::GribDockWidget(QWidget* parent) :
 
    p->BuildMapCropPanel(layout, contents);
 
-   // Fixed at 4 (Mrms/Rtma/Rrfs/Nbm) -- reserved upfront so BuildSection's
-   // own push_back never reallocates mid-construction (see its comment).
-   p->sections_.reserve(4);
+   // Fixed at 5 (Mrms/Rtma/Rrfs/Nbm/User) -- reserved upfront so
+   // BuildSection's own push_back never reallocates mid-construction (see
+   // its comment).
+   p->sections_.reserve(5);
 
    p->BuildSection(map::GribCategory::Mrms, layout, contents);
    p->BuildSection(map::GribCategory::Rtma, layout, contents);
    p->BuildSection(map::GribCategory::Rrfs, layout, contents);
    p->BuildSection(map::GribCategory::Nbm, layout, contents);
+   p->BuildSection(map::GribCategory::User, layout, contents);
    p->BuildHodographLegend(layout, contents);
 
    layout->addStretch();

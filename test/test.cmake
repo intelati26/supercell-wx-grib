@@ -60,7 +60,8 @@ set(SRC_QT_MODEL_TESTS source/scwx/qt/model/imgui_context_model.test.cpp
                        source/scwx/qt/model/layer_model.test.cpp
                        source/scwx/qt/model/marker_model.test.cpp)
 set(SRC_QT_TYPES_TESTS source/scwx/qt/types/layer_types.test.cpp)
-set(SRC_QT_UI_TESTS source/scwx/qt/ui/threshold_value_utility.test.cpp)
+set(SRC_QT_UI_TESTS source/scwx/qt/ui/threshold_value_utility.test.cpp
+                     source/scwx/qt/ui/grib_dock_widget.test.cpp)
 set(SRC_QT_SETTINGS_TESTS source/scwx/qt/settings/settings_container.test.cpp
                           source/scwx/qt/settings/settings_variable.test.cpp
                           source/scwx/qt/settings/ui_settings.test.cpp

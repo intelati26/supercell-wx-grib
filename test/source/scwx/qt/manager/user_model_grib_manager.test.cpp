@@ -247,4 +247,86 @@ TEST_F(UserModelGribManagerTest, UserConfigReproducesTheBuiltInNbmFetch)
    gribManager->SetProductActive("2m Temperature", false);
 }
 
+// The example shipped in docs/grib-models must be a working model, not
+// documentation that has drifted: it imports with no warnings, and a real HRRR
+// field (last complete cycle, F03, chosen from the clock since NOAA only
+// keeps a couple of days) fetches and decodes through the whole path.
+TEST_F(UserModelGribManagerTest, ShippedHrrrExampleImportsAndDecodesARealField)
+{
+   using namespace std::chrono;
+   using namespace std::chrono_literals;
+
+   const fs::path example = (fs::path(__FILE__).parent_path() / ".." / ".." /
+                             ".." / ".." / ".." / "docs" / "grib-models" /
+                             "hrrr-conus")
+                               .lexically_normal();
+   ASSERT_TRUE(fs::is_regular_file(example / "model.json")) << example;
+
+   const auto imported = UserModelRegistry::Instance()->Import(example);
+   ASSERT_TRUE(imported.ok) << (imported.errors.empty() ? "" : imported.errors[0]);
+   EXPECT_TRUE(imported.warnings.empty())
+      << (imported.warnings.empty() ? "" : imported.warnings[0]);
+   EXPECT_EQ(imported.modelName, "HRRR CONUS (surface)");
+
+   auto gribManager = GribManager::Instance(map::GribCategory::User);
+   gribManager->ReloadUserModel();
+   ASSERT_EQ(gribManager->UserModelName(), "HRRR CONUS (surface)");
+   EXPECT_EQ(gribManager->ProductNames().size(), 6u);
+   EXPECT_EQ(gribManager->MinIdxForecastHour(), 0);
+   EXPECT_EQ(gribManager->MaxIdxForecastHourFor({}), 18);
+
+   const auto names = gribManager->ProductNames();
+   const auto it    = std::find(names.begin(), names.end(), "2m Temperature");
+   ASSERT_NE(it, names.end());
+   const auto productIndex =
+      static_cast<std::size_t>(std::distance(names.begin(), it));
+
+   gribManager->SetProductActive("2m Temperature", true);
+   gribManager->SetIdxCycle(floor<hours>(system_clock::now() - 6h));
+   gribManager->SetIdxForecastHour(3);
+
+   const std::string framePath =
+      map::GetGribFramePath(map::GribCategory::User, productIndex);
+   constexpr std::size_t kCells = 1799 * 1059; // HRRR CONUS Lambert grid
+
+   bool               found    = false;
+   double             lastMean = 0.0;
+   std::vector<float> payload;
+
+   for (int i = 0; i < 90 && !found; ++i)
+   {
+      std::ifstream in(framePath, std::ios::binary);
+      if (in.is_open())
+      {
+         std::string header;
+         std::getline(in, header);
+
+         payload.assign(kCells, 0.0f);
+         in.read(reinterpret_cast<char*>(payload.data()),
+                 static_cast<std::streamsize>(payload.size() * sizeof(float)));
+
+         if ((in.good() || in.eof()) &&
+             static_cast<std::size_t>(in.gcount()) ==
+                payload.size() * sizeof(float))
+         {
+            lastMean = std::accumulate(payload.begin(), payload.end(), 0.0) /
+                       static_cast<double>(payload.size());
+            // Real CONUS 2m temperature is somewhere in this range in any
+            // season; a wrong field or a mis-decode would not be.
+            found = lastMean > 250.0 && lastMean < 315.0;
+         }
+      }
+      // Windows refuses to rename a new frame over a file still open here.
+      in.close();
+      if (!found)
+      {
+         std::this_thread::sleep_for(500ms);
+      }
+   }
+
+   EXPECT_TRUE(found) << "Last decoded mean seen: " << lastMean << " K";
+
+   gribManager->SetProductActive("2m Temperature", false);
+}
+
 } // namespace scwx::qt::manager

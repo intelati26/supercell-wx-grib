@@ -1,0 +1,22 @@
+{
+  "model": {
+    "name": "HRRR CONUS (surface)"
+  },
+  "source": {
+    "bucket": "noaa-hrrr-bdp-pds",
+    "region": "us-east-1",
+    "key_pattern": "hrrr.{yyyymmdd}/conus/hrrr.t{hh}z.wrfsfcf{fh2}.grib2",
+    "cycle_hours": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+                    12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+    "min_forecast_hour": 0,
+    "max_forecast_hour": 18,
+    "availability_lag_hours": 2
+  },
+  "defaults": {
+    "type": "fill",
+    "units": "K",
+    "quantity": "temperature_kelvin",
+    "color_offset": 250,
+    "color_scale": 70
+  }
+}

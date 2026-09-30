@@ -3,12 +3,20 @@
 
 #include <aws/core/Aws.h>
 #include <gtest/gtest.h>
-#include <QCoreApplication>
+#include <QApplication>
 #include <spdlog/spdlog.h>
 
 int main(int argc, char** argv)
 {
-   const QCoreApplication app(argc, argv);
+   // A QApplication (a QCoreApplication, so everything that used to work
+   // still does) so widget tests can build real widgets. Qt's offscreen
+   // platform, unless the caller chose one, so no display is needed and
+   // nothing pops up on a developer's desktop.
+   if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM"))
+   {
+      qputenv("QT_QPA_PLATFORM", "offscreen");
+   }
+   const QApplication app(argc, argv);
 
    scwx::util::Logger::Initialize();
    spdlog::set_level(spdlog::level::debug);
