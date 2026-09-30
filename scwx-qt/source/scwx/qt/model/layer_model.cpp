@@ -151,10 +151,14 @@ static const std::vector<types::LayerInfo> kDefaultLayers_ {
     .movable_     = true},
    // Same "point glyphs read poorly buried under a color-fill layer"
    // reasoning as WindBarbs -- placed alongside it, above the three GRIB
-   // fill layers.
+   // fill layers. Off in every pane by default, unlike the other data
+   // layers: while it is displayed and zoomed in it downloads a ~320MB RRFS
+   // file and decodes 35 grids in the background, which nobody should get
+   // without asking for it.
    {.type_        = types::LayerType::Data,
     .description_ = types::DataLayer::Hodograph,
-    .movable_     = true},
+    .movable_     = true,
+    .displayed_   = {false}},
    {.type_        = types::LayerType::Data,
     .description_ = types::DataLayer::GribMrms,
     .movable_     = true},
