@@ -9,9 +9,8 @@
 namespace scwx::provider
 {
 
-static const std::string logPrefix_ =
-   "scwx::provider::configured_idx_provider";
-static const auto logger_ = scwx::util::Logger::Create(logPrefix_);
+static const std::string logPrefix_ = "scwx::provider::configured_idx_provider";
+static const auto        logger_    = scwx::util::Logger::Create(logPrefix_);
 
 using util::grib_model_config::SourceSpec;
 
@@ -31,14 +30,12 @@ ConfiguredIdxProvider::ConfiguredIdxProvider(const SourceSpec& source) :
     // The radarSite slot is just a label for this provider family.
     IdxModelProvider("configured-idx", source.bucket, source.region),
     p(std::make_unique<Impl>(source))
-{
-   p->forecastHour_ = source.minForecastHour;
-}
+{ p->forecastHour_ = source.minForecastHour; }
 
 ConfiguredIdxProvider::~ConfiguredIdxProvider() = default;
 
 std::chrono::system_clock::time_point
-ConfiguredIdxProvider::LatestCycle(const SourceSpec&                    source,
+ConfiguredIdxProvider::LatestCycle(const SourceSpec&                     source,
                                    std::chrono::system_clock::time_point now)
 {
    using namespace std::chrono;
@@ -51,9 +48,8 @@ ConfiguredIdxProvider::LatestCycle(const SourceSpec&                    source,
    auto candidate = newest;
    for (int i = 0; i < 48; ++i, candidate -= hours {1})
    {
-      const int hour =
-         static_cast<int>(duration_cast<hours>(candidate - floor<days>(candidate))
-                             .count());
+      const int hour = static_cast<int>(
+         duration_cast<hours>(candidate - floor<days>(candidate)).count());
       if (std::find(source.cycleHours.begin(), source.cycleHours.end(), hour) !=
           source.cycleHours.end())
       {
@@ -77,15 +73,15 @@ int ConfiguredIdxProvider::SnapHour(const SourceSpec& source, int hour)
 }
 
 std::string
-ConfiguredIdxProvider::BuildKey(const SourceSpec&                    source,
+ConfiguredIdxProvider::BuildKey(const SourceSpec&                     source,
                                 std::chrono::system_clock::time_point cycle,
                                 int                                   hour)
 {
    using namespace std::chrono;
 
-   const auto cycleDay  = floor<days>(cycle);
-   const int  cycleHour = static_cast<int>(
-      duration_cast<hours>(cycle - cycleDay).count());
+   const auto cycleDay = floor<days>(cycle);
+   const int  cycleHour =
+      static_cast<int>(duration_cast<hours>(cycle - cycleDay).count());
 
    return util::grib_model_config::ExpandKeyPattern(
       source.keyPattern,
@@ -102,37 +98,28 @@ void ConfiguredIdxProvider::SetCycle(
 }
 
 void ConfiguredIdxProvider::UseLatestCycle()
-{
-   p->useLatestCycle_ = true;
-}
+{ p->useLatestCycle_ = true; }
 
 bool ConfiguredIdxProvider::IsUsingLatestCycle() const
-{
-   return p->useLatestCycle_;
-}
+{ return p->useLatestCycle_; }
 
-std::chrono::system_clock::time_point ConfiguredIdxProvider::CurrentCycle() const
+std::chrono::system_clock::time_point
+ConfiguredIdxProvider::CurrentCycle() const
 {
-   return p->useLatestCycle_ ?
-             LatestCycle(p->source_, util::time::now()) :
-             p->cycleOverride_;
+   return p->useLatestCycle_ ? LatestCycle(p->source_, util::time::now()) :
+                               p->cycleOverride_;
 }
 
 void ConfiguredIdxProvider::SetForecastHour(int hour)
-{
-   p->forecastHour_ = hour;
-}
+{ p->forecastHour_ = hour; }
 
 int ConfiguredIdxProvider::ForecastHour() const
-{
-   return p->forecastHour_;
-}
+{ return p->forecastHour_; }
 
-std::string ConfiguredIdxProvider::BuildKeyFor(
-   std::chrono::system_clock::time_point cycle, int hour) const
-{
-   return BuildKey(p->source_, cycle, hour);
-}
+std::string
+ConfiguredIdxProvider::BuildKeyFor(std::chrono::system_clock::time_point cycle,
+                                   int hour) const
+{ return BuildKey(p->source_, cycle, hour); }
 
 bool ConfiguredIdxProvider::RunsCycleAt(
    std::chrono::system_clock::time_point cycle) const
@@ -146,21 +133,15 @@ bool ConfiguredIdxProvider::RunsCycleAt(
 }
 
 int ConfiguredIdxProvider::MinForecastHourFor() const
-{
-   return p->source_.minForecastHour;
-}
+{ return p->source_.minForecastHour; }
 
 int ConfiguredIdxProvider::MaxForecastHourFor(
    std::chrono::system_clock::time_point /* cycle */) const
-{
-   return std::max(p->source_.minForecastHour, p->source_.maxForecastHour);
-}
+{ return std::max(p->source_.minForecastHour, p->source_.maxForecastHour); }
 
 int ConfiguredIdxProvider::SnapForecastHourFor(
    std::chrono::system_clock::time_point /* cycle */, int hour) const
-{
-   return SnapHour(p->source_, hour);
-}
+{ return SnapHour(p->source_, hour); }
 
 std::chrono::system_clock::time_point
 ConfiguredIdxProvider::GetTimePointByKey(const std::string& key) const
@@ -183,13 +164,13 @@ std::shared_ptr<wsr88d::NexradFile> ConfiguredIdxProvider::LoadObjectByTime(
    return nullptr;
 }
 
-std::optional<std::string>
-ConfiguredIdxProvider::FetchField(const std::string&              key,
-                                  const std::string&              parameter,
-                                  const std::string&              level,
-                                  const std::string&              qualifier,
-                                  const std::string&              outputPath,
-                                  const DownloadProgressCallback& progressCallback)
+std::optional<std::string> ConfiguredIdxProvider::FetchField(
+   const std::string&              key,
+   const std::string&              parameter,
+   const std::string&              level,
+   const std::string&              qualifier,
+   const std::string&              outputPath,
+   const DownloadProgressCallback& progressCallback)
 {
    return DownloadGribMessageByIndex(p->source_.bucket,
                                      key,

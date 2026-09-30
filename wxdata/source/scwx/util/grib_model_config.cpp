@@ -30,7 +30,7 @@ struct NumericField
    const char* key;
    double      lo;
    double      hi;
-   float DisplaySpec::*member;
+   float DisplaySpec::* member;
 };
 
 constexpr NumericField kNumericFields[] = {
@@ -84,13 +84,10 @@ struct Reader
    std::vector<std::string>& errors;
 
    void Error(const std::string& path, const std::string& message)
-   {
-      errors.push_back(path + ": " + message);
-   }
+   { errors.push_back(path + ": " + message); }
 
-   const json::object* Object(const json::object& parent,
-                              const char*         key,
-                              bool                required)
+   const json::object*
+   Object(const json::object& parent, const char* key, bool required)
    {
       auto it = parent.find(key);
       if (it == parent.end())
@@ -313,9 +310,12 @@ char SniffDelimiter(std::string_view text)
 
 std::string Trim(const std::string& s)
 {
-   auto notSpace = [](unsigned char c) { return !std::isspace(c); };
-   auto first    = std::find_if(s.begin(), s.end(), notSpace);
-   auto last     = std::find_if(s.rbegin(), s.rend(), notSpace).base();
+   auto notSpace = [](unsigned char c)
+   {
+      return !std::isspace(c);
+   };
+   auto first = std::find_if(s.begin(), s.end(), notSpace);
+   auto last  = std::find_if(s.rbegin(), s.rend(), notSpace).base();
    return first < last ? std::string(first, last) : std::string {};
 }
 
@@ -330,14 +330,13 @@ std::string Lower(std::string s)
 
 bool IsBlank(const Record& rec)
 {
-   return std::all_of(
-      rec.begin(), rec.end(), [](const std::string& c) { return Trim(c).empty(); });
+   return std::all_of(rec.begin(),
+                      rec.end(),
+                      [](const std::string& c) { return Trim(c).empty(); });
 }
 
 bool IsComment(const Record& rec)
-{
-   return !rec.empty() && Trim(rec[0]).starts_with('#');
-}
+{ return !rec.empty() && Trim(rec[0]).starts_with('#'); }
 
 std::string RowLabel(std::size_t row, const std::string& column = {})
 {
@@ -362,7 +361,9 @@ bool IsPlausibleBucketName(std::string_view name)
       return false;
    }
    const auto alnum = [](char c)
-   { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'); };
+   {
+      return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+   };
    if (!alnum(name.front()) || !alnum(name.back()) ||
        name.find("..") != std::string_view::npos)
    {
@@ -370,7 +371,8 @@ bool IsPlausibleBucketName(std::string_view name)
    }
    return std::all_of(name.begin(),
                       name.end(),
-                      [&alnum](char c) { return alnum(c) || c == '.' || c == '-'; });
+                      [&alnum](char c)
+                      { return alnum(c) || c == '.' || c == '-'; });
 }
 
 bool IsPlausibleRegion(std::string_view region)
@@ -442,8 +444,7 @@ ParseResult ParseModelSettings(std::string_view jsonText)
       }
       if (!IsPlausibleRegion(s.region))
       {
-         r.Error("source.region",
-                 "expected an AWS region like \"us-east-1\"");
+         r.Error("source.region", "expected an AWS region like \"us-east-1\"");
       }
       if (s.idxSuffix != ".idx")
       {
@@ -472,8 +473,7 @@ ParseResult ParseModelSettings(std::string_view jsonText)
          }
       }
 
-      const auto optionalInt =
-         [&](const char* key, int low, int high, int& out)
+      const auto optionalInt = [&](const char* key, int low, int high, int& out)
       {
          auto found = source->find(key);
          if (found == source->end())
@@ -531,7 +531,7 @@ ParseResult ParseModelSettings(std::string_view jsonText)
    return result;
 }
 
-ProductsResult ParseProductsCsv(std::string_view csvText,
+ProductsResult ParseProductsCsv(std::string_view   csvText,
                                 const DisplaySpec& defaults)
 {
    ProductsResult result;
@@ -584,7 +584,8 @@ ProductsResult ParseProductsCsv(std::string_view csvText,
       if (!columnOf(required))
       {
          result.errors.push_back(
-            std::string("header: missing required column \"") + required + "\"");
+            std::string("header: missing required column \"") + required +
+            "\"");
       }
    }
    if (!result.errors.empty())
@@ -595,7 +596,8 @@ ProductsResult ParseProductsCsv(std::string_view csvText,
    auto cell = [&](const Record& rec, const std::string& column)
    {
       auto index = columnOf(column);
-      return (index && *index < rec.size()) ? Trim(rec[*index]) : std::string {};
+      return (index && *index < rec.size()) ? Trim(rec[*index]) :
+                                              std::string {};
    };
 
    for (std::size_t i = headerIndex + 1; i < records.size(); ++i)
@@ -684,10 +686,10 @@ ProductsResult ParseProductsCsv(std::string_view csvText,
 
       if (problems.empty())
       {
-         const bool duplicate = std::any_of(
-            result.products.begin(),
-            result.products.end(),
-            [&](const ProductSpec& p) { return p.name == product.name; });
+         const bool duplicate = std::any_of(result.products.begin(),
+                                            result.products.end(),
+                                            [&](const ProductSpec& p)
+                                            { return p.name == product.name; });
          if (duplicate)
          {
             problems.push_back(RowLabel(row, "name") + ": duplicate of \"" +
@@ -822,19 +824,19 @@ std::string ValidateKeyPattern(std::string_view keyPattern)
 
       if (c == '{')
       {
-         const auto rest = keyPattern.substr(i);
-         const auto token =
-            std::find_if(std::begin(kTokens),
-                         std::end(kTokens),
-                         [&rest](std::string_view t)
-                         { return rest.starts_with(t); });
+         const auto rest  = keyPattern.substr(i);
+         const auto token = std::find_if(std::begin(kTokens),
+                                         std::end(kTokens),
+                                         [&rest](std::string_view t)
+                                         { return rest.starts_with(t); });
          if (token == std::end(kTokens))
          {
             const auto close = rest.find('}');
             return "unknown or unterminated placeholder '" +
-                   std::string(rest.substr(
-                      0, close == std::string_view::npos ? rest.size() :
-                                                           close + 1)) +
+                   std::string(rest.substr(0,
+                                           close == std::string_view::npos ?
+                                              rest.size() :
+                                              close + 1)) +
                    "' (allowed: {yyyymmdd}, {hh}, {fh2}, {fh3})";
          }
          i += token->size();

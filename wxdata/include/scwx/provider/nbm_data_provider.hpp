@@ -84,7 +84,7 @@ public:
    // static functions above).
    [[nodiscard]] std::string
    BuildKeyFor(std::chrono::system_clock::time_point cycle,
-               int                                    hour) const override;
+               int                                   hour) const override;
    [[nodiscard]] bool
    RunsCycleAt(std::chrono::system_clock::time_point cycle) const override;
    [[nodiscard]] int MinForecastHourFor() const override;
@@ -92,7 +92,7 @@ public:
       std::chrono::system_clock::time_point cycle) const override;
    [[nodiscard]] int
    SnapForecastHourFor(std::chrono::system_clock::time_point cycle,
-                       int                                    hour) const override;
+                       int hour) const override;
 
    [[nodiscard]] std::chrono::system_clock::time_point
    GetTimePointByKey(const std::string& key) const override;
@@ -108,13 +108,13 @@ public:
    // method publicly: GribManager calls this on a `provider_` it only
    // holds as a `shared_ptr<AwsNexradDataProvider>`, via a static_cast to
    // this concrete type.
-   std::optional<std::string>
-   FetchField(const std::string&              key,
-             const std::string&               parameter,
-             const std::string&               level,
-             const std::string&               qualifier,
-             const std::string&               outputPath,
-             const DownloadProgressCallback& progressCallback = nullptr) override;
+   std::optional<std::string> FetchField(
+      const std::string&              key,
+      const std::string&              parameter,
+      const std::string&              level,
+      const std::string&              qualifier,
+      const std::string&              outputPath,
+      const DownloadProgressCallback& progressCallback = nullptr) override;
 
 protected:
    std::string GetPrefix(std::chrono::system_clock::time_point date) override;

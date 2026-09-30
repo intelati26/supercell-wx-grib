@@ -10,9 +10,8 @@
 namespace scwx::qt::manager
 {
 
-static const std::string logPrefix_ =
-   "scwx::qt::manager::user_model_registry";
-static const auto logger_ = scwx::util::Logger::Create(logPrefix_);
+static const std::string logPrefix_ = "scwx::qt::manager::user_model_registry";
+static const auto        logger_    = scwx::util::Logger::Create(logPrefix_);
 
 namespace fs = std::filesystem;
 using util::grib_model_config::LoadModelFolder;
@@ -57,9 +56,9 @@ bool IsPlainFile(const fs::path& path)
 
 } // namespace
 
-void UserModelRegistry::Scan(const fs::path&                modelsDirectory,
-                             std::vector<UserModelEntry>&   models,
-                             std::vector<UserModelIssue>&   issues)
+void UserModelRegistry::Scan(const fs::path&              modelsDirectory,
+                             std::vector<UserModelEntry>& models,
+                             std::vector<UserModelIssue>& issues)
 {
    models.clear();
    issues.clear();
@@ -96,11 +95,11 @@ void UserModelRegistry::Scan(const fs::path&                modelsDirectory,
          continue;
       }
 
-      const bool duplicate = std::any_of(
-         models.begin(),
-         models.end(),
-         [&](const UserModelEntry& m)
-         { return m.config.name == result.config->name; });
+      const bool duplicate =
+         std::any_of(models.begin(),
+                     models.end(),
+                     [&](const UserModelEntry& m)
+                     { return m.config.name == result.config->name; });
       if (duplicate)
       {
          issues.push_back({folderName,
@@ -150,7 +149,7 @@ UserModelRegistry::ImportInto(const fs::path& sourceFolder,
       return out;
    }
 
-   auto loaded = LoadModelFolder(sourceFolder.string());
+   auto loaded  = LoadModelFolder(sourceFolder.string());
    out.errors   = loaded.errors;
    out.warnings = loaded.warnings;
    if (!loaded.config)
@@ -198,9 +197,7 @@ public:
 };
 
 UserModelRegistry::UserModelRegistry() : p(std::make_unique<Impl>())
-{
-   Reload();
-}
+{ Reload(); }
 
 UserModelRegistry::~UserModelRegistry() = default;
 
@@ -268,16 +265,17 @@ void UserModelRegistry::Reload()
       p->models_ = std::move(models);
       p->issues_ = std::move(issues);
 
-      const auto found = std::any_of(
-         p->models_.begin(),
-         p->models_.end(),
-         [&](const UserModelEntry& m) { return m.config.name == p->selected_; });
+      const auto found = std::any_of(p->models_.begin(),
+                                     p->models_.end(),
+                                     [&](const UserModelEntry& m)
+                                     { return m.config.name == p->selected_; });
       if (!found)
       {
-         const std::string next =
-            p->models_.empty() ? std::string {} : p->models_.front().config.name;
-         selectionChanged = (next != p->selected_);
-         p->selected_     = next;
+         const std::string next = p->models_.empty() ?
+                                     std::string {} :
+                                     p->models_.front().config.name;
+         selectionChanged       = (next != p->selected_);
+         p->selected_           = next;
       }
    }
 
@@ -336,8 +334,7 @@ void UserModelRegistry::SetSelectedModel(const std::string& name)
    Q_EMIT SelectedModelChanged();
 }
 
-UserModelImportResult
-UserModelRegistry::Import(const fs::path& sourceFolder)
+UserModelImportResult UserModelRegistry::Import(const fs::path& sourceFolder)
 {
    auto result = ImportInto(sourceFolder, ModelsDirectory());
    if (result.ok)

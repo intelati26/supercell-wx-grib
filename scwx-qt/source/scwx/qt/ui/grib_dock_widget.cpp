@@ -381,10 +381,10 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
       groupLayout->addWidget(section.cycleComboBox);
 
       auto* hourRow      = new QHBoxLayout();
-      section.hourLabel  = new QLabel(
-         QString::fromStdString(fmt::format(
-            "F{:03d}", section.gribManager->MinIdxForecastHour())),
-         groupBox);
+      section.hourLabel =
+         new QLabel(QString::fromStdString(fmt::format(
+                       "F{:03d}", section.gribManager->MinIdxForecastHour())),
+                    groupBox);
       section.hourSlider = new QSlider(Qt::Horizontal, groupBox);
       // Starts at the model's first real hour -- NBM has no F000 file at
       // all (see NbmDataProvider's own kMinForecastHour_ comment).
@@ -754,18 +754,19 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
 
       // activated(), not currentIndexChanged(): only a choice the user makes,
       // never RefreshModelControls() repopulating the list.
-      connect(stored.modelComboBox,
-              &QComboBox::activated,
-              self_,
-              [registry, &stored](int index)
-              {
-                 const auto name =
-                    stored.modelComboBox->itemData(index).toString().toStdString();
-                 if (!name.empty())
-                 {
-                    registry->SetSelectedModel(name);
-                 }
-              });
+      connect(
+         stored.modelComboBox,
+         &QComboBox::activated,
+         self_,
+         [registry, &stored](int index)
+         {
+            const auto name =
+               stored.modelComboBox->itemData(index).toString().toStdString();
+            if (!name.empty())
+            {
+               registry->SetSelectedModel(name);
+            }
+         });
 
       connect(stored.importButton,
               &QPushButton::clicked,
@@ -812,7 +813,8 @@ void GribDockWidget::Impl::PopulateCycleCombo(CategorySection& section)
                                kUserCycleHistoryHours_ :
                                kNbmCycleHistoryHours_;
 
-   for (const auto& cycleTime : section.gribManager->IdxCycleChoices(historyHours))
+   for (const auto& cycleTime :
+        section.gribManager->IdxCycleChoices(historyHours))
    {
       const std::string label =
          fmt::format("{:%Y-%m-%d %H}z ({}h)",
@@ -826,8 +828,8 @@ void GribDockWidget::Impl::PopulateCycleCombo(CategorySection& section)
 
 void GribDockWidget::Impl::RefreshModelControls(CategorySection& section)
 {
-   auto registry     = manager::UserModelRegistry::Instance();
-   const auto models = registry->Models();
+   auto       registry   = manager::UserModelRegistry::Instance();
+   const auto models     = registry->Models();
    const bool haveModels = !models.empty();
 
    {
@@ -848,13 +850,13 @@ void GribDockWidget::Impl::RefreshModelControls(CategorySection& section)
    }
 
    // Nothing to pick or play until a model exists.
-   for (QWidget* widget : std::initializer_list<QWidget*> {
-           section.modelComboBox,
-           section.comboBox,
-           section.cycleComboBox,
-           section.hourSlider,
-           section.playButton,
-           section.exportButton})
+   for (QWidget* widget :
+        std::initializer_list<QWidget*> {section.modelComboBox,
+                                         section.comboBox,
+                                         section.cycleComboBox,
+                                         section.hourSlider,
+                                         section.playButton,
+                                         section.exportButton})
    {
       widget->setEnabled(haveModels);
    }
@@ -911,17 +913,16 @@ void GribDockWidget::Impl::ImportUserModel(CategorySection& /* section */)
       return;
    }
 
-   const QByteArray utf8 = folder.toUtf8();
+   const QByteArray utf8   = folder.toUtf8();
    const auto       result = manager::UserModelRegistry::Instance()->Import(
       std::filesystem::path(std::u8string(utf8.begin(), utf8.end())));
 
    if (!result.ok)
    {
-      QMessageBox::warning(
-         self_,
-         tr("Model not imported"),
-         tr("That folder can't be used as a model:\n\n%1")
-            .arg(JoinLines(result.errors)));
+      QMessageBox::warning(self_,
+                           tr("Model not imported"),
+                           tr("That folder can't be used as a model:\n\n%1")
+                              .arg(JoinLines(result.errors)));
       return;
    }
 
@@ -930,8 +931,8 @@ void GribDockWidget::Impl::ImportUserModel(CategorySection& /* section */)
          .arg(QString::fromStdString(result.modelName));
    if (!result.warnings.empty())
    {
-      message += tr("\n\nSome rows were skipped:\n%1")
-                    .arg(JoinLines(result.warnings));
+      message +=
+         tr("\n\nSome rows were skipped:\n%1").arg(JoinLines(result.warnings));
    }
    QMessageBox::information(self_, tr("Model imported"), message);
 }

@@ -58,7 +58,7 @@ public:
 
    [[nodiscard]] std::string
    BuildKeyFor(std::chrono::system_clock::time_point cycle,
-               int                                    hour) const override;
+               int                                   hour) const override;
    [[nodiscard]] bool
    RunsCycleAt(std::chrono::system_clock::time_point cycle) const override;
    [[nodiscard]] int MinForecastHourFor() const override;
@@ -66,7 +66,7 @@ public:
       std::chrono::system_clock::time_point cycle) const override;
    [[nodiscard]] int
    SnapForecastHourFor(std::chrono::system_clock::time_point cycle,
-                       int                                    hour) const override;
+                       int hour) const override;
 
    // Key patterns aren't invertible in general, so the generic
    // list-and-find API can't recover a time from a key; GribManager never
@@ -79,14 +79,13 @@ public:
    std::shared_ptr<wsr88d::NexradFile>
    LoadObjectByTime(std::chrono::system_clock::time_point time) override;
 
-   std::optional<std::string>
-   FetchField(const std::string&              key,
-              const std::string&              parameter,
-              const std::string&              level,
-              const std::string&              qualifier,
-              const std::string&              outputPath,
-              const DownloadProgressCallback& progressCallback =
-                 nullptr) override;
+   std::optional<std::string> FetchField(
+      const std::string&              key,
+      const std::string&              parameter,
+      const std::string&              level,
+      const std::string&              qualifier,
+      const std::string&              outputPath,
+      const DownloadProgressCallback& progressCallback = nullptr) override;
 
 protected:
    std::string GetPrefix(std::chrono::system_clock::time_point date) override;

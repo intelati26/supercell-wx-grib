@@ -135,10 +135,8 @@ std::chrono::system_clock::time_point NbmDataProvider::CurrentCycle() const
 
 std::string
 NbmDataProvider::BuildKeyFor(std::chrono::system_clock::time_point cycle,
-                             int                                    hour) const
-{
-   return BuildKey(cycle, hour);
-}
+                             int                                   hour) const
+{ return BuildKey(cycle, hour); }
 
 bool NbmDataProvider::RunsCycleAt(
    std::chrono::system_clock::time_point /* cycle */) const
@@ -147,21 +145,15 @@ bool NbmDataProvider::RunsCycleAt(
 }
 
 int NbmDataProvider::MinForecastHourFor() const
-{
-   return kMinForecastHour_;
-}
+{ return kMinForecastHour_; }
 
 int NbmDataProvider::MaxForecastHourFor(
    std::chrono::system_clock::time_point cycle) const
-{
-   return MaxForecastHourForCycle(cycle);
-}
+{ return MaxForecastHourForCycle(cycle); }
 
 int NbmDataProvider::SnapForecastHourFor(
    std::chrono::system_clock::time_point cycle, int hour) const
-{
-   return SnapForecastHour(cycle, hour);
-}
+{ return SnapForecastHour(cycle, hour); }
 
 void NbmDataProvider::SetForecastHour(int hour)
 {

@@ -34,9 +34,7 @@ void Write(const fs::path& path, const std::string& text)
 // tests are ever run from a process without one there is no way to build
 // widgets, so they skip.
 QApplication* Application()
-{
-   return qobject_cast<QApplication*>(QCoreApplication::instance());
-}
+{ return qobject_cast<QApplication*>(QCoreApplication::instance()); }
 
 QGroupBox* FindGroup(QWidget& root, const QString& title)
 {
@@ -66,7 +64,8 @@ protected:
                std::to_string(reinterpret_cast<std::uintptr_t>(this)));
       fs::remove_all(root_);
       fs::create_directories(root_);
-      manager::UserModelRegistry::SetModelsDirectoryForTesting(root_ / "models");
+      manager::UserModelRegistry::SetModelsDirectoryForTesting(root_ /
+                                                               "models");
    }
 
    void TearDown() override
@@ -241,8 +240,8 @@ TEST_F(GribDockWidgetTest, ImportingAModelUpdatesAnOpenDockWithoutARestart)
    EXPECT_EQ(itemModel->item(0)->text(), "Alpha");
 
    // It landed in the models directory under a slug of its name.
-   EXPECT_TRUE(fs::is_regular_file(root_ / "models" / "imported-live" /
-                                   "model.json"));
+   EXPECT_TRUE(
+      fs::is_regular_file(root_ / "models" / "imported-live" / "model.json"));
 
    MaybeSnapshot(dock, "dock-after-import");
 }

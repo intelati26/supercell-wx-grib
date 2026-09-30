@@ -1101,26 +1101,25 @@ BuildUserProducts(const std::optional<manager::UserModelEntry>& model)
       const auto& d = spec.display;
 
       // Same field order as the built-in idx (NBM) rows above.
-      products.push_back(
-         {spec.name,
-          "",
-          spec.shortName,
-          d.colorOffset,
-          d.colorScale,
-          d.noDataThreshold,
-          QuantityFromName(d.quantity),
-          d.units,
-          d.type == "contour" ? d.contourInterval : 0.0f,
-          "",
-          "",
-          -1,
-          -1,
-          -1,
-          -1,
-          provider::RrfsFileFamily::TwoDField,
-          spec.index.parameter,
-          spec.index.level,
-          spec.index.qualifier});
+      products.push_back({spec.name,
+                          "",
+                          spec.shortName,
+                          d.colorOffset,
+                          d.colorScale,
+                          d.noDataThreshold,
+                          QuantityFromName(d.quantity),
+                          d.units,
+                          d.type == "contour" ? d.contourInterval : 0.0f,
+                          "",
+                          "",
+                          -1,
+                          -1,
+                          -1,
+                          -1,
+                          provider::RrfsFileFamily::TwoDField,
+                          spec.index.parameter,
+                          spec.index.level,
+                          spec.index.qualifier});
    }
    return products;
 }
@@ -1129,8 +1128,8 @@ BuildUserProducts(const std::optional<manager::UserModelEntry>& model)
 // references that background fetch threads may still be reading when the
 // user switches models, and a deque never moves existing elements. A table
 // is a few KB and one is added per model switch.
-std::mutex                                gUserProductsMutex;
-std::deque<std::vector<ProductConfig>>    gUserProducts(1);
+std::mutex                             gUserProductsMutex;
+std::deque<std::vector<ProductConfig>> gUserProducts(1);
 
 const std::vector<ProductConfig>& CurrentUserProducts()
 {
@@ -1140,7 +1139,7 @@ const std::vector<ProductConfig>& CurrentUserProducts()
 
 void RebuildUserProducts(const std::optional<manager::UserModelEntry>& model)
 {
-   auto products = BuildUserProducts(model);
+   auto            products = BuildUserProducts(model);
    std::lock_guard lock(gUserProductsMutex);
    gUserProducts.push_back(std::move(products));
 }
@@ -1210,10 +1209,10 @@ MakeProvider(map::GribCategory category, const ProductConfig& product)
       return std::make_shared<provider::NbmDataProvider>();
    case map::GribCategory::User:
    {
-      const auto model = manager::UserModelRegistry::Instance()->SelectedModel();
+      const auto model =
+         manager::UserModelRegistry::Instance()->SelectedModel();
       return std::make_shared<provider::ConfiguredIdxProvider>(
-         model ? model->config.source :
-                 util::grib_model_config::SourceSpec {});
+         model ? model->config.source : util::grib_model_config::SourceSpec {});
    }
    case map::GribCategory::Rtma:
    default:
@@ -1414,7 +1413,8 @@ MakeIdxRulesProvider(map::GribCategory category)
       return std::make_shared<provider::NbmDataProvider>();
    case map::GribCategory::User:
    {
-      const auto model = manager::UserModelRegistry::Instance()->SelectedModel();
+      const auto model =
+         manager::UserModelRegistry::Instance()->SelectedModel();
       return model ? std::make_shared<provider::ConfiguredIdxProvider>(
                         model->config.source) :
                      nullptr;
@@ -2831,9 +2831,7 @@ void GribManager::UseLatestIdxCycle()
 }
 
 bool GribManager::IsUsingLatestIdxCycle() const
-{
-   return !IsIdxCategory(p->category_) || p->idxUseLatestCycle_;
-}
+{ return !IsIdxCategory(p->category_) || p->idxUseLatestCycle_; }
 
 std::chrono::system_clock::time_point GribManager::CurrentIdxCycle() const
 {
@@ -2869,8 +2867,9 @@ void GribManager::SetIdxForecastHour(int hour)
    // this from a linear slider would otherwise request hours that simply
    // don't exist for most of the range.
    p->idxForecastHour_ =
-      p->idxRules_ ? p->idxRules_->SnapForecastHourFor(CurrentIdxCycle(), hour) :
-                     hour;
+      p->idxRules_ ?
+         p->idxRules_->SnapForecastHourFor(CurrentIdxCycle(), hour) :
+         hour;
 
    for (auto& [index, providerPtr] : p->providers_)
    {
@@ -2881,9 +2880,7 @@ void GribManager::SetIdxForecastHour(int hour)
 }
 
 int GribManager::IdxForecastHour() const
-{
-   return (IsIdxCategory(p->category_)) ? p->idxForecastHour_ : 0;
-}
+{ return (IsIdxCategory(p->category_)) ? p->idxForecastHour_ : 0; }
 
 int GribManager::MaxIdxForecastHour() const
 {
@@ -2894,7 +2891,8 @@ int GribManager::MaxIdxForecastHour() const
       return 0;
    }
 
-   return p->idxRules_ ? p->idxRules_->MaxForecastHourFor(CurrentIdxCycle()) : 0;
+   return p->idxRules_ ? p->idxRules_->MaxForecastHourFor(CurrentIdxCycle()) :
+                         0;
 }
 
 int GribManager::MinIdxForecastHour() const
@@ -2931,7 +2929,7 @@ void GribManager::ReloadUserModel()
    p->idxUseLatestCycle_ = true;
    p->idxCycleOverride_  = {};
    p->idxRules_          = MakeIdxRulesProvider(p->category_);
-   p->idxForecastHour_   = p->idxRules_ ? p->idxRules_->MinForecastHourFor() : 0;
+   p->idxForecastHour_ = p->idxRules_ ? p->idxRules_->MinForecastHourFor() : 0;
 
    logger_->info("User model is now \"{}\" ({} products)",
                  model ? model->config.name : std::string {"(none)"},

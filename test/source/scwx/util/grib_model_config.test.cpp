@@ -159,10 +159,10 @@ TEST(GribModelConfig, CsvSkipsBadRowsWithWarningsAndKeepsTheRest)
       "# a comment row\n"
       "\n"
       "Good,TMP,surface,t,,\n"
-      ",TMP,surface,t,,\n"                // row 5: no name
+      ",TMP,surface,t,,\n"                  // row 5: no name
       "NoInterval,TMP,surface,t,contour,\n" // row 6
-      "Good,TMP,surface,t,,\n"            // row 7: duplicate
-      "Bad Type,TMP,surface,t,heatmap,\n" // row 8
+      "Good,TMP,surface,t,,\n"              // row 7: duplicate
+      "Bad Type,TMP,surface,t,heatmap,\n"   // row 8
       "Ok Contour,TMP,surface,t,contour,4\n",
       {});
 
@@ -180,7 +180,8 @@ TEST(GribModelConfig, CsvSkipsBadRowsWithWarningsAndKeepsTheRest)
 
 TEST(GribModelConfig, CsvFatalWhenHeaderOrAllRowsUnusable)
 {
-   auto noColumn = ParseProductsCsv("name,parameter,level\nA,TMP,surface\n", {});
+   auto noColumn =
+      ParseProductsCsv("name,parameter,level\nA,TMP,surface\n", {});
    EXPECT_TRUE(HasFragment(noColumn.errors, "short_name"));
 
    auto noRows =
@@ -196,8 +197,8 @@ TEST(GribModelConfig, CsvFatalWhenHeaderOrAllRowsUnusable)
 
 TEST(GribModelConfig, LoadsModelFolder)
 {
-   namespace fs    = std::filesystem;
-   const auto dir  = fs::temp_directory_path() / "scwx_grib_model_config_test";
+   namespace fs   = std::filesystem;
+   const auto dir = fs::temp_directory_path() / "scwx_grib_model_config_test";
    fs::remove_all(dir);
    fs::create_directories(dir);
    std::ofstream(dir / "model.json") << kNbmJson;
@@ -321,7 +322,8 @@ TEST(GribModelConfig, SourceSettingsHaveDefaultsAndCanBeOverridden)
                  "key_pattern": "a/{hh}/f{fh3}", "cycle_hours": [0],
                  "min_forecast_hour": 3, "max_forecast_hour": 90,
                  "forecast_hour_step": 3, "availability_lag_hours": 8}})");
-   ASSERT_TRUE(custom.config) << (custom.errors.empty() ? "" : custom.errors[0]);
+   ASSERT_TRUE(custom.config)
+      << (custom.errors.empty() ? "" : custom.errors[0]);
    EXPECT_EQ(custom.config->source.region, "eu-central-1");
    EXPECT_EQ(custom.config->source.minForecastHour, 3);
    EXPECT_EQ(custom.config->source.forecastHourStep, 3);
@@ -378,12 +380,11 @@ TEST(GribModelConfig, UnknownQuantityIsRejectedWithTheAllowedList)
 
    for (const auto name : kQuantityNames)
    {
-      const auto ok = ParseModelSettings(
-         std::string(R"({"model": {"name": "M"},
+      const auto ok = ParseModelSettings(std::string(R"({"model": {"name": "M"},
             "source": {"bucket": "some-bucket", "key_pattern": "a/{hh}",
                        "cycle_hours": [0], "max_forecast_hour": 6},
             "defaults": {"quantity": ")") +
-         std::string(name) + R"("}})");
+                                         std::string(name) + R"("}})");
       EXPECT_TRUE(ok.config) << name;
    }
 }

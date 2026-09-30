@@ -51,7 +51,7 @@ public:
    // valid range -- a slider or prefetch loop always gets a fetchable hour.
    [[nodiscard]] virtual int
    SnapForecastHourFor(std::chrono::system_clock::time_point cycle,
-                       int                                    hour) const = 0;
+                       int                                   hour) const = 0;
 
    virtual std::optional<std::string>
    FetchField(const std::string&              key,

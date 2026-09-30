@@ -16,7 +16,7 @@ namespace scwx::qt::manager
 // A model that loaded, and the folder it came from.
 struct UserModelEntry
 {
-   std::string                                folderName;
+   std::string                          folderName;
    util::grib_model_config::ModelConfig config;
 };
 
@@ -68,9 +68,9 @@ public:
    // Scans a models directory. Static and pure so it can be tested against a
    // temporary folder; models come back sorted by name, and a second model
    // reusing a name is reported as an issue and skipped.
-   static void Scan(const std::filesystem::path&    modelsDirectory,
-                    std::vector<UserModelEntry>&    models,
-                    std::vector<UserModelIssue>&    issues);
+   static void Scan(const std::filesystem::path& modelsDirectory,
+                    std::vector<UserModelEntry>& models,
+                    std::vector<UserModelIssue>& issues);
 
    // Validates `sourceFolder` (model.json + products.csv) and, only if it is
    // clean, copies both files into `modelsDirectory/<slug of the model name>/`,

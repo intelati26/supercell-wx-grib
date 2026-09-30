@@ -123,7 +123,8 @@ TEST_F(UserModelGribManagerTest, ProductsComeFromTheSelectedModelAndSwitch)
    registry->SetSelectedModel("Aardvark Six-Hourly");
    gribManager->ReloadUserModel();
    EXPECT_EQ(gribManager->UserModelName(), "Aardvark Six-Hourly");
-   EXPECT_EQ(gribManager->ProductNames(), std::vector<std::string> {"Pressure"});
+   EXPECT_EQ(gribManager->ProductNames(),
+             std::vector<std::string> {"Pressure"});
    EXPECT_TRUE(gribManager->ActiveProductNames().empty()); // opt-in, always
    EXPECT_EQ(gribManager->MinIdxForecastHour(), 0);
    EXPECT_EQ(gribManager->MaxIdxForecastHourFor({}), 48);
@@ -196,7 +197,7 @@ TEST_F(UserModelGribManagerTest, UserConfigReproducesTheBuiltInNbmFetch)
    gribManager->ReloadUserModel();
 
    const auto names = gribManager->ProductNames();
-   const auto it = std::find(names.begin(), names.end(), "2m Temperature");
+   const auto it    = std::find(names.begin(), names.end(), "2m Temperature");
    ASSERT_NE(it, names.end());
    const auto productIndex =
       static_cast<std::size_t>(std::distance(names.begin(), it));
@@ -230,7 +231,7 @@ TEST_F(UserModelGribManagerTest, UserConfigReproducesTheBuiltInNbmFetch)
          {
             lastMean = std::accumulate(payload.begin(), payload.end(), 0.0) /
                        static_cast<double>(payload.size());
-            found = std::abs(lastMean - kExpectedMean) < kTolerance;
+            found    = std::abs(lastMean - kExpectedMean) < kTolerance;
          }
       }
       // Windows refuses to rename a new frame over a file still open here.
@@ -256,14 +257,15 @@ TEST_F(UserModelGribManagerTest, ShippedHrrrExampleImportsAndDecodesARealField)
    using namespace std::chrono;
    using namespace std::chrono_literals;
 
-   const fs::path example = (fs::path(__FILE__).parent_path() / ".." / ".." /
-                             ".." / ".." / ".." / "docs" / "grib-models" /
-                             "hrrr-conus")
-                               .lexically_normal();
+   const fs::path example =
+      (fs::path(__FILE__).parent_path() / ".." / ".." / ".." / ".." / ".." /
+       "docs" / "grib-models" / "hrrr-conus")
+         .lexically_normal();
    ASSERT_TRUE(fs::is_regular_file(example / "model.json")) << example;
 
    const auto imported = UserModelRegistry::Instance()->Import(example);
-   ASSERT_TRUE(imported.ok) << (imported.errors.empty() ? "" : imported.errors[0]);
+   ASSERT_TRUE(imported.ok)
+      << (imported.errors.empty() ? "" : imported.errors[0]);
    EXPECT_TRUE(imported.warnings.empty())
       << (imported.warnings.empty() ? "" : imported.warnings[0]);
    EXPECT_EQ(imported.modelName, "HRRR CONUS (surface)");
@@ -305,9 +307,8 @@ TEST_F(UserModelGribManagerTest, ShippedHrrrExampleImportsAndDecodesARealField)
          in.read(reinterpret_cast<char*>(payload.data()),
                  static_cast<std::streamsize>(payload.size() * sizeof(float)));
 
-         if ((in.good() || in.eof()) &&
-             static_cast<std::size_t>(in.gcount()) ==
-                payload.size() * sizeof(float))
+         if ((in.good() || in.eof()) && static_cast<std::size_t>(in.gcount()) ==
+                                           payload.size() * sizeof(float))
          {
             lastMean = std::accumulate(payload.begin(), payload.end(), 0.0) /
                        static_cast<double>(payload.size());

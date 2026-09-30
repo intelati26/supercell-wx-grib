@@ -252,7 +252,6 @@ public:
    [[nodiscard]] int IdxForecastHour() const;
    [[nodiscard]] int MaxIdxForecastHour() const;
 
-
    // First forecast hour that exists for this model (NBM has no F000).
    [[nodiscard]] int MinIdxForecastHour() const;
 
@@ -385,8 +384,8 @@ private:
    // uses -- several products share one `key`, so the plain key alone
    // can't be the cache path).
    void QueueIdxDownload(std::size_t        productIndex,
-                        const std::string& key,
-                        const std::string& cacheKey);
+                         const std::string& key,
+                         const std::string& cacheKey);
 
    // Downloads (if not already cached on disk) and decodes everything the
    // current animation loop range will need, in the background, ahead of

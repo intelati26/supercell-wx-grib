@@ -16,12 +16,12 @@ using sys_days = std::chrono::sys_days;
 static SourceSpec HrrrLike()
 {
    SourceSpec s;
-   s.bucket               = "noaa-hrrr-bdp-pds";
-   s.keyPattern           = "hrrr.{yyyymmdd}/conus/hrrr.t{hh}z.wrfsfcf{fh2}.grib2";
-   s.cycleHours           = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
-                             12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23};
-   s.minForecastHour      = 0;
-   s.maxForecastHour      = 18;
+   s.bucket          = "noaa-hrrr-bdp-pds";
+   s.keyPattern      = "hrrr.{yyyymmdd}/conus/hrrr.t{hh}z.wrfsfcf{fh2}.grib2";
+   s.cycleHours      = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11,
+                        12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23};
+   s.minForecastHour = 0;
+   s.maxForecastHour = 18;
    s.availabilityLagHours = 1;
    return s;
 }
@@ -131,11 +131,11 @@ TEST(ConfiguredIdxProviderTest, ProviderTracksSelectionAndAnswersRules)
 TEST(ConfiguredIdxProviderTest, ReproducesTheBuiltInNbmRulesForAShortCycle)
 {
    SourceSpec nbm;
-   nbm.bucket          = "noaa-nbm-grib2-pds";
-   nbm.keyPattern      =
+   nbm.bucket = "noaa-nbm-grib2-pds";
+   nbm.keyPattern =
       "blend.{yyyymmdd}/{hh}/core/blend.t{hh}z.core.f{fh3}.co.grib2";
-   nbm.cycleHours      = {1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 19,
-                          20, 21, 22, 23};
+   nbm.cycleHours      = {1,  2,  3,  4,  5,  7,  8,  9,  10, 11,
+                          13, 14, 15, 16, 17, 19, 20, 21, 22, 23};
    nbm.minForecastHour = 1;
    nbm.maxForecastHour = 36;
 

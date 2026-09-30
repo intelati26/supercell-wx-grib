@@ -45,9 +45,9 @@ inline constexpr std::array<std::string_view, 5> kQuantityNames {
 // qt::manager ProductConfig table.
 struct DisplaySpec
 {
-   std::string type     = "fill"; // "fill" | "contour"
-   std::string units;             // shown as-is when quantity is "none"
-   std::string quantity = "none"; // "none" | "temperature_kelvin" | ...
+   std::string type = "fill";            // "fill" | "contour"
+   std::string units;                    // shown as-is when quantity is "none"
+   std::string quantity        = "none"; // "none" | "temperature_kelvin" | ...
    float       colorOffset     = 0.0f;
    float       colorScale      = 1.0f;
    float       noDataThreshold = -999.0f;
@@ -89,7 +89,7 @@ struct SourceSpec
 struct ModelConfig
 {
    std::string              name;
-   std::string              kind = "idx"; // v1 supports only "idx"
+   std::string              kind            = "idx"; // v1 supports only "idx"
    bool                     alwaysOneActive = false;
    SourceSpec               source;
    DisplaySpec              defaults; // inherited by blank CSV cells
@@ -127,7 +127,7 @@ struct ProductsResult
 // spreadsheets export ';' and write decimal commas, accepted only then).
 // Rows starting with '#' and entirely blank rows are ignored. A bad row
 // is skipped with a warning; duplicate names skip the later row.
-ProductsResult ParseProductsCsv(std::string_view csvText,
+ProductsResult ParseProductsCsv(std::string_view   csvText,
                                 const DisplaySpec& defaults);
 
 // Reads <folder>/model.json and <folder>/products.csv and combines them.
