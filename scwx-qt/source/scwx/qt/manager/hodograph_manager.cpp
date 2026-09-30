@@ -7,6 +7,7 @@
 #include <atomic>
 #include <filesystem>
 #include <mutex>
+#include <set>
 
 #include <boost/asio/post.hpp>
 #include <boost/asio/thread_pool.hpp>
@@ -132,6 +133,10 @@ public:
    // thread, read from the GUI thread.
    std::atomic<std::uint64_t> dataGeneration_ {0};
 
+   // Owners currently drawing hodographs -- see SetDrawing().
+   std::mutex                drawersMutex_;
+   std::set<const void*>     drawers_;
+
    // Same idiom GribManager::Impl/WindBarbManager::Impl use: stop+join in
    // the destructor's *body*, since fetchPool_'s posted lambdas capture
    // `this`.
@@ -164,11 +169,14 @@ HodographManager::HodographManager() : p(std::make_unique<Impl>())
 
 HodographManager::~HodographManager() = default;
 
+namespace
+{
+std::weak_ptr<HodographManager> instanceRef_ {};
+std::mutex                      instanceMutex_ {};
+} // namespace
+
 std::shared_ptr<HodographManager> HodographManager::Instance()
 {
-   static std::weak_ptr<HodographManager> instanceRef_ {};
-   static std::mutex                      instanceMutex_ {};
-
    std::unique_lock lock(instanceMutex_);
 
    std::shared_ptr<HodographManager> instance = instanceRef_.lock();
@@ -179,6 +187,38 @@ std::shared_ptr<HodographManager> HodographManager::Instance()
    }
 
    return instance;
+}
+
+std::shared_ptr<HodographManager> HodographManager::InstanceIfExists()
+{
+   std::unique_lock lock(instanceMutex_);
+   return instanceRef_.lock();
+}
+
+void HodographManager::SetDrawing(const void* owner, bool drawing)
+{
+   bool wasDrawing = false;
+   bool nowDrawing = false;
+   {
+      std::lock_guard lock(p->drawersMutex_);
+      wasDrawing = !p->drawers_.empty();
+      if (drawing)
+      {
+         p->drawers_.insert(owner);
+      }
+      else
+      {
+         p->drawers_.erase(owner);
+      }
+      nowDrawing = !p->drawers_.empty();
+   }
+
+   if (!wasDrawing && nowDrawing)
+   {
+      // Deferred: this is called from a layer's Render(), and Poll() does
+      // blocking network I/O that must not stall painting.
+      QTimer::singleShot(0, this, &HodographManager::Poll);
+   }
 }
 
 const std::vector<HodographManager::Level>& HodographManager::Levels()
@@ -233,6 +273,17 @@ HodographManager::BandForHeight(float heightMeters)
 
 void HodographManager::Poll()
 {
+   {
+      // Nothing is drawing hodographs (no layer yet, or every one is zoomed
+      // out / hidden): don't list S3, download or decode. SetDrawing() polls
+      // as soon as one starts.
+      std::lock_guard lock(p->drawersMutex_);
+      if (p->drawers_.empty())
+      {
+         return;
+      }
+   }
+
    auto [newObjects, totalObjects] = p->provider_->Refresh();
    logger_->debug(
       "Refresh: {} new / {} total objects", newObjects, totalObjects);

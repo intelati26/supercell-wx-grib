@@ -425,12 +425,18 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
          self_,
          [this, &stored](int cycleIndex)
          {
-            auto& hodographManager = *manager::HodographManager::Instance();
+            // Never creates one -- with no hodograph layer alive there is
+            // nothing to forward this to (see InstanceIfExists()).
+            const auto hodographManager =
+               manager::HodographManager::InstanceIfExists();
 
             if (cycleIndex <= 0)
             {
                stored.gribManager->UseLatestRrfsCycle();
-               hodographManager.UseLatestCycle();
+               if (hodographManager)
+               {
+                  hodographManager->UseLatestCycle();
+               }
             }
             else
             {
@@ -439,7 +445,10 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                const auto cycleTime = std::chrono::system_clock::time_point {
                   std::chrono::system_clock::duration {ticks}};
                stored.gribManager->SetRrfsCycle(cycleTime);
-               hodographManager.SetCycle(cycleTime);
+               if (hodographManager)
+               {
+                  hodographManager->SetCycle(cycleTime);
+               }
             }
             stored.hourSlider->setRange(
                0, stored.gribManager->MaxRrfsForecastHour());
@@ -464,7 +473,11 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
               [this, &stored](int hour)
               {
                  stored.gribManager->SetRrfsForecastHour(hour);
-                 manager::HodographManager::Instance()->SetForecastHour(hour);
+                 if (const auto hodographManager =
+                        manager::HodographManager::InstanceIfExists())
+                 {
+                    hodographManager->SetForecastHour(hour);
+                 }
                  stored.hourLabel->setText(
                     QString::fromStdString(fmt::format("F{:03d}", hour)));
                  RefreshHourButtons(stored);

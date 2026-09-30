@@ -327,7 +327,7 @@ public:
                        self_,
                        [this]() { ReloadHodographs(); });
    }
-   ~Impl() = default;
+   ~Impl() { hodographManager_->SetDrawing(this, false); }
 
    Impl(const Impl&)            = delete;
    Impl& operator=(const Impl&) = delete;
@@ -417,6 +417,10 @@ void HodographLayer::Impl::ReloadHodographs()
 void HodographLayer::Impl::RebuildLines(ZoomTier tier)
 {
    const bool drawing = tier.visible && tier.stride >= 1;
+
+   // Tells the manager whether anything needs its data: it only downloads
+   // and decodes while some layer is actually drawing.
+   hodographManager_->SetDrawing(this, drawing);
 
    if (drawing)
    {
