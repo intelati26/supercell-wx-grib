@@ -1,5 +1,6 @@
 #include <scwx/qt/map/hodograph_layer.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
+#include <scwx/qt/map/viewport_bounds.hpp>
 #include <scwx/qt/gl/draw/geo_lines.hpp>
 #include <scwx/qt/manager/hodograph_manager.hpp>
 #include <scwx/qt/settings/hodograph_settings.hpp>
@@ -210,6 +211,10 @@ SelectHodographPoints(long nx, long ny, long stride)
 // arbitrarily huge metersPerMs to compensate (which would then be
 // wildly oversized at the next tier up), hodographs simply aren't drawn
 // at all below this zoom.
+// How much larger than the visible view the built area is. 2.0 lets the view
+// pan by roughly half its own size before geometry is rebuilt.
+constexpr double kBuildMargin_ = 2.0;
+
 struct ZoomTier
 {
    long   stride;
@@ -333,7 +338,7 @@ public:
    Impl& operator=(const Impl&) = delete;
 
    void ReloadHodographs();
-   void RebuildLines(ZoomTier tier);
+   void RebuildLines(ZoomTier tier, const GeoBounds& bounds);
    bool AcquireFrames();
 
    HodographLayer* self_;
@@ -359,6 +364,11 @@ public:
    // {-1, 0.0, false} never matches a real computed tier, guaranteeing
    // the first Render() call rebuilds.
    ZoomTier lastTier_ {-1, 0.0, false};
+
+   // The area geoLines_ was last built for (see VisibleBounds()); Render()
+   // rebuilds when the view pans/zooms out of it. Unlimited until the first
+   // real build.
+   GeoBounds builtBounds_ {};
 };
 
 bool HodographLayer::Impl::AcquireFrames()
@@ -410,11 +420,11 @@ void HodographLayer::Impl::ReloadHodographs()
    // RebuildLines() picks the new data up when it next becomes visible.
    if (lastTier_.visible)
    {
-      RebuildLines(lastTier_);
+      RebuildLines(lastTier_, builtBounds_);
    }
 }
 
-void HodographLayer::Impl::RebuildLines(ZoomTier tier)
+void HodographLayer::Impl::RebuildLines(ZoomTier tier, const GeoBounds& bounds)
 {
    const bool drawing = tier.visible && tier.stride >= 1;
 
@@ -438,12 +448,15 @@ void HodographLayer::Impl::RebuildLines(ZoomTier tier)
       frames_.reset();
    }
 
-   logger_->debug("RebuildLines(stride={}, metersPerMs={}, visible={})",
+   logger_->debug("RebuildLines(stride={}, metersPerMs={}, visible={}, "
+                  "culled={})",
                   tier.stride,
                   tier.metersPerMs,
-                  tier.visible);
+                  tier.visible,
+                  bounds.limited);
 
-   lastTier_ = tier;
+   lastTier_    = tier;
+   builtBounds_ = bounds;
 
    geoLines_->StartLines();
 
@@ -460,6 +473,16 @@ void HodographLayer::Impl::RebuildLines(ZoomTier tier)
       for (const auto& [i, j] :
            SelectHodographPoints(terrain.grid_nx, terrain.grid_ny, tier.stride))
       {
+         // Only build what's on screen (plus margin): this grid covers all
+         // of CONUS at every zoom, and each hodograph is a whole polyline
+         // (one GeoLines entry per level, each with its own hover text).
+         const glm::dvec2 latLon = LambertGridToLatLon(
+            terrain.grid, static_cast<double>(i), static_cast<double>(j));
+         if (!bounds.Contains(latLon.x, latLon.y))
+         {
+            continue;
+         }
+
          const auto index = static_cast<std::size_t>(j) *
                                static_cast<std::size_t>(terrain.grid_nx) +
                             static_cast<std::size_t>(i);
@@ -534,8 +557,6 @@ void HodographLayer::Impl::RebuildLines(ZoomTier tier)
             continue;
          }
 
-         const glm::dvec2 latLon = LambertGridToLatLon(
-            terrain.grid, static_cast<double>(i), static_cast<double>(j));
          const common::Coordinate center {latLon.x, latLon.y};
 
          // Drawn first so the actual wind polyline renders on top of it,
@@ -625,9 +646,14 @@ void HodographLayer::Render(
    const ZoomTier tier {
       baseTier.stride, baseTier.metersPerMs * sizeScale, baseTier.visible};
 
-   if (!(tier == p->lastTier_))
+   // Rebuilt for a new tier, or -- while actually drawing -- once the view
+   // has panned/zoomed out of the area last built (larger than the view, see
+   // kBuildMargin_, so ordinary panning doesn't rebuild every frame).
+   if (!(tier == p->lastTier_) ||
+       (tier.visible &&
+        !p->builtBounds_.ContainsBounds(VisibleBounds(params, 1.0))))
    {
-      p->RebuildLines(tier);
+      p->RebuildLines(tier, VisibleBounds(params, kBuildMargin_));
    }
 
    DrawLayer::Render(mapContext, params);

@@ -196,6 +196,7 @@ set(HDR_MAP source/scwx/qt/map/alert_layer.hpp
             source/scwx/qt/map/radar_product_layer.hpp
             source/scwx/qt/map/radar_range_layer.hpp
             source/scwx/qt/map/radar_site_layer.hpp
+            source/scwx/qt/map/viewport_bounds.hpp
             source/scwx/qt/map/wind_barb_layer.hpp)
 set(SRC_MAP source/scwx/qt/map/alert_layer.cpp
             source/scwx/qt/map/map_link_policy.cpp

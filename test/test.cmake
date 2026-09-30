@@ -51,7 +51,8 @@ set(SRC_QT_MANAGER_TESTS source/scwx/qt/manager/grib_manager.test.cpp
                          source/scwx/qt/manager/update_manager.test.cpp)
 set(SRC_QT_MAP_TESTS source/scwx/qt/map/map_annotation_layer.test.cpp
                      source/scwx/qt/map/map_annotation_model.test.cpp
-                     source/scwx/qt/map/map_provider.test.cpp)
+                     source/scwx/qt/map/map_provider.test.cpp
+                     source/scwx/qt/map/viewport_bounds.test.cpp)
 set(SRC_QT_MODEL_TESTS source/scwx/qt/model/imgui_context_model.test.cpp
                        source/scwx/qt/model/layer_model.test.cpp
                        source/scwx/qt/model/marker_model.test.cpp)

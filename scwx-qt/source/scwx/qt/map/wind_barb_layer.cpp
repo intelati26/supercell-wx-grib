@@ -1,5 +1,6 @@
 #include <scwx/qt/map/wind_barb_layer.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
+#include <scwx/qt/map/viewport_bounds.hpp>
 #include <scwx/qt/gl/draw/geo_icons.hpp>
 #include <scwx/qt/manager/wind_barb_manager.hpp>
 #include <scwx/qt/settings/wind_barb_settings.hpp>
@@ -150,6 +151,10 @@ SelectBarbPoints(long nx, long ny, long stride)
 // Decimation stride and icon scale for one zoom band -- paired together
 // since denser points and larger icons both need more screen room, and
 // sparser/smaller need less (see TierForZoom).
+// How much larger than the visible view the built area is. 2.0 lets the view
+// pan by roughly half its own size before geometry is rebuilt.
+constexpr double kBuildMargin_ = 2.0;
+
 struct ZoomTier
 {
    long  stride;
@@ -218,7 +223,7 @@ public:
 
    void SetIconSheets();
    void ReloadBarbs();
-   void RebuildIcons(ZoomTier tier);
+   void RebuildIcons(ZoomTier tier, const GeoBounds& bounds);
 
    WindBarbLayer* self_;
 
@@ -240,6 +245,11 @@ public:
    // rebuild + GPU buffer upload. {0, 0.0f} never matches a real computed
    // tier, guaranteeing the first Render() call rebuilds.
    ZoomTier lastTier_ {0, 0.0f};
+
+   // The area geoIcons_ was last built for (see VisibleBounds()); Render()
+   // rebuilds when the view pans/zooms out of it. Unlimited until the first
+   // real build.
+   GeoBounds builtBounds_ {};
 };
 
 void WindBarbLayer::Impl::SetIconSheets()
@@ -267,7 +277,7 @@ void WindBarbLayer::Impl::ReloadBarbs()
    const auto generation = windBarbManager_->DataGeneration();
    if (frames_ && frames_->generation == generation)
    {
-      RebuildIcons(lastTier_);
+      RebuildIcons(lastTier_, builtBounds_);
       return;
    }
 
@@ -317,20 +327,23 @@ void WindBarbLayer::Impl::ReloadBarbs()
 
    logger_->debug("ReloadBarbs()");
 
-   RebuildIcons(lastTier_);
+   RebuildIcons(lastTier_, builtBounds_);
 }
 
-void WindBarbLayer::Impl::RebuildIcons(ZoomTier tier)
+void WindBarbLayer::Impl::RebuildIcons(ZoomTier tier, const GeoBounds& bounds)
 {
    if (!frames_)
    {
       return;
    }
 
-   logger_->debug(
-      "RebuildIcons(stride={}, iconScale={})", tier.stride, tier.iconScale);
+   logger_->debug("RebuildIcons(stride={}, iconScale={}, culled={})",
+                  tier.stride,
+                  tier.iconScale,
+                  bounds.limited);
 
-   lastTier_ = tier;
+   lastTier_    = tier;
+   builtBounds_ = bounds;
 
    // Read once per rebuild, not per point -- SettingsVariable access
    // isn't free, and this doesn't change mid-loop.
@@ -342,6 +355,15 @@ void WindBarbLayer::Impl::RebuildIcons(ZoomTier tier)
    for (const auto& [i, j] :
         SelectBarbPoints(frames_->dir.grid_nx, frames_->dir.grid_ny, tier.stride))
    {
+      // Only build what's on screen (plus margin) -- this grid covers all
+      // of CONUS at every zoom, and every barb costs GeoIcons buffer space.
+      const glm::dvec2 latLon = LambertGridToLatLon(
+         frames_->dir.grid, static_cast<double>(i), static_cast<double>(j));
+      if (!bounds.Contains(latLon.x, latLon.y))
+      {
+         continue;
+      }
+
       const auto index = static_cast<std::size_t>(j) *
                             static_cast<std::size_t>(frames_->dir.grid_nx) +
                          static_cast<std::size_t>(i);
@@ -364,9 +386,6 @@ void WindBarbLayer::Impl::RebuildIcons(ZoomTier tier)
       const double speedKnots = speedMs * kMetersPerSecondToKnots_;
       const double gustKnots =
          std::isfinite(gustMs) ? gustMs * kMetersPerSecondToKnots_ : 0.0;
-
-      const glm::dvec2 latLon = LambertGridToLatLon(
-         frames_->dir.grid, static_cast<double>(i), static_cast<double>(j));
 
       // Negated: GeoIcons' shared shader rotates opposite to standard
       // compass/meteorological convention (0=N, clockwise) -- confirmed
@@ -468,9 +487,13 @@ void WindBarbLayer::Render(const std::shared_ptr<MapContext>& mapContext,
          1, static_cast<long>(std::floor(baseTier.stride / densityScale))),
       baseTier.iconScale * static_cast<float>(iconScaleFactor)};
 
-   if (tier != p->lastTier_)
+   // Rebuilt for a new tier, or once the view has panned/zoomed out of the
+   // area last built (which is larger than the view -- see kBuildMargin_ --
+   // so ordinary panning doesn't rebuild every frame).
+   if (tier != p->lastTier_ ||
+       !p->builtBounds_.ContainsBounds(VisibleBounds(params, 1.0)))
    {
-      p->RebuildIcons(tier);
+      p->RebuildIcons(tier, VisibleBounds(params, kBuildMargin_));
    }
 
    DrawLayer::Render(mapContext, params);
