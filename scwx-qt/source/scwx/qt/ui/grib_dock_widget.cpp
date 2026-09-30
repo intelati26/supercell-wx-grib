@@ -305,7 +305,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
    {
       // Same shape as the Rrfs block above, minus the loop-range
       // spinboxes and HodographManager coupling -- neither applies here
-      // (see GribManager::SetNbmCycle()'s own doc: no loop-range
+      // (see GribManager::SetIdxCycle()'s own doc: no loop-range
       // equivalent, and NBM doesn't feed the hodograph).
       section.cycleComboBox = new QComboBox(groupBox);
       section.cycleComboBox->addItem(tr("Latest"), QVariant());
@@ -330,7 +330,8 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
       section.hourSlider = new QSlider(Qt::Horizontal, groupBox);
       // Starts at 1, not 0 -- NBM has no F000 file at all (see
       // NbmDataProvider's own kMinForecastHour_ comment).
-      section.hourSlider->setRange(1, section.gribManager->MaxNbmForecastHour());
+      section.hourSlider->setRange(section.gribManager->MinIdxForecastHour(),
+                                   section.gribManager->MaxIdxForecastHour());
       section.playButton = new QPushButton(tr("Play"), groupBox);
       hourRow->addWidget(section.hourLabel);
       hourRow->addWidget(section.hourSlider);
@@ -377,7 +378,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
               // spinboxes are all still at their degenerate construction-
               // time [0,0] (or [1,0], for Nbm) range until a first
               // product gets checked here -- MaxRrfsForecastHour()/
-              // MaxNbmForecastHour() can only resolve a real cycle once
+              // MaxIdxForecastHour() can only resolve a real cycle once
               // something is actually active. Re-range now, the same way
               // the cycle combo box's own handler below already does
               // whenever the cycle changes.
@@ -395,7 +396,8 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
               else if (category == map::GribCategory::Nbm)
               {
                  stored.hourSlider->setRange(
-                    1, stored.gribManager->MaxNbmForecastHour());
+                    stored.gribManager->MinIdxForecastHour(),
+                    stored.gribManager->MaxIdxForecastHour());
               }
            });
 
@@ -606,7 +608,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
          {
             if (cycleIndex <= 0)
             {
-               stored.gribManager->UseLatestNbmCycle();
+               stored.gribManager->UseLatestIdxCycle();
             }
             else
             {
@@ -614,18 +616,19 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                   stored.cycleComboBox->itemData(cycleIndex).value<qint64>();
                const auto cycleTime = std::chrono::system_clock::time_point {
                   std::chrono::system_clock::duration {ticks}};
-               stored.gribManager->SetNbmCycle(cycleTime);
+               stored.gribManager->SetIdxCycle(cycleTime);
             }
             stored.hourSlider->setRange(
-               1, stored.gribManager->MaxNbmForecastHour());
+               stored.gribManager->MinIdxForecastHour(),
+               stored.gribManager->MaxIdxForecastHour());
 
             // setRange() only fires valueChanged if it had to clamp the
             // value into the new range -- re-snap explicitly too, since a
             // value that stayed numerically in-range can still land in a
             // step gap under the *new* cycle's own hourly/3-hourly/
-            // 6-hourly rule (see SetNbmForecastHour()'s own doc).
-            stored.gribManager->SetNbmForecastHour(stored.hourSlider->value());
-            const int actualHour = stored.gribManager->NbmForecastHour();
+            // 6-hourly rule (see SetIdxForecastHour()'s own doc).
+            stored.gribManager->SetIdxForecastHour(stored.hourSlider->value());
+            const int actualHour = stored.gribManager->IdxForecastHour();
             stored.hourSlider->setValue(actualHour);
             stored.hourLabel->setText(
                QString::fromStdString(fmt::format("F{:03d}", actualHour)));
@@ -636,10 +639,10 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
               self_,
               [&stored](int hour)
               {
-                 stored.gribManager->SetNbmForecastHour(hour);
+                 stored.gribManager->SetIdxForecastHour(hour);
 
                  // NBM's own forecast-hour step is non-uniform (see
-                 // SetNbmForecastHour()'s own doc) -- what actually got
+                 // SetIdxForecastHour()'s own doc) -- what actually got
                  // stored may differ from the raw slider position, so
                  // read it back and snap the slider (and label) to match
                  // rather than showing a value that wasn't really
@@ -647,7 +650,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                  // changes the value, and re-entering with an
                  // already-valid hour is a harmless no-op the second
                  // time.
-                 const int actualHour = stored.gribManager->NbmForecastHour();
+                 const int actualHour = stored.gribManager->IdxForecastHour();
                  if (actualHour != hour)
                  {
                     stored.hourSlider->setValue(actualHour);
