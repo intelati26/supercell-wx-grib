@@ -1,4 +1,5 @@
 #include <scwx/qt/manager/hodograph_manager.hpp>
+#include <scwx/qt/manager/grib_manager.hpp>
 #include <scwx/qt/manager/status_manager.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
 #include <scwx/provider/rrfs_data_provider.hpp>
@@ -284,6 +285,10 @@ void HodographManager::Poll()
             logger_->warn("Failed to download {}", latestKey);
             return;
          }
+
+         // Shares GribManager's download cache -- without this, these
+         // downloads were never evicted.
+         GribManager::NoteCachedDownload(*downloaded);
 
          if (ApplyCachedDownload(latestKey))
          {

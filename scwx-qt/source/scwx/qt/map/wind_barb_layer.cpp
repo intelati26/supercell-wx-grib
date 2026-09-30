@@ -7,7 +7,9 @@
 #include <scwx/util/logger.hpp>
 
 #include <cmath>
+#include <cstdint>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <vector>
@@ -37,6 +39,11 @@ static constexpr int kWindBarbSheetCount_ = 21;
 static constexpr std::int32_t kBarbHotX_ = 32;
 static constexpr std::int32_t kBarbHotY_ = 56;
 
+// How far past the viewport barbs are built, as a multiple of the
+// viewport's own extent (see ViewportLatLonBox) -- enough slack that
+// ordinary panning doesn't trigger a rebuild every frame.
+static constexpr double kBuildBoxScale_ = 2.0;
+
 namespace
 {
 
@@ -46,13 +53,49 @@ namespace
 // its own per-product palette/color state this layer has no use for -- but
 // it does go through the same shared ExtractNumber/LambertGrid grib_frame_
 // info.hpp helpers that extraction promoted, rather than re-deriving them.
+// Values are kept as 16-bit fixed point, hundredths of a unit (0.01 degree
+// of direction, 0.01 m/s of speed) -- far finer than the whole-knot,
+// whole-degree hover text or the 5kt barb buckets can show, at half the
+// memory of 32-bit floats (the three full RTMA grids this layer holds were
+// ~45MB as floats). kMissingValue_ marks a point with no usable value:
+// non-finite, negative, past the encodable range (655.34), or the frame's
+// own eccodes missing-data marker (often 9999, which as a float used to be
+// drawn as a real 100+ kt barb).
+constexpr float         kFixedPointScale_ = 100.0f;
+constexpr std::uint16_t kMissingValue_    = 0xFFFF;
+
+std::uint16_t EncodeValue(float value, double missingValue)
+{
+   if (!std::isfinite(value) || value < 0.0f ||
+       static_cast<double>(value) == missingValue)
+   {
+      return kMissingValue_;
+   }
+
+   const float scaled = std::round(value * kFixedPointScale_);
+   if (scaled >= static_cast<float>(kMissingValue_))
+   {
+      return kMissingValue_;
+   }
+   return static_cast<std::uint16_t>(scaled);
+}
+
+std::optional<float> DecodeValue(std::uint16_t encoded)
+{
+   if (encoded == kMissingValue_)
+   {
+      return std::nullopt;
+   }
+   return static_cast<float>(encoded) / kFixedPointScale_;
+}
+
 struct ParsedFrame
 {
-   long               grid_nx {};
-   long               grid_ny {};
-   LambertGrid        grid {};
-   std::string        validTime;
-   std::vector<float> values;
+   long                       grid_nx {};
+   long                       grid_ny {};
+   LambertGrid                grid {};
+   std::string                validTime;
+   std::vector<std::uint16_t> values; // see EncodeValue()
 };
 
 std::optional<ParsedFrame> ParseFrame(const std::string& path)
@@ -82,16 +125,38 @@ std::optional<ParsedFrame> ParseFrame(const std::string& path)
       frame.grid.radius = ExtractNumberOr(header, "radius", 0.0);
       frame.validTime   = ExtractStringOr(header, "validTime", {});
 
+      const double missingValue = ExtractNumberOr(
+         header, "missingValue", std::numeric_limits<double>::quiet_NaN());
+
       const auto byteLength =
          static_cast<std::size_t>(ExtractNumber(header, "byteLength"));
-      frame.values.resize(byteLength / sizeof(float));
-      in.read(reinterpret_cast<char*>(frame.values.data()),
-              static_cast<std::streamsize>(byteLength));
-
-      if (!in || frame.values.size() !=
-                    static_cast<std::size_t>(frame.grid_nx * frame.grid_ny))
+      if (frame.grid_nx <= 0 || frame.grid_ny <= 0 ||
+          byteLength != static_cast<std::size_t>(frame.grid_nx) *
+                           static_cast<std::size_t>(frame.grid_ny) *
+                           sizeof(float))
       {
          return std::nullopt;
+      }
+
+      // Read and encode one row at a time, so the full 32-bit grid is
+      // never in memory at once.
+      const auto         nx = static_cast<std::size_t>(frame.grid_nx);
+      std::vector<float> row(nx);
+      frame.values.reserve(nx * static_cast<std::size_t>(frame.grid_ny));
+
+      for (long j = 0; j < frame.grid_ny; ++j)
+      {
+         in.read(reinterpret_cast<char*>(row.data()),
+                 static_cast<std::streamsize>(nx * sizeof(float)));
+         if (!in)
+         {
+            return std::nullopt;
+         }
+
+         for (const float value : row)
+         {
+            frame.values.push_back(EncodeValue(value, missingValue));
+         }
       }
 
       return frame;
@@ -103,26 +168,33 @@ std::optional<ParsedFrame> ParseFrame(const std::string& path)
    }
 }
 
-// Picks which grid points get a barb: every `stride`-th row and column.
-// RTMA's full 2.5km CONUS grid (~2345 x 1597) is far too dense to plot one
-// icon per point, so the caller picks `stride` based on how zoomed in the
-// view currently is -- see StrideForZoom below.
-std::vector<std::pair<long, long>>
-SelectBarbPoints(long nx, long ny, long stride)
+// Picks which grid points get a barb: every `stride`-th row and column
+// within `window`. RTMA's full 2.5km CONUS grid (~2345 x 1597) is far too
+// dense to plot one icon per point, so the caller picks `stride` based on
+// how zoomed in the view currently is -- see TierForZoom below -- and
+// limits `window` to the area around the viewport. Points stay on
+// multiples of `stride` in whole-grid terms, so panning (which moves the
+// window) never shifts which points get a barb.
+std::vector<std::pair<long, long>> SelectBarbPoints(const GridIndexBox& window,
+                                                    long                stride)
 {
    std::vector<std::pair<long, long>> points;
 
-   if (stride < 1)
+   if (stride < 1 || window.IsEmpty())
    {
       return points;
    }
 
-   points.reserve(
-      static_cast<std::size_t>((nx / stride + 1) * (ny / stride + 1)));
+   const long iStart = (window.iMin + stride - 1) / stride * stride;
+   const long jStart = (window.jMin + stride - 1) / stride * stride;
 
-   for (long j = 0; j < ny; j += stride)
+   points.reserve(
+      static_cast<std::size_t>(((window.iMax - iStart) / stride + 1) *
+                               ((window.jMax - jStart) / stride + 1)));
+
+   for (long j = jStart; j <= window.jMax; j += stride)
    {
-      for (long i = 0; i < nx; i += stride)
+      for (long i = iStart; i <= window.iMax; i += stride)
       {
          points.emplace_back(i, j);
       }
@@ -226,6 +298,14 @@ public:
    // rebuild + GPU buffer upload. {0, 0.0f} never matches a real computed
    // tier, guaranteeing the first Render() call rebuilds.
    ZoomTier lastTier_ {0, 0.0f};
+
+   // Area geoIcons_ was last built for -- a padded box around the viewport
+   // (see Render()), not the whole grid: at the closest zoom tier the full
+   // CONUS grid is several hundred thousand barbs (each with its own hover
+   // string and GPU vertices), nearly all of them off screen. Render()
+   // rebuilds once the viewport leaves this box. Unset until the first
+   // Render(), which leaves RebuildIcons() building nothing before then.
+   std::optional<LatLonBox> builtBox_;
 };
 
 void WindBarbLayer::Impl::SetIconSheets()
@@ -295,8 +375,14 @@ void WindBarbLayer::Impl::RebuildIcons(ZoomTier tier)
 
    geoIcons_->StartIcons();
 
-   for (const auto& [i, j] :
-        SelectBarbPoints(dirFrame_->grid_nx, dirFrame_->grid_ny, tier.stride))
+   const GridIndexBox window = builtBox_.has_value() ?
+                                  LambertGridIndexBox(dirFrame_->grid,
+                                                      dirFrame_->grid_nx,
+                                                      dirFrame_->grid_ny,
+                                                      *builtBox_) :
+                                  GridIndexBox {};
+
+   for (const auto& [i, j] : SelectBarbPoints(window, tier.stride))
    {
       const auto index = static_cast<std::size_t>(j) *
                             static_cast<std::size_t>(dirFrame_->grid_nx) +
@@ -308,18 +394,21 @@ void WindBarbLayer::Impl::RebuildIcons(ZoomTier tier)
          continue;
       }
 
-      const float directionDeg = dirFrame_->values[index];
-      const float speedMs      = speedFrame_->values[index];
-      const float gustMs       = gustFrame_->values[index];
-      if (!std::isfinite(directionDeg) || !std::isfinite(speedMs) ||
-          speedMs < 0.0f)
+      const std::optional<float> direction =
+         DecodeValue(dirFrame_->values[index]);
+      const std::optional<float> speedMs =
+         DecodeValue(speedFrame_->values[index]);
+      const std::optional<float> gustMs =
+         DecodeValue(gustFrame_->values[index]);
+      if (!direction.has_value() || !speedMs.has_value())
       {
          continue;
       }
 
-      const double speedKnots = speedMs * kMetersPerSecondToKnots_;
+      const float  directionDeg = *direction;
+      const double speedKnots   = *speedMs * kMetersPerSecondToKnots_;
       const double gustKnots =
-         std::isfinite(gustMs) ? gustMs * kMetersPerSecondToKnots_ : 0.0;
+         gustMs.has_value() ? *gustMs * kMetersPerSecondToKnots_ : 0.0;
 
       const glm::dvec2 latLon = LambertGridToLatLon(
          dirFrame_->grid, static_cast<double>(i), static_cast<double>(j));
@@ -424,8 +513,22 @@ void WindBarbLayer::Render(const std::shared_ptr<MapContext>& mapContext,
          1, static_cast<long>(std::floor(baseTier.stride / densityScale))),
       baseTier.iconScale * static_cast<float>(iconScaleFactor)};
 
-   if (tier != p->lastTier_)
+   const LatLonBox visibleBox = ViewportLatLonBox(params.latitude,
+                                                  params.longitude,
+                                                  params.zoom,
+                                                  params.width,
+                                                  params.height,
+                                                  1.0);
+
+   if (tier != p->lastTier_ || !p->builtBox_.has_value() ||
+       !p->builtBox_->Contains(visibleBox))
    {
+      p->builtBox_ = ViewportLatLonBox(params.latitude,
+                                       params.longitude,
+                                       params.zoom,
+                                       params.width,
+                                       params.height,
+                                       kBuildBoxScale_);
       p->RebuildIcons(tier);
    }
 

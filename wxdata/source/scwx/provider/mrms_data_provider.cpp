@@ -1,8 +1,12 @@
 #include <scwx/provider/mrms_data_provider.hpp>
 #include <scwx/util/logger.hpp>
 
+#include <atomic>
+#include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <regex>
+#include <system_error>
 
 #if defined(_MSC_VER)
 #   pragma warning(push, 0)
@@ -20,10 +24,10 @@
 #include <aws/core/http/HttpResponse.h>
 #include <aws/s3/S3Client.h>
 #include <aws/s3/model/GetObjectRequest.h>
-#include <boost/iostreams/copy.hpp>
 #include <boost/iostreams/filter/gzip.hpp>
 #include <boost/iostreams/filtering_streambuf.hpp>
 #include <fmt/chrono.h>
+#include <fmt/format.h>
 
 #if defined(__GNUC__)
 #   pragma GCC diagnostic pop
@@ -144,6 +148,11 @@ std::optional<std::string> MrmsDataProvider::DownloadAndDecompress(
    request.SetBucket(p->bucketName_);
    request.SetKey(key);
 
+   // Stop mid-download once the app starts shutting down, same as the base
+   // class's own downloads.
+   request.SetContinueRequestHandler([this](const Aws::Http::HttpRequest*)
+                                     { return IsRunning(); });
+
    // Same progress-reporting idiom as AwsNexradDataProvider::
    // DownloadObject() (which this doesn't call directly -- that helper
    // writes the raw response straight to a file, but this method needs
@@ -183,45 +192,71 @@ std::optional<std::string> MrmsDataProvider::DownloadAndDecompress(
 
    if (!outcome.IsSuccess())
    {
-      logger_->warn(
-         "Failed to download {}: {}", key, outcome.GetError().GetMessage());
+      if (IsRunning())
+      {
+         logger_->warn(
+            "Failed to download {}: {}", key, outcome.GetError().GetMessage());
+      }
+      else
+      {
+         logger_->debug("Download cancelled for key: {}", key);
+      }
       return std::nullopt;
    }
 
    auto& body = outcome.GetResultWithOwnership().GetBody();
 
-   // Decompress to an in-memory stringstream first, then write that to
-   // outputPath -- matches wsr88d::NexradFileFactory's exact pattern
-   // (nexrad_file_factory.cpp) for compressed archives. boost::iostreams::
-   // copy() with an std::ofstream sink directly hits a deprecated-copy
-   // warning (treated as error by this project's build) in this
-   // Boost/GCC combination; stringstream does not.
-   std::stringstream decompressed;
+   // Decompress straight into a partial file next to outputPath, then
+   // rename it into place -- never holds the whole decompressed grid in
+   // memory, and a failed/interrupted decompress never leaves a truncated
+   // file at outputPath for a later cache check to mistake for a complete
+   // one. Streams via operator<<(streambuf*) rather than boost::iostreams::
+   // copy(), which trips -Wdeprecated-copy with a file sink in this
+   // Boost/GCC combination (see the pragma above).
+   static std::atomic<std::uint64_t> partialCounter {0};
+   const std::string                 partialPath =
+      fmt::format("{}.{}.part", outputPath, partialCounter.fetch_add(1));
 
-   try
+   bool written = false;
    {
+      std::ofstream out(partialPath, std::ios::binary | std::ios::trunc);
+      if (!out)
+      {
+         logger_->warn("Could not open {} for writing", partialPath);
+         return std::nullopt;
+      }
+
       // MRMS objects are always gzip-compressed (.grib2.gz keys), so
       // decompress unconditionally.
       boost::iostreams::filtering_streambuf<boost::iostreams::input> in;
       in.push(boost::iostreams::gzip_decompressor());
       in.push(body);
 
-      std::streamsize bytesCopied = boost::iostreams::copy(in, decompressed);
-      logger_->debug("Decompressed {} ({} bytes)", key, bytesCopied);
+      // A decompression error thrown mid-stream is caught by operator<<
+      // and surfaces as failbit on `out`.
+      out << &in;
+      out.flush();
+      written = !out.fail();
    }
-   catch (const std::exception& e)
+
+   std::error_code ec;
+   if (!written)
    {
-      logger_->warn("Failed to decompress {}: {}", key, e.what());
+      logger_->warn("Failed to decompress {}", key);
+      std::filesystem::remove(partialPath, ec);
       return std::nullopt;
    }
 
-   std::ofstream out(outputPath, std::ios::binary);
-   if (!out)
+   std::filesystem::rename(partialPath, outputPath, ec);
+   if (ec)
    {
-      logger_->warn("Could not open {} for writing", outputPath);
+      logger_->warn(
+         "Could not move {} into place: {}", outputPath, ec.message());
+      std::filesystem::remove(partialPath, ec);
       return std::nullopt;
    }
-   out << decompressed.rdbuf();
+
+   logger_->debug("Decompressed {}", key);
 
    return outputPath;
 }

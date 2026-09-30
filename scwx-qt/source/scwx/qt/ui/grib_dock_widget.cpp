@@ -7,6 +7,7 @@
 #include <scwx/provider/nbm_data_provider.hpp>
 #include <scwx/provider/rrfs_data_provider.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <vector>
 
@@ -19,6 +20,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
 #include <QTimer>
@@ -61,6 +63,13 @@ constexpr int kRrfsCycleHistoryHours_ = 24;
 // cycle's own max) takes ~42s at this pace, fast enough to actually watch
 // evolve without being so fast the frame-by-frame detail blurs together.
 constexpr int kRrfsAnimationIntervalMs_ = 500;
+
+// Where the RRFS Play loop ends until the user picks otherwise -- every
+// forecast hour is its own ~320MB download, so looping (and prefetching,
+// see GribManager::PrefetchRrfsForecastHourRange()) a 6-hourly cycle's full
+// 84 hours costs ~27GB; 18h is ~6GB, and is already the whole range of
+// every non-6-hourly cycle.
+constexpr int kDefaultRrfsLoopEndHour_ = 18;
 
 // Same reasoning as kRrfsCycleHistoryHours_ -- NBM also cycles hourly.
 constexpr int kNbmCycleHistoryHours_ = 24;
@@ -129,10 +138,42 @@ struct CategorySection
    QSpinBox* loopStartSpinBox {};
    QSpinBox* loopEndSpinBox {};
 
+   // Whether the user has picked a loop end themselves -- until then,
+   // RerangeRrfsLoop() keeps it at the default (see
+   // kDefaultRrfsLoopEndHour_) as the cycle's max hour changes.
+   bool loopEndUserSet {false};
+
    // Captures the map view plus this section's own current product as a
    // PNG (see GribDockWidget::ExportSnapshotRequested).
    QPushButton* exportButton {};
 };
+
+// Applies a new max forecast hour (a product was first checked, or the
+// cycle changed) to the RRFS loop-range spinboxes and GribManager. The
+// spinboxes' own valueChanged handlers are blocked throughout, so they
+// only ever see real user edits (see loopEndUserSet).
+void RerangeRrfsLoop(CategorySection& section, int maxHour)
+{
+   {
+      const QSignalBlocker blockStart(section.loopStartSpinBox);
+      const QSignalBlocker blockEnd(section.loopEndSpinBox);
+
+      section.loopStartSpinBox->setRange(0, maxHour);
+      section.loopEndSpinBox->setRange(0, maxHour);
+      if (!section.loopEndUserSet)
+      {
+         section.loopEndSpinBox->setValue(
+            std::min(maxHour, kDefaultRrfsLoopEndHour_));
+      }
+
+      // Re-apply the start <= end cross-clamp setRange() just widened.
+      section.loopStartSpinBox->setMaximum(section.loopEndSpinBox->value());
+      section.loopEndSpinBox->setMinimum(section.loopStartSpinBox->value());
+   }
+
+   section.gribManager->SetRrfsLoopRange(section.loopStartSpinBox->value(),
+                                         section.loopEndSpinBox->value());
+}
 
 class GribDockWidget::Impl
 {
@@ -223,10 +264,8 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
       groupLayout->addLayout(hourRow);
 
       // Bounds the Play loop to a sub-range instead of always [0,
-      // MaxRrfsForecastHour()] -- defaults to the full range (unchanged
-      // behavior) until the user narrows it. setRange()'s own clamping
-      // keeps start<=end automatically as either spinbox's range is
-      // adjusted below.
+      // MaxRrfsForecastHour()] -- defaults to 0 to kDefaultRrfsLoopEndHour_
+      // (see RerangeRrfsLoop()) until the user picks otherwise.
       auto* loopRow            = new QHBoxLayout();
       auto* loopLabel          = new QLabel(tr("Loop:"), groupBox);
       section.loopStartSpinBox = new QFocusedSpinBox(groupBox);
@@ -244,7 +283,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
       loopRow->addWidget(loopUnitsLabel);
       groupLayout->addLayout(loopRow);
 
-      section.gribManager->SetRrfsLoopRange(0, initialMaxHour);
+      RerangeRrfsLoop(section, initialMaxHour);
 
       section.animationTimer = new QTimer(self_);
       section.animationTimer->setInterval(kRrfsAnimationIntervalMs_);
@@ -328,11 +367,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
               {
                  const int maxHour = stored.gribManager->MaxRrfsForecastHour();
                  stored.hourSlider->setRange(0, maxHour);
-                 stored.loopStartSpinBox->setRange(0, maxHour);
-                 stored.loopEndSpinBox->setRange(0, maxHour);
-                 stored.gribManager->SetRrfsLoopRange(
-                    stored.loopStartSpinBox->value(),
-                    stored.loopEndSpinBox->value());
+                 RerangeRrfsLoop(stored, maxHour);
               }
               else if (category == map::GribCategory::Nbm)
               {
@@ -354,6 +389,14 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
            &manager::GribManager::FrameReady,
            self_,
            [this, &stored](std::size_t) { RefreshSection(stored); });
+
+   // Toggling a product changes the primary product (or leaves none)
+   // before any new frame arrives -- refresh now rather than leaving the
+   // previous primary's name/valid time up until the next FrameReady.
+   connect(stored.gribManager.get(),
+           &manager::GribManager::ActiveProductsChanged,
+           self_,
+           [this, &stored]() { RefreshSection(stored); });
 
    if (category == map::GribCategory::Rrfs)
    {
@@ -391,12 +434,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
             // both spinboxes' current values automatically via Qt's own
             // setRange(); GribManager needs telling explicitly, since it
             // doesn't watch these spinboxes itself.
-            const int newMaxHour = stored.gribManager->MaxRrfsForecastHour();
-            stored.loopStartSpinBox->setRange(0, newMaxHour);
-            stored.loopEndSpinBox->setRange(0, newMaxHour);
-            stored.gribManager->SetRrfsLoopRange(
-               stored.loopStartSpinBox->value(),
-               stored.loopEndSpinBox->value());
+            RerangeRrfsLoop(stored, stored.gribManager->MaxRrfsForecastHour());
          });
 
       connect(stored.hourSlider,
@@ -429,6 +467,8 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
               self_,
               [&stored](int end)
               {
+                 // Only user edits reach here (see RerangeRrfsLoop()).
+                 stored.loopEndUserSet = true;
                  stored.loopStartSpinBox->setMaximum(end);
                  stored.gribManager->SetRrfsLoopRange(
                     stored.loopStartSpinBox->value(), end);
@@ -591,36 +631,32 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
 
 void GribDockWidget::Impl::RefreshSection(CategorySection& section)
 {
-   const auto activeNames = section.gribManager->ActiveProductNames();
+   const auto activeIndices = section.gribManager->ActiveProductIndices();
 
-   if (activeNames.empty())
+   if (activeIndices.empty())
    {
-      // Genuinely reachable now for Rrfs/Nbm, which start (and can be
-      // brought back down to) zero active products -- see GribManager's
-      // own per-category default. Still unreachable for Mrms/Rtma, which
-      // keep the original "always at least one" behavior.
+      // Reachable for Rrfs/Nbm, which start (and can be brought back down
+      // to) zero active products -- see GribManager's own per-category
+      // default. Unreachable for Mrms/Rtma, which keep the original
+      // "always at least one" behavior.
       section.statusLabel->setText(tr("(no products active)"));
       return;
    }
 
-   // The primary (CurrentProductIndex()) product's valid time --
-   // GribProductLayer only ever renders that one today, so its status is
-   // what's actually meaningful to show here; the other active products
-   // are fetching/decoding, just not drawn on the map yet. activeNames
-   // being non-empty (just checked above) guarantees CurrentProductIndex()
-   // resolves to a real value here.
-   const std::string validTime =
-      map::ReadGribFrameValidTime(map::GetGribFramePath(
-         section.category, *section.gribManager->CurrentProductIndex()));
-
-   std::string statusText =
-      "Primary: " + section.gribManager->CurrentProductName();
-   statusText +=
-      validTime.empty() ? "\n(no frame loaded)" : "\nValid: " + validTime;
-
-   if (activeNames.size() > 1)
+   // One line per checked product -- GribProductLayer draws all of them --
+   // with its frame's valid time, or that it's still on its way.
+   std::string statusText;
+   for (const std::size_t index : activeIndices)
    {
-      statusText += fmt::format("\n({} products active)", activeNames.size());
+      const std::string validTime = map::ReadGribFrameValidTime(
+         map::GetGribFramePath(section.category, index));
+
+      if (!statusText.empty())
+      {
+         statusText += "\n";
+      }
+      statusText += section.gribManager->ProductName(index) + ": " +
+                    (validTime.empty() ? "loading..." : validTime);
    }
 
    section.statusLabel->setText(QString::fromStdString(statusText));

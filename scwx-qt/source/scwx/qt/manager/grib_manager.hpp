@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -70,8 +71,9 @@ namespace scwx::qt::manager
 // fixed to composite reflectivity -- and unlike a single "current
 // product", more than one can be active simultaneously (see
 // SetProductActive()), each with its own frame file
-// (map::GetGribFramePath(category, index)). GribDockWidget's per-category
-// checkable dropdown drives this.
+// (map::GetGribFramePath(category, index)), all drawn together by
+// GribProductLayer. GribDockWidget's per-category checkable dropdown
+// drives this.
 class GribManager : public QObject
 {
    Q_OBJECT
@@ -86,6 +88,25 @@ public:
    GribManager& operator=(GribManager&&)      = delete;
 
    static std::shared_ptr<GribManager> Instance(map::GribCategory category);
+
+   // Records a newly-downloaded file in the shared GRIB download cache
+   // (the "cache" directory under map::GetGribDataDirectory(), which
+   // HodographManager/WindBarbManager download into too) and evicts the
+   // oldest files if that pushes the cache over its budget (see
+   // DownloadCacheBudgetBytes()). Every manager downloading into that
+   // cache must call this after each download -- otherwise its downloads
+   // are never pruned. Thread-safe.
+   static void NoteCachedDownload(const std::string& path);
+
+   // How large the download cache may grow: at most 40GB, but never so
+   // large that its disk ends up with less than max(5GB, 10% of the disk)
+   // free, and never under a 2GB floor. `cacheBytes` is the cache's
+   // current size (counted as reclaimable), the other two are its disk's
+   // free space and total size.
+   [[nodiscard]] static std::uintmax_t
+   DownloadCacheBudgetBytes(std::uintmax_t cacheBytes,
+                            std::uintmax_t availableBytes,
+                            std::uintmax_t capacityBytes);
 
    // Display names for this instance's category's curated product list,
    // in display order -- what GribDockWidget's checkable dropdown
@@ -109,24 +130,34 @@ public:
    [[nodiscard]] bool IsProductActive(const std::string& displayName) const;
    [[nodiscard]] std::vector<std::string> ActiveProductNames() const;
 
-   // The lowest-indexed active product -- what GribProductLayer's own
-   // single-frame renderer shows (see class comment: rendering multiple
-   // active products at once on the map is a separate, not-yet-built
-   // piece; this manager's fetch/decode side supports it today, the
-   // render side doesn't). std::nullopt when no product is active at all
+   // Every active product's index, ascending -- what GribProductLayer
+   // draws (all of them, fills first then contours on top) and what the
+   // dock and PNG legend list.
+   [[nodiscard]] std::vector<std::size_t> ActiveProductIndices() const;
+
+   // The lowest-indexed active product, std::nullopt when none is active
    // (only reachable for Rrfs/Nbm-style categories -- see
-   // SetProductActive()'s own doc). Also what CurrentProductName()/
-   // FormatValue() below report on.
+   // SetProductActive()'s own doc). Drives the things that still act on a
+   // single product: loop prefetch ordering aside, mainly the default
+   // PNG export filename. CurrentProductName()/FormatValue(float) report
+   // on it.
    [[nodiscard]] std::optional<std::size_t> CurrentProductIndex() const;
    [[nodiscard]] std::string CurrentProductName() const;
 
-   // Formats a raw decoded value for the current (see CurrentProductIndex)
-   // product as "<value> <unit>", converting to whatever the user has set
-   // in Settings > Units first when the product's physical quantity has a
-   // matching setting (e.g. Kelvin -> temperature_units(), m/s ->
-   // speed_units()) -- same idea as RadarProductLayer's own tooltip
-   // converting distance/height. Products with no such quantity (dBZ,
-   // MRMS's raw rotation track units) are shown natively, unconverted.
+   // Display name of product `productIndex` (see ProductNames()), or empty
+   // if out of range.
+   [[nodiscard]] std::string ProductName(std::size_t productIndex) const;
+
+   // Formats a raw decoded value for product `productIndex` as "<value>
+   // <unit>", converting to whatever the user has set in Settings > Units
+   // first when the product's physical quantity has a matching setting
+   // (e.g. Kelvin -> temperature_units(), m/s -> speed_units()) -- same
+   // idea as RadarProductLayer's own tooltip converting distance/height.
+   // Products with no such quantity (dBZ, MRMS's raw rotation track units)
+   // are shown natively, unconverted. The one-argument form formats for
+   // CurrentProductIndex().
+   [[nodiscard]] std::string FormatValue(std::size_t productIndex,
+                                         float       rawValue) const;
    [[nodiscard]] std::string FormatValue(float rawValue) const;
 
    // RRFS-only forecast-hour/cycle selection (see RrfsDataProvider's own
@@ -208,12 +239,14 @@ public:
    //
    // Real cost, not silently absorbed: each hour is its own ~320MB object,
    // so a full 6-hourly cycle's *unbounded* 84-hour range is up to ~27GB
-   // queued at once -- PruneDownloadCache()'s eviction cap is sized (see
-   // its own kMaxCacheSizeBytes_ doc) with headroom above this exact worst
-   // case. SetRrfsLoopRange() exists specifically so this worst case is
-   // opt-in, not the only option -- a bounded loop (e.g. 0-6h) costs
-   // proportionally less. Current product only, same documented scoping
-   // limitation as PrefetchLoopRange().
+   // queued at once -- the download cache's 40GB ceiling (see
+   // DownloadCacheBudgetBytes()) has headroom above this exact worst case,
+   // though a disk with less free space gets a smaller budget, and a
+   // prefetch that outgrows it evicts its own earliest hours.
+   // SetRrfsLoopRange() exists specifically so this worst case is opt-in,
+   // not the only option -- GribDockWidget defaults the loop to 0-18h
+   // (~6GB), and a narrower one costs proportionally less. Current product
+   // only, same documented scoping limitation as PrefetchLoopRange().
    void PrefetchRrfsForecastHourRange();
 
    // Nbm-only cycle/forecast-hour selection -- same shape and reasoning as
@@ -246,11 +279,17 @@ signals:
    // to GetGribFramePath(category, productIndex) -- may fire from a
    // background fetch thread (Qt's queued cross-thread delivery makes
    // this safe to connect to from GribProductLayer's own, different
-   // thread). GribProductLayer only ever sets a dirty flag in response
-   // (and only for productIndex == CurrentProductIndex(), since it
-   // doesn't render the others yet), applying it in Render(), same as
-   // its existing palette-changed handling.
+   // thread). GribProductLayer only ever sets that product's dirty flag
+   // in response, applying it in Render(), same as its existing
+   // palette-changed handling.
    void FrameReady(std::size_t productIndex);
+
+   // Emitted on the calling (GUI) thread whenever SetProductActive()
+   // actually changes which products are active -- which changes what
+   // GribProductLayer draws without any new frame arriving (a product was
+   // unchecked, or checked with its frame not decoded yet), so it can't
+   // rely on FrameReady alone to notice.
+   void ActiveProductsChanged();
 
 private:
    void Poll();
@@ -283,13 +322,17 @@ private:
    // Re-checks whether SHIP's *current* selection (recomputed fresh from
    // the provider's own live cycle/forecast-hour state, not trusted from
    // whatever triggered this call) has both its inputs on disk yet and,
-   // if so, decodes via ApplyShipDownload(). Called once synchronously
-   // from FetchShipSelection() (covers "both were already cached") and
-   // again from each QueueShipInput() job's own completion -- a stale
+   // if so, decodes via ApplyShipDownload(). Called once on the decode
+   // pool from FetchShipSelection() (covers "both were already cached")
+   // and again from each QueueShipInput() job's own completion -- a stale
    // completion (the selection moved on while a download was in flight)
    // naturally finds the *new* combination still incomplete and applies
-   // nothing.
-   void ApplyShipIfReady(std::size_t productIndex);
+   // nothing. Always runs off the GUI thread, so it takes the product's
+   // provider as captured when the work was queued rather than reading
+   // Impl::providers_ (which the GUI thread mutates).
+   void ApplyShipIfReady(
+      std::size_t                                             productIndex,
+      const std::shared_ptr<provider::AwsNexradDataProvider>& provider);
 
    // Downloads one of SHIP's two inputs on the background thread pool if
    // not already in flight, then calls ApplyShipIfReady() once done.
@@ -347,10 +390,20 @@ private:
 
    // Downloads (if not already cached on disk) and decodes everything the
    // current animation loop range will need, in the background, ahead of
-   // playback reaching it -- see class comment. Only the current (primary)
-   // product for now, not every active one -- prefetching the full active
-   // set is a reasonable follow-up, not done here.
+   // playback reaching it -- see class comment. Every checked product,
+   // since they're all drawn. Mrms/Rtma only: RRFS has its own
+   // forecast-hour prefetch (PrefetchRrfsForecastHourRange()), and
+   // NBM/SHIP don't download through QueueDownload() at all.
    void PrefetchLoopRange();
+
+   // PrefetchLoopRange()'s per-product work: lists the loop's days and
+   // finds every file in [startTime, endTime] on the lookup pool (blocking
+   // network I/O, kept off the GUI thread), then queues their downloads.
+   void PrefetchLoopRangeForProduct(
+      std::size_t                                      productIndex,
+      std::shared_ptr<provider::AwsNexradDataProvider> provider,
+      std::chrono::system_clock::time_point            startTime,
+      std::chrono::system_clock::time_point            endTime);
 
    // Applies this instance's own stored RRFS cycle/forecast-hour selection
    // (see SetRrfsCycle()/SetRrfsForecastHour()) to one provider -- shared
@@ -371,26 +424,48 @@ private:
    void FetchRrfsSelection();
 
    // Records `key` as the frame `productIndex` currently wants. If it's
-   // already cached on disk, applies it immediately (decode is cheap,
-   // done synchronously right here); otherwise queues a background
-   // download and returns without blocking -- whatever's currently
-   // displayed for this product stays up until the download completes
-   // and ApplyCachedDownload() runs.
-   void RequestFrame(std::size_t productIndex, const std::string& key);
+   // already cached on disk, queues its decode (see QueueCachedDecode());
+   // otherwise queues a background download. Never blocks -- whatever's
+   // currently displayed for this product stays up until the new frame
+   // is decoded. Safe to call from any thread: everything it needs from
+   // the product's provider is passed in rather than read from
+   // Impl::providers_.
+   void RequestFrame(
+      std::size_t                                             productIndex,
+      const std::string&                                      key,
+      const std::shared_ptr<provider::AwsNexradDataProvider>& provider);
 
-   // Downloads `key` on the background thread pool if this (productIndex,
-   // key) pair isn't already in flight. Products sharing a category
-   // (RTMA/RRFS bundle every field into one file) each get their own
-   // in-flight entry even for the same key, since each still needs its
-   // own decode once the shared bytes are down -- a real, if narrow,
-   // redundant-download cost when two products are both newly activated
-   // at the same uncached moment, traded for not silently dropping one
-   // product's decode the way a key-only dedup would. Applies the result
-   // once complete only if `key` is still what productIndex wants (a
-   // request may have been superseded by further playback/scrubbing
-   // while this was in-flight) -- otherwise leaves it cached on disk for
-   // potential reuse without disrupting whatever's currently displayed.
-   void QueueDownload(std::size_t productIndex, const std::string& key);
+   // Decodes an already-downloaded `key` on the decode pool, if it's still
+   // what productIndex wants by the time the job runs -- keeps even a
+   // cheap decode (and a slow one, like SHIP's) off the GUI thread.
+   void QueueCachedDecode(std::size_t productIndex, const std::string& key);
+
+   // Resolves which S3 key productIndex should show -- the latest one
+   // (`time` unset, the live poll) or the one nearest `time` (archive
+   // mode) -- on the lookup pool, then RequestFrame()s it. The S3 listing
+   // this needs is blocking network I/O, which used to run on the GUI
+   // thread (every poll tick, every product toggle, every archive scrub
+   // step). A lookup superseded by a newer one for the same product, or
+   // whose product was deactivated in the meantime, is dropped. Archive
+   // lookups are MRMS/RTMA only (RRFS/NBM/SHIP resolve archive keys
+   // without a listing); the live poll uses it for RRFS too.
+   void QueueLookup(std::size_t productIndex,
+                    std::shared_ptr<provider::AwsNexradDataProvider> provider,
+                    std::optional<std::chrono::system_clock::time_point> time);
+
+   // Downloads `key` on the background thread pool, unless it's already
+   // downloading -- for this product or any other: products sharing a
+   // file (RTMA/RRFS bundle every field into one) download it once, and
+   // each gets its own decode (see QueueCachedDecode()) when it lands, if
+   // `key` is still what that product wants by then (a request may have
+   // been superseded by further playback/scrubbing while in flight) --
+   // otherwise it stays cached on disk for potential reuse without
+   // disrupting whatever's currently displayed.
+   // Safe to call from any thread, same as RequestFrame().
+   void
+   QueueDownload(std::size_t                                      productIndex,
+                 const std::string&                               key,
+                 std::shared_ptr<provider::AwsNexradDataProvider> provider);
 
    // Decodes an already-downloaded (cached) GRIB2 payload for `key` using
    // the given color range/shortName (a snapshot of the ProductConfig this
@@ -411,6 +486,15 @@ private:
                             long               bottomLevel,
                             long               startStep,
                             long               lengthOfTimeRange);
+
+   // Renames a finished decode's `tmpFramePath` over `framePath` and
+   // records `key` as displayed -- but only if productIndex is still
+   // active and `key` is still what it last requested; otherwise discards
+   // the temporary file. Returns whether the frame was applied.
+   bool CommitDecodedFrame(std::size_t        productIndex,
+                           const std::string& key,
+                           const std::string& tmpFramePath,
+                           const std::string& framePath);
 
    class Impl;
    std::unique_ptr<Impl> p;
