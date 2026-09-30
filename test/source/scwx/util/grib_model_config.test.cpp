@@ -257,4 +257,50 @@ TEST(GribModelConfig, KeyPatternRejectsUnsafeOrUnknown)
    }
 }
 
+TEST(GribModelConfig, KeyPatternRejectsTraversalAndEncodingTricks)
+{
+   for (const char* bad : {"a/./b",
+                           "./a",
+                           "a/.",
+                           "a/../b",
+                           "a..b",
+                           "a//b",
+                           "a/",
+                           "blend\\{hh}\\x",
+                           "a/%2e%2e/b",
+                           "a/%2F/b",
+                           "s3://bucket/{hh}",
+                           "a?x=1",
+                           "a#frag",
+                           "a\tb",
+                           "caf\xc3\xa9/{hh}",
+                           "{HH}/x",
+                           "{yyyymmdd",
+                           "yyyymmdd}/x",
+                           "{{hh}}/x",
+                           "{ hh }/x"})
+   {
+      EXPECT_NE(ValidateKeyPattern(bad), "") << "should reject: " << bad;
+   }
+
+   EXPECT_NE(ValidateKeyPattern(std::string(513, 'a')), "");
+   EXPECT_EQ(ValidateKeyPattern(std::string(512, 'a')), "");
+}
+
+TEST(GribModelConfig, KeyPatternReasonsNameTheProblem)
+{
+   EXPECT_NE(ValidateKeyPattern("a/{bogus}/b").find("{bogus}"),
+             std::string::npos);
+   EXPECT_NE(ValidateKeyPattern("a/..").find(".."), std::string::npos);
+   EXPECT_NE(ValidateKeyPattern("a b").find("' '"), std::string::npos);
+   EXPECT_NE(ValidateKeyPattern("").find("empty"), std::string::npos);
+}
+
+TEST(GribModelConfig, KeyPatternAcceptsAllPlaceholdersAndCommonPunctuation)
+{
+   EXPECT_EQ(ValidateKeyPattern("a_b-c/{yyyymmdd}/{hh}/x.{fh2}.{fh3}.grib2"),
+             "");
+   EXPECT_EQ(ValidateKeyPattern("noplaceholders.grib2"), "");
+}
+
 } // namespace scwx::util::grib_model_config

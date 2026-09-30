@@ -6,7 +6,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <sstream>
+#include <string>
+#include <string_view>
 
 #include <boost/json.hpp>
 
@@ -677,8 +680,96 @@ ParseResult LoadModelFolder(const std::string& folder)
 
 std::string ValidateKeyPattern(std::string_view keyPattern)
 {
-   // TODO(human): decide what a safe key_pattern is; see the request in chat.
-   (void) keyPattern;
+   // The pattern becomes an S3 object key inside the model's own bucket, and
+   // comes from a file the user imported, so this is an allow-list rather
+   // than a list of known-bad things: anything not explicitly permitted is
+   // rejected, with a reason specific enough to fix the file.
+   constexpr std::size_t kMaxLength = 512;
+
+   if (keyPattern.empty())
+   {
+      return "key_pattern is empty";
+   }
+   if (keyPattern.size() > kMaxLength)
+   {
+      return "key_pattern is longer than " + std::to_string(kMaxLength) +
+             " characters";
+   }
+   if (keyPattern.front() == '/')
+   {
+      return "key_pattern must be relative to the bucket (no leading '/')";
+   }
+   if (keyPattern.back() == '/')
+   {
+      return "key_pattern must name a file, not a folder (trailing '/')";
+   }
+   if (keyPattern.find("//") != std::string_view::npos)
+   {
+      return "key_pattern has an empty path segment ('//')";
+   }
+   if (keyPattern.find("..") != std::string_view::npos)
+   {
+      return "key_pattern may not contain '..'";
+   }
+   if (keyPattern == "." || keyPattern.starts_with("./") ||
+       keyPattern.ends_with("/.") ||
+       keyPattern.find("/./") != std::string_view::npos)
+   {
+      return "key_pattern may not contain a '.' path segment";
+   }
+
+   constexpr std::string_view kTokens[] = {
+      "{yyyymmdd}", "{hh}", "{fh2}", "{fh3}"};
+
+   for (std::size_t i = 0; i < keyPattern.size();)
+   {
+      const char c = keyPattern[i];
+
+      if (c == '{')
+      {
+         const auto rest = keyPattern.substr(i);
+         const auto token =
+            std::find_if(std::begin(kTokens),
+                         std::end(kTokens),
+                         [&rest](std::string_view t)
+                         { return rest.starts_with(t); });
+         if (token == std::end(kTokens))
+         {
+            const auto close = rest.find('}');
+            return "unknown or unterminated placeholder '" +
+                   std::string(rest.substr(
+                      0, close == std::string_view::npos ? rest.size() :
+                                                           close + 1)) +
+                   "' (allowed: {yyyymmdd}, {hh}, {fh2}, {fh3})";
+         }
+         i += token->size();
+         continue;
+      }
+
+      const bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                           (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+                           c == '-' || c == '/';
+      if (!allowed)
+      {
+         // Covers ':' (so no URL scheme), '\\', '%' (no percent-encoding
+         // tricks), '?', '#', spaces and control or non-ASCII bytes.
+         std::string shown = (c >= 0x20 && c < 0x7f) ?
+                                std::string("'") + c + "'" :
+                                "byte 0x" + [&]
+         {
+            char buf[8];
+            std::snprintf(
+               buf, sizeof(buf), "%02X", static_cast<unsigned char>(c));
+            return std::string(buf);
+         }();
+         return "key_pattern contains a character that isn't allowed: " +
+                shown +
+                " (letters, digits, '.', '_', '-', '/' and the placeholders "
+                "only)";
+      }
+      ++i;
+   }
+
    return {};
 }
 
