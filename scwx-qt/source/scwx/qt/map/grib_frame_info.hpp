@@ -44,7 +44,8 @@ enum class GribCategory
    Mrms,
    Rtma,
    Rrfs,
-   Nbm
+   Nbm,
+   User // whichever user-imported model is selected (see UserModelRegistry)
 };
 
 // Shared between GribProductLayer, manager::GribManager, and

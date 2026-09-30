@@ -61,6 +61,10 @@ public:
    // <local app data>/grib-models
    [[nodiscard]] static std::filesystem::path ModelsDirectory();
 
+   // Test hook: use `directory` instead of the app-data location (or, with
+   // an empty path, go back to it). Takes effect at the next Reload().
+   static void SetModelsDirectoryForTesting(std::filesystem::path directory);
+
    // Scans a models directory. Static and pure so it can be tested against a
    // temporary folder; models come back sorted by name, and a second model
    // reusing a name is reported as an issue and skipped.

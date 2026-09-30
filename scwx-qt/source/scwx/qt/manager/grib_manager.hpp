@@ -255,7 +255,31 @@ public:
 
    // First forecast hour that exists for this model (NBM has no F000).
    [[nodiscard]] int MinIdxForecastHour() const;
+
+   // GribCategory::User only. Point this manager at whichever model
+   // UserModelRegistry currently has selected: deactivates every product,
+   // resets the cycle/hour selection to the new model's defaults, rebuilds
+   // the product table and emits ProductsChanged(). Call after
+   // UserModelRegistry::SetSelectedModel() or Import().
+   void ReloadUserModel();
+
+   // The model this manager currently serves; empty for any other category or
+   // when no model is installed.
+   [[nodiscard]] std::string UserModelName() const;
+
+   // The cycles a picker should offer, newest first, stepping back
+   // `historyHours` hours from now and keeping only those the model actually
+   // runs; and the last forecast hour that exists for one of them.
+   [[nodiscard]] std::vector<std::chrono::system_clock::time_point>
+   IdxCycleChoices(int historyHours) const;
+   [[nodiscard]] int
+   MaxIdxForecastHourFor(std::chrono::system_clock::time_point cycle) const;
 signals:
+   // The product table itself changed (GribCategory::User, when a different
+   // model is selected) -- ProductNames() is different now and every earlier
+   // product index is meaningless.
+   void ProductsChanged();
+
    // Emitted once a requested frame has actually been decoded and applied
    // to GetGribFramePath(category, productIndex) -- may fire from a
    // background fetch thread (Qt's queued cross-thread delivery makes

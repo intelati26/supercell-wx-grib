@@ -47,6 +47,7 @@ set(SRC_QT_MANAGER_TESTS source/scwx/qt/manager/grib_manager.test.cpp
                          source/scwx/qt/manager/hodograph_manager.test.cpp
                          source/scwx/qt/manager/product_datastore.test.cpp
                          source/scwx/qt/manager/radar_product_manager.test.cpp
+                         source/scwx/qt/manager/user_model_grib_manager.test.cpp
                          source/scwx/qt/manager/user_model_registry.test.cpp
                          source/scwx/qt/manager/settings_manager.test.cpp
                          source/scwx/qt/manager/status_manager.test.cpp

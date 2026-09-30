@@ -70,6 +70,9 @@ std::string GetGribFramePath(GribCategory category, std::size_t productIndex)
    case GribCategory::Nbm:
       prefix = "nbm";
       break;
+   case GribCategory::User:
+      prefix = "user";
+      break;
    }
    if (prefix.empty())
    {

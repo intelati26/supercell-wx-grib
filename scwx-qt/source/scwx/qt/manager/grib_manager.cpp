@@ -1,10 +1,12 @@
 #include <scwx/qt/manager/grib_manager.hpp>
 #include <scwx/qt/manager/status_manager.hpp>
 #include <scwx/qt/manager/timeline_manager.hpp>
+#include <scwx/qt/manager/user_model_registry.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
 #include <scwx/qt/settings/unit_settings.hpp>
 #include <scwx/qt/types/unit_types.hpp>
 #include <scwx/provider/mrms_data_provider.hpp>
+#include <scwx/provider/configured_idx_provider.hpp>
 #include <scwx/provider/idx_model_provider.hpp>
 #include <scwx/provider/nbm_data_provider.hpp>
 #include <scwx/provider/rrfs_data_provider.hpp>
@@ -13,6 +15,7 @@
 #include <scwx/util/time.hpp>
 
 #include <algorithm>
+#include <deque>
 #include <atomic>
 #include <filesystem>
 #include <map>
@@ -1013,7 +1016,8 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
 // compiled in, and user-imported models, whose rules come from a config.
 static bool IsIdxCategory(map::GribCategory category)
 {
-   return category == map::GribCategory::Nbm;
+   return category == map::GribCategory::Nbm ||
+          category == map::GribCategory::User;
 }
 
 // NBM (National Blend of Models): map::GribCategory::Nbm. A first,
@@ -1060,6 +1064,87 @@ static const std::vector<ProductConfig> kNbmProducts_ {
 };
 // clang-format on
 
+// GribCategory::User has no compiled-in table: its products are the rows of
+// whichever model UserModelRegistry has selected, converted here.
+PhysicalQuantity QuantityFromName(std::string_view name)
+{
+   if (name == "temperature_kelvin")
+   {
+      return PhysicalQuantity::TemperatureKelvin;
+   }
+   if (name == "speed_meters_per_second")
+   {
+      return PhysicalQuantity::SpeedMetersPerSecond;
+   }
+   if (name == "accumulation_millimeters")
+   {
+      return PhysicalQuantity::AccumulationMillimeters;
+   }
+   if (name == "pressure_pascals")
+   {
+      return PhysicalQuantity::PressurePascals;
+   }
+   return PhysicalQuantity::None;
+}
+
+std::vector<ProductConfig>
+BuildUserProducts(const std::optional<manager::UserModelEntry>& model)
+{
+   std::vector<ProductConfig> products;
+   if (!model)
+   {
+      return products;
+   }
+
+   for (const auto& spec : model->config.products)
+   {
+      const auto& d = spec.display;
+
+      // Same field order as the built-in idx (NBM) rows above.
+      products.push_back(
+         {spec.name,
+          "",
+          spec.shortName,
+          d.colorOffset,
+          d.colorScale,
+          d.noDataThreshold,
+          QuantityFromName(d.quantity),
+          d.units,
+          d.type == "contour" ? d.contourInterval : 0.0f,
+          "",
+          "",
+          -1,
+          -1,
+          -1,
+          -1,
+          provider::RrfsFileFamily::TwoDField,
+          spec.index.parameter,
+          spec.index.level,
+          spec.index.qualifier});
+   }
+   return products;
+}
+
+// Every table ever built is kept, never freed: Products() hands out
+// references that background fetch threads may still be reading when the
+// user switches models, and a deque never moves existing elements. A table
+// is a few KB and one is added per model switch.
+std::mutex                                gUserProductsMutex;
+std::deque<std::vector<ProductConfig>>    gUserProducts(1);
+
+const std::vector<ProductConfig>& CurrentUserProducts()
+{
+   std::lock_guard lock(gUserProductsMutex);
+   return gUserProducts.back();
+}
+
+void RebuildUserProducts(const std::optional<manager::UserModelEntry>& model)
+{
+   auto products = BuildUserProducts(model);
+   std::lock_guard lock(gUserProductsMutex);
+   gUserProducts.push_back(std::move(products));
+}
+
 const std::vector<ProductConfig>& Products(map::GribCategory category)
 {
    switch (category)
@@ -1070,6 +1155,8 @@ const std::vector<ProductConfig>& Products(map::GribCategory category)
       return kRtmaProducts_;
    case map::GribCategory::Nbm:
       return kNbmProducts_;
+   case map::GribCategory::User:
+      return CurrentUserProducts();
    case map::GribCategory::Rrfs:
    default:
       return kRrfsProducts_;
@@ -1121,6 +1208,13 @@ MakeProvider(map::GribCategory category, const ProductConfig& product)
    }
    case map::GribCategory::Nbm:
       return std::make_shared<provider::NbmDataProvider>();
+   case map::GribCategory::User:
+   {
+      const auto model = manager::UserModelRegistry::Instance()->SelectedModel();
+      return std::make_shared<provider::ConfiguredIdxProvider>(
+         model ? model->config.source :
+                 util::grib_model_config::SourceSpec {});
+   }
    case map::GribCategory::Rtma:
    default:
       return std::make_shared<provider::RtmaDataProvider>();
@@ -1318,6 +1412,13 @@ MakeIdxRulesProvider(map::GribCategory category)
    {
    case map::GribCategory::Nbm:
       return std::make_shared<provider::NbmDataProvider>();
+   case map::GribCategory::User:
+   {
+      const auto model = manager::UserModelRegistry::Instance()->SelectedModel();
+      return model ? std::make_shared<provider::ConfiguredIdxProvider>(
+                        model->config.source) :
+                     nullptr;
+   }
    default:
       return nullptr;
    }
@@ -1334,6 +1435,11 @@ public:
        // signal connections.
        timelineManager_ {manager::TimelineManager::Instance()}
    {
+      if (category_ == map::GribCategory::User)
+      {
+         RebuildUserProducts(userModels_->SelectedModel());
+      }
+
       if (IsIdxCategory(category_))
       {
          idxRules_        = MakeIdxRulesProvider(category_);
@@ -1452,6 +1558,11 @@ public:
    // ProductConfig's own nbmParameter/nbmLevel/nbmQualifier doc), nowhere
    // near the cache-budget pressure a whole RRFS forecast-hour prefetch
    // creates.
+   // GribCategory::User only: held (Instance() keeps just a weak_ptr) so the
+   // registry outlives this manager and its selection stays readable.
+   std::shared_ptr<manager::UserModelRegistry> userModels_ {
+      manager::UserModelRegistry::Instance()};
+
    // The idx model's own rules -- see MakeIdxRulesProvider().
    std::shared_ptr<provider::IdxModelProvider> idxRules_;
 
@@ -2790,6 +2901,81 @@ int GribManager::MinIdxForecastHour() const
 {
    return (IsIdxCategory(p->category_) && p->idxRules_) ?
              p->idxRules_->MinForecastHourFor() :
+             0;
+}
+
+void GribManager::ReloadUserModel()
+{
+   if (p->category_ != map::GribCategory::User)
+   {
+      logger_->warn(
+         "ReloadUserModel() is only meaningful for GribCategory::User");
+      return;
+   }
+
+   // Every earlier product index belongs to the old model's table.
+   for (const auto& name : ActiveProductNames())
+   {
+      SetProductActive(name, false);
+   }
+
+   const auto model = p->userModels_->SelectedModel();
+   RebuildUserProducts(model);
+
+   {
+      std::lock_guard lock(p->fetchMutex_);
+      p->lastKeys_.clear();
+      p->lastRequestedKeys_.clear();
+   }
+
+   p->idxUseLatestCycle_ = true;
+   p->idxCycleOverride_  = {};
+   p->idxRules_          = MakeIdxRulesProvider(p->category_);
+   p->idxForecastHour_   = p->idxRules_ ? p->idxRules_->MinForecastHourFor() : 0;
+
+   logger_->info("User model is now \"{}\" ({} products)",
+                 model ? model->config.name : std::string {"(none)"},
+                 Products(p->category_).size());
+
+   Q_EMIT ProductsChanged();
+}
+
+std::string GribManager::UserModelName() const
+{
+   if (p->category_ != map::GribCategory::User)
+   {
+      return {};
+   }
+   return p->userModels_->SelectedModelName();
+}
+
+std::vector<std::chrono::system_clock::time_point>
+GribManager::IdxCycleChoices(int historyHours) const
+{
+   std::vector<std::chrono::system_clock::time_point> cycles;
+   if (!IsIdxCategory(p->category_) || !p->idxRules_)
+   {
+      return cycles;
+   }
+
+   const auto now =
+      std::chrono::floor<std::chrono::hours>(std::chrono::system_clock::now());
+   for (int i = 0; i < historyHours; ++i)
+   {
+      const auto cycle = now - std::chrono::hours {i};
+      if (p->idxRules_->RunsCycleAt(cycle))
+      {
+         cycles.push_back(cycle);
+      }
+   }
+   return cycles;
+}
+
+int GribManager::MaxIdxForecastHourFor(
+   std::chrono::system_clock::time_point cycle) const
+{
+   return (IsIdxCategory(p->category_) && p->idxRules_) ?
+             p->idxRules_->MaxForecastHourFor(cycle) :
              0;
 }
 

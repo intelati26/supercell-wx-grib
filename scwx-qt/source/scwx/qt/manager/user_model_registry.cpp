@@ -221,8 +221,28 @@ std::shared_ptr<UserModelRegistry> UserModelRegistry::Instance()
    return instance;
 }
 
+namespace
+{
+std::mutex gDirectoryOverrideMutex;
+fs::path   gDirectoryOverride;
+} // namespace
+
+void UserModelRegistry::SetModelsDirectoryForTesting(fs::path directory)
+{
+   std::lock_guard lock(gDirectoryOverrideMutex);
+   gDirectoryOverride = std::move(directory);
+}
+
 fs::path UserModelRegistry::ModelsDirectory()
 {
+   {
+      std::lock_guard lock(gDirectoryOverrideMutex);
+      if (!gDirectoryOverride.empty())
+      {
+         return gDirectoryOverride;
+      }
+   }
+
    return main::ApplicationPaths::GetLocation(
              main::ApplicationPaths::StandardLocation::Local) /
           "grib-models";
