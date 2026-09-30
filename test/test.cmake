@@ -28,6 +28,7 @@ set(SRC_PROVIDER_TESTS source/scwx/provider/aws_level2_data_provider.test.cpp
                        source/scwx/provider/http_level3_data_provider.test.cpp
                        source/scwx/provider/iem_api_provider.test.cpp
                        source/scwx/provider/mrms_data_provider.test.cpp
+                       source/scwx/provider/configured_idx_provider.test.cpp
                        source/scwx/provider/nbm_data_provider.test.cpp
                        source/scwx/provider/nws_level3_behavior.test.cpp
                        source/scwx/provider/nws_api_provider.test.cpp

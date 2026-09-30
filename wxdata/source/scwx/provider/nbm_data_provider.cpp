@@ -59,7 +59,7 @@ NbmDataProvider::NbmDataProvider(const std::string& bucketName,
                                  const std::string& region) :
     // "nbm" fills AwsNexradDataProvider's radarSite slot -- unused by
     // this class's own GetPrefix()/GetTimePointByKey(), just a label.
-    AwsNexradDataProvider("nbm", bucketName, region),
+    IdxModelProvider("nbm", bucketName, region),
     p(std::make_unique<Impl>(bucketName))
 {
 }
@@ -131,6 +131,30 @@ std::chrono::system_clock::time_point NbmDataProvider::CurrentCycle() const
    }
 
    return floor<hours>(util::time::now() - kAvailabilityLag_);
+}
+
+std::string
+NbmDataProvider::BuildKeyFor(std::chrono::system_clock::time_point cycle,
+                             int                                    hour) const
+{
+   return BuildKey(cycle, hour);
+}
+
+int NbmDataProvider::MinForecastHourFor() const
+{
+   return kMinForecastHour_;
+}
+
+int NbmDataProvider::MaxForecastHourFor(
+   std::chrono::system_clock::time_point cycle) const
+{
+   return MaxForecastHourForCycle(cycle);
+}
+
+int NbmDataProvider::SnapForecastHourFor(
+   std::chrono::system_clock::time_point cycle, int hour) const
+{
+   return SnapForecastHour(cycle, hour);
 }
 
 void NbmDataProvider::SetForecastHour(int hour)

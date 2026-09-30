@@ -88,6 +88,8 @@ set(HDR_PROVIDER include/scwx/provider/aws_level2_data_provider.hpp
                  include/scwx/provider/iem_api_provider.hpp
                  include/scwx/provider/iem_api_provider.ipp
                  include/scwx/provider/mrms_data_provider.hpp
+                 include/scwx/provider/configured_idx_provider.hpp
+                 include/scwx/provider/idx_model_provider.hpp
                  include/scwx/provider/nbm_data_provider.hpp
                  include/scwx/provider/nexrad_data_provider.hpp
                  include/scwx/provider/nexrad_data_provider_factory.hpp
@@ -106,6 +108,7 @@ set(SRC_PROVIDER source/scwx/provider/aws_level2_data_provider.cpp
                  source/scwx/provider/http_nexrad_data_provider.cpp
                  source/scwx/provider/iem_api_provider.cpp
                  source/scwx/provider/mrms_data_provider.cpp
+                 source/scwx/provider/configured_idx_provider.cpp
                  source/scwx/provider/nbm_data_provider.cpp
                  source/scwx/provider/nexrad_data_provider.cpp
                  source/scwx/provider/nexrad_data_provider_factory.cpp

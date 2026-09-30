@@ -57,10 +57,22 @@ struct ProductSpec
 struct SourceSpec
 {
    std::string      bucket;
-   std::string      keyPattern; // see ExpandKeyPattern()
+   std::string      region = "us-east-1"; // AWS region the bucket lives in
+   std::string      keyPattern;           // see ExpandKeyPattern()
    std::vector<int> cycleHours;
    int              maxForecastHour = 0;
-   std::string      idxSuffix       = ".idx";
+
+   // First forecast hour that exists (NBM, for one, has no F000), and the
+   // spacing between published hours after it.
+   int minForecastHour  = 0;
+   int forecastHourStep = 1;
+
+   // How long after a cycle's nominal hour its files are reliably there;
+   // "latest cycle" is the newest one at least this old.
+   int availabilityLagHours = 3;
+
+   // Only ".idx" is supported today (the fetch path builds <key>.idx).
+   std::string idxSuffix = ".idx";
 };
 
 struct ModelConfig

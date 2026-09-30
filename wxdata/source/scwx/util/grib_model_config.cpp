@@ -338,6 +338,44 @@ std::string RowLabel(std::size_t row, const std::string& column = {})
 
 // ---------------------------------------------------------------- API
 
+namespace
+{
+
+// S3 bucket naming rules, close enough to catch a pasted URL or path: the
+// real check is the request itself failing, but that shouldn't be how a typo
+// in a user's file is found.
+bool IsPlausibleBucketName(std::string_view name)
+{
+   if (name.size() < 3 || name.size() > 63)
+   {
+      return false;
+   }
+   const auto alnum = [](char c)
+   { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'); };
+   if (!alnum(name.front()) || !alnum(name.back()) ||
+       name.find("..") != std::string_view::npos)
+   {
+      return false;
+   }
+   return std::all_of(name.begin(),
+                      name.end(),
+                      [&alnum](char c) { return alnum(c) || c == '.' || c == '-'; });
+}
+
+bool IsPlausibleRegion(std::string_view region)
+{
+   return !region.empty() && region.size() <= 32 &&
+          std::all_of(region.begin(),
+                      region.end(),
+                      [](char c)
+                      {
+                         return (c >= 'a' && c <= 'z') ||
+                                (c >= '0' && c <= '9') || c == '-';
+                      });
+}
+
+} // namespace
+
 ParseResult ParseModelSettings(std::string_view jsonText)
 {
    ParseResult result;
@@ -382,6 +420,25 @@ ParseResult ParseModelSettings(std::string_view jsonText)
       r.String(*source, "source.", "bucket", true, s.bucket);
       r.String(*source, "source.", "key_pattern", true, s.keyPattern);
       r.String(*source, "source.", "idx_suffix", false, s.idxSuffix);
+      r.String(*source, "source.", "region", false, s.region);
+
+      // These become part of a request, so they are checked, not trusted.
+      if (!s.bucket.empty() && !IsPlausibleBucketName(s.bucket))
+      {
+         r.Error("source.bucket",
+                 "expected a bare S3 bucket name (3-63 lowercase letters, "
+                 "digits, '.' or '-'), not a URL");
+      }
+      if (!IsPlausibleRegion(s.region))
+      {
+         r.Error("source.region",
+                 "expected an AWS region like \"us-east-1\"");
+      }
+      if (s.idxSuffix != ".idx")
+      {
+         r.Error("source.idx_suffix",
+                 "only \".idx\" is supported (wgrib2-style index files)");
+      }
 
       if (!s.keyPattern.empty())
       {
@@ -402,6 +459,33 @@ ParseResult ParseModelSettings(std::string_view jsonText)
          {
             s.maxForecastHour = static_cast<int>(it->value().as_int64());
          }
+      }
+
+      const auto optionalInt =
+         [&](const char* key, int low, int high, int& out)
+      {
+         auto found = source->find(key);
+         if (found == source->end())
+         {
+            return;
+         }
+         if (!found->value().is_int64() || found->value().as_int64() < low ||
+             found->value().as_int64() > high)
+         {
+            r.Error(std::string("source.") + key,
+                    "expected an integer " + std::to_string(low) + "-" +
+                       std::to_string(high));
+            return;
+         }
+         out = static_cast<int>(found->value().as_int64());
+      };
+      optionalInt("min_forecast_hour", 0, 384, s.minForecastHour);
+      optionalInt("forecast_hour_step", 1, 24, s.forecastHourStep);
+      optionalInt("availability_lag_hours", 0, 48, s.availabilityLagHours);
+      if (s.minForecastHour > s.maxForecastHour)
+      {
+         r.Error("source.min_forecast_hour",
+                 "may not be greater than max_forecast_hour");
       }
 
       auto it = source->find("cycle_hours");

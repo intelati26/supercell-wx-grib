@@ -303,4 +303,65 @@ TEST(GribModelConfig, KeyPatternAcceptsAllPlaceholdersAndCommonPunctuation)
    EXPECT_EQ(ValidateKeyPattern("noplaceholders.grib2"), "");
 }
 
+TEST(GribModelConfig, SourceSettingsHaveDefaultsAndCanBeOverridden)
+{
+   const auto plain = ParseModelSettings(R"({
+      "model":  {"name": "M"},
+      "source": {"bucket": "some-bucket", "key_pattern": "a/{hh}/f{fh3}",
+                 "cycle_hours": [0, 12], "max_forecast_hour": 24}})");
+   ASSERT_TRUE(plain.config) << (plain.errors.empty() ? "" : plain.errors[0]);
+   EXPECT_EQ(plain.config->source.region, "us-east-1");
+   EXPECT_EQ(plain.config->source.minForecastHour, 0);
+   EXPECT_EQ(plain.config->source.forecastHourStep, 1);
+   EXPECT_EQ(plain.config->source.availabilityLagHours, 3);
+
+   const auto custom = ParseModelSettings(R"({
+      "model":  {"name": "M"},
+      "source": {"bucket": "eu-bucket", "region": "eu-central-1",
+                 "key_pattern": "a/{hh}/f{fh3}", "cycle_hours": [0],
+                 "min_forecast_hour": 3, "max_forecast_hour": 90,
+                 "forecast_hour_step": 3, "availability_lag_hours": 8}})");
+   ASSERT_TRUE(custom.config) << (custom.errors.empty() ? "" : custom.errors[0]);
+   EXPECT_EQ(custom.config->source.region, "eu-central-1");
+   EXPECT_EQ(custom.config->source.minForecastHour, 3);
+   EXPECT_EQ(custom.config->source.forecastHourStep, 3);
+   EXPECT_EQ(custom.config->source.availabilityLagHours, 8);
+}
+
+TEST(GribModelConfig, SourceSettingsAreValidatedBeforeTheyReachTheNetwork)
+{
+   const auto with = [](const std::string& extra)
+   {
+      return ParseModelSettings(
+         R"({"model": {"name": "M"}, "source": {"bucket": "some-bucket",
+             "key_pattern": "a/{hh}/f{fh3}", "cycle_hours": [0],
+             "max_forecast_hour": 24)" +
+         extra + "}}");
+   };
+
+   EXPECT_TRUE(with("").config);
+   EXPECT_FALSE(with(R"(, "region": "US EAST 1")").config);
+   EXPECT_FALSE(with(R"(, "region": "https://x")").config);
+   EXPECT_FALSE(with(R"(, "idx_suffix": ".index")").config);
+   EXPECT_FALSE(with(R"(, "forecast_hour_step": 0)").config);
+   EXPECT_FALSE(with(R"(, "availability_lag_hours": -1)").config);
+   EXPECT_FALSE(with(R"(, "min_forecast_hour": 30)").config); // > max (24)
+
+   for (const char* bucket : {"https://bucket.s3.amazonaws.com/x",
+                              "s3://bucket",
+                              "Has_Caps",
+                              "ab",
+                              "bucket/with/path",
+                              "-leading",
+                              "double..dot"})
+   {
+      const auto r = ParseModelSettings(
+         std::string(R"({"model": {"name": "M"}, "source": {"bucket": ")") +
+         bucket +
+         R"(", "key_pattern": "a/{hh}", "cycle_hours": [0],
+             "max_forecast_hour": 24}})");
+      EXPECT_FALSE(r.config) << "should reject bucket: " << bucket;
+   }
+}
+
 } // namespace scwx::util::grib_model_config

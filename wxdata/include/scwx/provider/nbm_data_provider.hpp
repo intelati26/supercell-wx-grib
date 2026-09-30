@@ -1,6 +1,6 @@
 #pragma once
 
-#include <scwx/provider/aws_nexrad_data_provider.hpp>
+#include <scwx/provider/idx_model_provider.hpp>
 
 #include <chrono>
 #include <string>
@@ -31,7 +31,7 @@ namespace scwx::provider
 // entirely, resolving each key deterministically via BuildKey(cycle,
 // hour) instead: nowhere near a whole day's objects to list, and the
 // exact key is always computable without asking S3 first.
-class NbmDataProvider : public AwsNexradDataProvider
+class NbmDataProvider : public IdxModelProvider
 {
 public:
    NbmDataProvider();
@@ -71,13 +71,26 @@ public:
    static std::string BuildKey(std::chrono::system_clock::time_point cycle,
                                int                                    hour);
 
-   void SetCycle(std::chrono::system_clock::time_point cycleTime);
-   void UseLatestCycle();
-   [[nodiscard]] bool                                   IsUsingLatestCycle() const;
-   [[nodiscard]] std::chrono::system_clock::time_point CurrentCycle() const;
+   void SetCycle(std::chrono::system_clock::time_point cycleTime) override;
+   void UseLatestCycle() override;
+   [[nodiscard]] bool IsUsingLatestCycle() const override;
+   [[nodiscard]] std::chrono::system_clock::time_point
+   CurrentCycle() const override;
 
-   void              SetForecastHour(int hour);
-   [[nodiscard]] int ForecastHour() const;
+   void              SetForecastHour(int hour) override;
+   [[nodiscard]] int ForecastHour() const override;
+
+   // IdxModelProvider's per-model rules, answered with NBM's own (the
+   // static functions above).
+   [[nodiscard]] std::string
+   BuildKeyFor(std::chrono::system_clock::time_point cycle,
+               int                                    hour) const override;
+   [[nodiscard]] int MinForecastHourFor() const override;
+   [[nodiscard]] int MaxForecastHourFor(
+      std::chrono::system_clock::time_point cycle) const override;
+   [[nodiscard]] int
+   SnapForecastHourFor(std::chrono::system_clock::time_point cycle,
+                       int                                    hour) const override;
 
    [[nodiscard]] std::chrono::system_clock::time_point
    GetTimePointByKey(const std::string& key) const override;
@@ -99,7 +112,7 @@ public:
              const std::string&               level,
              const std::string&               qualifier,
              const std::string&               outputPath,
-             const DownloadProgressCallback& progressCallback = nullptr);
+             const DownloadProgressCallback& progressCallback = nullptr) override;
 
 protected:
    std::string GetPrefix(std::chrono::system_clock::time_point date) override;
