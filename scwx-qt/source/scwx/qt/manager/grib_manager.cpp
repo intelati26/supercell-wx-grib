@@ -1175,10 +1175,9 @@ GribManager::DownloadCacheEvictions(const std::vector<CachedFile>& files,
       order[i] = i;
    }
    // Least recently used (oldest) first.
-   std::stable_sort(order.begin(),
-                    order.end(),
-                    [&files](std::size_t a, std::size_t b)
-                    { return files[a].age > files[b].age; });
+   std::ranges::stable_sort(order,
+                            [&files](std::size_t a, std::size_t b)
+                            { return files[a].age > files[b].age; });
 
    // Remove oldest-first until back under the budget, rather than a fixed
    // eviction count -- how many files that takes depends entirely on which
