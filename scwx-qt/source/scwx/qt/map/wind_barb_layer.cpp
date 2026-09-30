@@ -8,6 +8,8 @@
 
 #include <cmath>
 #include <fstream>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <vector>
@@ -102,6 +104,20 @@ std::optional<ParsedFrame> ParseFrame(const std::string& path)
       return std::nullopt;
    }
 }
+
+// The three parsed RTMA frames, shared by every map pane's WindBarbLayer.
+// Each pane used to parse its own copy (~15MB per grid); a weak_ptr keeps
+// them alive only while some pane still needs them.
+struct BarbFrames
+{
+   std::uint64_t generation {};
+   ParsedFrame   dir;
+   ParsedFrame   speed;
+   ParsedFrame   gust;
+};
+
+std::mutex                       sharedFramesMutex_;
+std::weak_ptr<const BarbFrames>  sharedFrames_;
 
 // Picks which grid points get a barb: every `stride`-th row and column.
 // RTMA's full 2.5km CONUS grid (~2345 x 1597) is far too dense to plot one
@@ -215,9 +231,7 @@ public:
    // (also called from Render() on a zoom-tier change) -- keeps a zoom
    // change from re-reading/re-parsing the frame files off disk, only the
    // already-decoded values need to change on that path.
-   std::optional<ParsedFrame> dirFrame_;
-   std::optional<ParsedFrame> speedFrame_;
-   std::optional<ParsedFrame> gustFrame_;
+   std::shared_ptr<const BarbFrames> frames_;
 
    // Tier actually built into geoIcons_ right now (post density/icon-scale
    // multiplier -- see Render()); Render() only calls RebuildIcons() when
@@ -250,35 +264,65 @@ void WindBarbLayer::Impl::SetIconSheets()
 
 void WindBarbLayer::Impl::ReloadBarbs()
 {
-   auto dirFrame =
-      ParseFrame(manager::WindBarbManager::GetWindDirectionFramePath());
-   auto speedFrame =
-      ParseFrame(manager::WindBarbManager::GetWindSpeedFramePath());
-   auto gustFrame =
-      ParseFrame(manager::WindBarbManager::GetWindGustFramePath());
-
-   if (!dirFrame || !speedFrame || !gustFrame ||
-       dirFrame->grid_nx != speedFrame->grid_nx ||
-       dirFrame->grid_ny != speedFrame->grid_ny ||
-       dirFrame->grid_nx != gustFrame->grid_nx ||
-       dirFrame->grid_ny != gustFrame->grid_ny)
+   const auto generation = windBarbManager_->DataGeneration();
+   if (frames_ && frames_->generation == generation)
    {
-      logger_->warn("Could not load wind barb frames");
+      RebuildIcons(lastTier_);
       return;
    }
 
-   logger_->debug("ReloadBarbs()");
+   // Drop our own reference first so the old grids are freed before the new
+   // ones are parsed, not after.
+   frames_.reset();
 
-   dirFrame_   = std::move(dirFrame);
-   speedFrame_ = std::move(speedFrame);
-   gustFrame_  = std::move(gustFrame);
+   {
+      // Held across the parse on purpose: a second pane arriving for the
+      // same generation waits here and then reuses the result.
+      std::lock_guard lock(sharedFramesMutex_);
+
+      if (auto shared = sharedFrames_.lock();
+          shared && shared->generation == generation)
+      {
+         frames_ = std::move(shared);
+      }
+      else
+      {
+         auto dirFrame =
+            ParseFrame(manager::WindBarbManager::GetWindDirectionFramePath());
+         auto speedFrame =
+            ParseFrame(manager::WindBarbManager::GetWindSpeedFramePath());
+         auto gustFrame =
+            ParseFrame(manager::WindBarbManager::GetWindGustFramePath());
+
+         if (!dirFrame || !speedFrame || !gustFrame ||
+             dirFrame->grid_nx != speedFrame->grid_nx ||
+             dirFrame->grid_ny != speedFrame->grid_ny ||
+             dirFrame->grid_nx != gustFrame->grid_nx ||
+             dirFrame->grid_ny != gustFrame->grid_ny)
+         {
+            logger_->warn("Could not load wind barb frames");
+            return;
+         }
+
+         auto fresh        = std::make_shared<BarbFrames>();
+         fresh->generation = generation;
+         fresh->dir        = std::move(*dirFrame);
+         fresh->speed      = std::move(*speedFrame);
+         fresh->gust       = std::move(*gustFrame);
+
+         sharedFrames_ = fresh;
+         frames_       = std::move(fresh);
+      }
+   }
+
+   logger_->debug("ReloadBarbs()");
 
    RebuildIcons(lastTier_);
 }
 
 void WindBarbLayer::Impl::RebuildIcons(ZoomTier tier)
 {
-   if (!dirFrame_ || !speedFrame_ || !gustFrame_)
+   if (!frames_)
    {
       return;
    }
@@ -296,21 +340,21 @@ void WindBarbLayer::Impl::RebuildIcons(ZoomTier tier)
    geoIcons_->StartIcons();
 
    for (const auto& [i, j] :
-        SelectBarbPoints(dirFrame_->grid_nx, dirFrame_->grid_ny, tier.stride))
+        SelectBarbPoints(frames_->dir.grid_nx, frames_->dir.grid_ny, tier.stride))
    {
       const auto index = static_cast<std::size_t>(j) *
-                            static_cast<std::size_t>(dirFrame_->grid_nx) +
+                            static_cast<std::size_t>(frames_->dir.grid_nx) +
                          static_cast<std::size_t>(i);
-      if (index >= dirFrame_->values.size() ||
-          index >= speedFrame_->values.size() ||
-          index >= gustFrame_->values.size())
+      if (index >= frames_->dir.values.size() ||
+          index >= frames_->speed.values.size() ||
+          index >= frames_->gust.values.size())
       {
          continue;
       }
 
-      const float directionDeg = dirFrame_->values[index];
-      const float speedMs      = speedFrame_->values[index];
-      const float gustMs       = gustFrame_->values[index];
+      const float directionDeg = frames_->dir.values[index];
+      const float speedMs      = frames_->speed.values[index];
+      const float gustMs       = frames_->gust.values[index];
       if (!std::isfinite(directionDeg) || !std::isfinite(speedMs) ||
           speedMs < 0.0f)
       {
@@ -322,7 +366,7 @@ void WindBarbLayer::Impl::RebuildIcons(ZoomTier tier)
          std::isfinite(gustMs) ? gustMs * kMetersPerSecondToKnots_ : 0.0;
 
       const glm::dvec2 latLon = LambertGridToLatLon(
-         dirFrame_->grid, static_cast<double>(i), static_cast<double>(j));
+         frames_->dir.grid, static_cast<double>(i), static_cast<double>(j));
 
       // Negated: GeoIcons' shared shader rotates opposite to standard
       // compass/meteorological convention (0=N, clockwise) -- confirmed
@@ -374,11 +418,11 @@ void WindBarbLayer::Impl::RebuildIcons(ZoomTier tier)
                         speedKnots,
                         directionDeg,
                         gustKnots,
-                        dirFrame_->validTime) :
+                        frames_->dir.validTime) :
             fmt::format("{:.0f} kt @ {:03.0f}°\nValid: {}",
                         speedKnots,
                         directionDeg,
-                        dirFrame_->validTime));
+                        frames_->dir.validTime));
    }
 
    geoIcons_->FinishIcons();

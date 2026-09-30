@@ -4,6 +4,7 @@
 #include <scwx/provider/rtma_data_provider.hpp>
 #include <scwx/util/logger.hpp>
 
+#include <atomic>
 #include <filesystem>
 #include <mutex>
 
@@ -97,6 +98,10 @@ public:
    {
    }
 
+   // See WindBarbManager::DataGeneration(). Written from a fetchPool_
+   // thread, read from the GUI thread.
+   std::atomic<std::uint64_t> dataGeneration_ {0};
+
    // Same idiom GribManager::Impl uses: stop+join in the destructor's
    // *body*, before any implicit member teardown, since fetchPool_'s
    // posted lambdas capture `this`.
@@ -154,6 +159,9 @@ std::string WindBarbManager::GetWindSpeedFramePath()
 
 std::string WindBarbManager::GetWindGustFramePath()
 { return WindGustFramePath(); }
+
+std::uint64_t WindBarbManager::DataGeneration() const
+{ return p->dataGeneration_; }
 
 void WindBarbManager::Poll()
 {
@@ -277,6 +285,7 @@ bool WindBarbManager::ApplyCachedDownload(const std::string& key)
    if (dirOk && speedOk && gustOk)
    {
       logger_->info("Updated wind barb frames");
+      ++p->dataGeneration_;
       Q_EMIT WindDataReady();
       return true;
    }

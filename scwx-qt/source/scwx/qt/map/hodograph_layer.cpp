@@ -8,6 +8,8 @@
 
 #include <cmath>
 #include <fstream>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <vector>
 
@@ -92,6 +94,71 @@ std::optional<ParsedFrame> ParseFrame(const std::string& path)
       logger_->warn("Could not parse frame {}: {}", path, ex.what());
       return std::nullopt;
    }
+}
+
+// Every level's u/v plus terrain, parsed once and shared by every map pane's
+// HodographLayer. That is 35 full RRFS grids (~15MB each, ~525MB total):
+// held per pane -- and kept even while the layer was hidden below zoom 6 --
+// it was the app's single largest allocation (a 6-pane profile put ~3GB
+// here), enough on its own to swamp a 3GB machine.
+struct SharedFrames
+{
+   std::uint64_t                           generation {};
+   std::vector<std::optional<ParsedFrame>> u;
+   std::vector<std::optional<ParsedFrame>> v;
+   std::optional<ParsedFrame>              terrain;
+};
+
+// weak_ptr, so the parsed grids are freed as soon as the last pane that
+// needs them lets go (e.g. every pane zoomed out below the visible tier).
+std::mutex                        sharedFramesMutex_;
+std::weak_ptr<const SharedFrames> sharedFrames_;
+
+std::shared_ptr<const SharedFrames> ParseAllFrames(std::uint64_t generation)
+{
+   const auto& levels = manager::HodographManager::Levels();
+
+   auto frames        = std::make_shared<SharedFrames>();
+   frames->generation = generation;
+   frames->u.resize(levels.size());
+   frames->v.resize(levels.size());
+
+   for (std::size_t i = 0; i < levels.size(); ++i)
+   {
+      frames->u[i] = ParseFrame(manager::HodographManager::GetUFramePath(i));
+      frames->v[i] = ParseFrame(manager::HodographManager::GetVFramePath(i));
+
+      if (!frames->u[i] || !frames->v[i])
+      {
+         logger_->warn("Could not load hodograph frame for level {}", i);
+         return nullptr;
+      }
+   }
+
+   frames->terrain =
+      ParseFrame(manager::HodographManager::GetTerrainFramePath());
+   if (!frames->terrain)
+   {
+      logger_->warn("Could not load hodograph terrain frame");
+      return nullptr;
+   }
+
+   // Every level plus terrain comes from the same decoded file, so their
+   // grids should always match -- this guards a partial/corrupt write,
+   // not a real mismatch.
+   for (std::size_t i = 0; i < levels.size(); ++i)
+   {
+      if (frames->u[i]->grid_nx != frames->terrain->grid_nx ||
+          frames->u[i]->grid_ny != frames->terrain->grid_ny ||
+          frames->v[i]->grid_nx != frames->terrain->grid_nx ||
+          frames->v[i]->grid_ny != frames->terrain->grid_ny)
+      {
+         logger_->warn("Hodograph frame grid mismatch at level {}", i);
+         return nullptr;
+      }
+   }
+
+   return frames;
 }
 
 // Same decimation idiom as WindBarbLayer's own SelectBarbPoints.
@@ -267,6 +334,7 @@ public:
 
    void ReloadHodographs();
    void RebuildLines(ZoomTier tier);
+   bool AcquireFrames();
 
    HodographLayer* self_;
 
@@ -279,71 +347,91 @@ public:
    // from Render() on a zoom-tier change) -- same reasoning as
    // WindBarbLayer's own dirFrame_/speedFrame_/gustFrame_ split from
    // RebuildIcons.
-   std::vector<std::optional<ParsedFrame>> uFrames_;
-   std::vector<std::optional<ParsedFrame>> vFrames_;
-   std::optional<ParsedFrame>              terrainFrame_;
+   // Shared with every other pane (see SharedFrames); only held while this
+   // pane's tier is actually drawing hodographs.
+   std::shared_ptr<const SharedFrames> frames_;
+
+   // New data has arrived (or nothing has been parsed yet) since frames_
+   // was last acquired -- checked lazily by RebuildLines() so nothing is
+   // parsed for a pane that isn't drawing.
+   bool framesStale_ {true};
 
    // {-1, 0.0, false} never matches a real computed tier, guaranteeing
    // the first Render() call rebuilds.
    ZoomTier lastTier_ {-1, 0.0, false};
 };
 
+bool HodographLayer::Impl::AcquireFrames()
+{
+   // Cleared whether or not this succeeds, so a failed load isn't retried on
+   // every Render() -- the next HodographDataReady() sets it again.
+   framesStale_ = false;
+
+   const auto generation = hodographManager_->DataGeneration();
+   if (frames_ && frames_->generation == generation)
+   {
+      return true;
+   }
+
+   // Drop our own reference first: if this pane held the last one, the old
+   // grids are freed before the new ones are parsed, not after.
+   frames_.reset();
+
+   // Held across the parse on purpose: a second pane arriving for the same
+   // generation waits here and then reuses the result instead of parsing its
+   // own copy.
+   std::lock_guard lock(sharedFramesMutex_);
+
+   if (auto shared = sharedFrames_.lock();
+       shared && shared->generation == generation)
+   {
+      frames_ = std::move(shared);
+      return true;
+   }
+
+   auto fresh = ParseAllFrames(generation);
+   if (!fresh)
+   {
+      return false;
+   }
+
+   sharedFrames_ = fresh;
+   frames_       = std::move(fresh);
+   return true;
+}
+
 void HodographLayer::Impl::ReloadHodographs()
 {
-   const auto& levels = manager::HodographManager::Levels();
-
-   std::vector<std::optional<ParsedFrame>> uFrames(levels.size());
-   std::vector<std::optional<ParsedFrame>> vFrames(levels.size());
-
-   for (std::size_t i = 0; i < levels.size(); ++i)
-   {
-      uFrames[i] = ParseFrame(manager::HodographManager::GetUFramePath(i));
-      vFrames[i] = ParseFrame(manager::HodographManager::GetVFramePath(i));
-
-      if (!uFrames[i] || !vFrames[i])
-      {
-         logger_->warn("Could not load hodograph frame for level {}", i);
-         return;
-      }
-   }
-
-   auto terrainFrame =
-      ParseFrame(manager::HodographManager::GetTerrainFramePath());
-   if (!terrainFrame)
-   {
-      logger_->warn("Could not load hodograph terrain frame");
-      return;
-   }
-
-   // Every level plus terrain comes from the same decoded file, so their
-   // grids should always match -- this guards a partial/corrupt write,
-   // not a real mismatch.
-   for (std::size_t i = 0; i < levels.size(); ++i)
-   {
-      if (uFrames[i]->grid_nx != terrainFrame->grid_nx ||
-          uFrames[i]->grid_ny != terrainFrame->grid_ny ||
-          vFrames[i]->grid_nx != terrainFrame->grid_nx ||
-          vFrames[i]->grid_ny != terrainFrame->grid_ny)
-      {
-         logger_->warn("Hodograph frame grid mismatch at level {}", i);
-         return;
-      }
-   }
-
    logger_->debug("ReloadHodographs()");
 
-   uFrames_      = std::move(uFrames);
-   vFrames_      = std::move(vFrames);
-   terrainFrame_ = std::move(terrainFrame);
+   framesStale_ = true;
 
-   RebuildLines(lastTier_);
+   // Nothing to parse for a pane that isn't currently drawing hodographs;
+   // RebuildLines() picks the new data up when it next becomes visible.
+   if (lastTier_.visible)
+   {
+      RebuildLines(lastTier_);
+   }
 }
 
 void HodographLayer::Impl::RebuildLines(ZoomTier tier)
 {
-   if (uFrames_.empty() || !terrainFrame_)
+   const bool drawing = tier.visible && tier.stride >= 1;
+
+   if (drawing)
    {
-      return;
+      if (framesStale_ && !AcquireFrames())
+      {
+         return;
+      }
+      if (!frames_)
+      {
+         return;
+      }
+   }
+   else
+   {
+      frames_.reset();
    }
 
    logger_->debug("RebuildLines(stride={}, metersPerMs={}, visible={})",
@@ -355,7 +443,7 @@ void HodographLayer::Impl::RebuildLines(ZoomTier tier)
 
    geoLines_->StartLines();
 
-   if (tier.visible && tier.stride >= 1)
+   if (drawing)
    {
       // Read once per rebuild, not per point -- same reasoning as
       // WindBarbLayer's own showGustBarbs read.
@@ -363,7 +451,7 @@ void HodographLayer::Impl::RebuildLines(ZoomTier tier)
          settings::HodographSettings::Instance().show_range_rings().GetValue();
 
       const auto& levels  = manager::HodographManager::Levels();
-      const auto& terrain = *terrainFrame_;
+      const auto& terrain = *frames_->terrain;
 
       for (const auto& [i, j] :
            SelectHodographPoints(terrain.grid_nx, terrain.grid_ny, tier.stride))
@@ -395,14 +483,14 @@ void HodographLayer::Impl::RebuildLines(ZoomTier tier)
 
          for (std::size_t lvl = 0; lvl < levels.size(); ++lvl)
          {
-            if (index >= uFrames_[lvl]->values.size() ||
-                index >= vFrames_[lvl]->values.size())
+            if (index >= frames_->u[lvl]->values.size() ||
+                index >= frames_->v[lvl]->values.size())
             {
                continue;
             }
 
-            const float u = uFrames_[lvl]->values[index];
-            const float v = vFrames_[lvl]->values[index];
+            const float u = frames_->u[lvl]->values[index];
+            const float v = frames_->v[lvl]->values[index];
 
             // eccodes' own missingValue sentinel (a real, finite number,
             // e.g. RRFS's own convention -- *not* NaN, confirmed by
@@ -419,8 +507,8 @@ void HodographLayer::Impl::RebuildLines(ZoomTier tier)
             // terrain RRFS masked against) -- keeping all three is cheap
             // and each catches a slightly different failure mode.
             if (!std::isfinite(u) || !std::isfinite(v) ||
-                static_cast<double>(u) == uFrames_[lvl]->missingValue ||
-                static_cast<double>(v) == vFrames_[lvl]->missingValue)
+                static_cast<double>(u) == frames_->u[lvl]->missingValue ||
+                static_cast<double>(v) == frames_->v[lvl]->missingValue)
             {
                continue;
             }

@@ -4,6 +4,7 @@
 #include <scwx/provider/rrfs_data_provider.hpp>
 #include <scwx/util/logger.hpp>
 
+#include <atomic>
 #include <filesystem>
 #include <mutex>
 
@@ -127,6 +128,10 @@ public:
    {
    }
 
+   // See HodographManager::DataGeneration(). Written from a fetchPool_
+   // thread, read from the GUI thread.
+   std::atomic<std::uint64_t> dataGeneration_ {0};
+
    // Same idiom GribManager::Impl/WindBarbManager::Impl use: stop+join in
    // the destructor's *body*, since fetchPool_'s posted lambdas capture
    // `this`.
@@ -178,6 +183,9 @@ std::shared_ptr<HodographManager> HodographManager::Instance()
 
 const std::vector<HodographManager::Level>& HodographManager::Levels()
 { return LevelTable(); }
+
+std::uint64_t HodographManager::DataGeneration() const
+{ return p->dataGeneration_; }
 
 std::string HodographManager::GetUFramePath(std::size_t levelIndex)
 { return UFramePath(levelIndex); }
@@ -403,6 +411,7 @@ bool HodographManager::ApplyCachedDownload(const std::string& key)
    if (allOk)
    {
       logger_->info("Updated hodograph frames ({} levels)", levels.size());
+      ++p->dataGeneration_;
       Q_EMIT HodographDataReady();
       return true;
    }

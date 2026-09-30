@@ -121,6 +121,12 @@ public:
    // The band a given AGL height falls into, per HeightBands() above.
    [[nodiscard]] static const HeightBand& BandForHeight(float heightMeters);
 
+   // Bumped once per successful decode of a new RRFS file, just before
+   // HodographDataReady() fires. HodographLayer keys its shared parsed-frame
+   // cache on this, so every map pane can reuse one parsed copy of the
+   // frame files instead of each parsing its own.
+   [[nodiscard]] std::uint64_t DataGeneration() const;
+
 signals:
    // Emitted once every level's u/v frame plus the terrain frame have all
    // been refreshed for a new RRFS file -- may fire from a background
