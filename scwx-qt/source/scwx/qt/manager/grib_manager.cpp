@@ -3524,6 +3524,13 @@ void GribManager::SetIdxForecastHour(int hour)
    FetchIdxSelection();
 }
 
+int GribManager::SnapIdxForecastHour(int hour) const
+{
+   return (IsIdxCategory(p->category_) && p->idxRules_) ?
+             p->idxRules_->SnapForecastHourFor(CurrentIdxCycle(), hour) :
+             hour;
+}
+
 int GribManager::IdxForecastHour() const
 { return (IsIdxCategory(p->category_)) ? p->idxForecastHour_ : 0; }
 

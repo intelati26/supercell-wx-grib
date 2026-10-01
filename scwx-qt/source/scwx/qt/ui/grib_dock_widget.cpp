@@ -108,6 +108,10 @@ constexpr int kRrfsHourButtonColumns_ = 8;
 // costs little; the full 84 hours of a long run is a choice, not a hazard.)
 constexpr int kDefaultRrfsLoopEndHour_ = 18;
 
+// How many hours the NBM/custom-model export loop covers until the user
+// widens it (each hour is one range-fetched field, 1-2 MB).
+constexpr int kDefaultIdxLoopHours_ = 18;
+
 // Same reasoning as kRrfsCycleHistoryHours_ -- NBM also cycles hourly.
 constexpr int kNbmCycleHistoryHours_  = 24;
 constexpr int kUserCycleHistoryHours_ = 72;
@@ -234,6 +238,24 @@ static void RerangeRrfsLoop(CategorySection& section, int minHour, int maxHour)
 
    section.gribManager->SetRrfsLoopRange(section.loopStartSpinBox->value(),
                                          section.loopEndSpinBox->value());
+}
+
+// Applies the model's hour range to the NBM/custom-model loop spin boxes,
+// keeping the loop's start no later than its end.
+static void RerangeIdxLoop(CategorySection& section)
+{
+   const int minHour = section.gribManager->MinIdxForecastHour();
+   const int maxHour = section.gribManager->MaxIdxForecastHour();
+
+   const QSignalBlocker blockStart(section.loopStartSpinBox);
+   const QSignalBlocker blockEnd(section.loopEndSpinBox);
+
+   section.loopStartSpinBox->setRange(minHour, maxHour);
+   section.loopEndSpinBox->setRange(minHour, maxHour);
+   if (section.loopEndSpinBox->value() < section.loopStartSpinBox->value())
+   {
+      section.loopEndSpinBox->setValue(section.loopStartSpinBox->value());
+   }
 }
 
 class GribDockWidget::Impl
@@ -457,6 +479,32 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
       hourRow->addWidget(section.playButton);
       groupLayout->addLayout(hourRow);
 
+      // Which hours "Export loop" saves (no Play-range or hour picks here)
+      const int minHour        = section.gribManager->MinIdxForecastHour();
+      const int maxHour        = section.gribManager->MaxIdxForecastHour();
+      auto*     loopRow        = new QHBoxLayout();
+      section.loopStartSpinBox = new QFocusedSpinBox(groupBox);
+      section.loopStartSpinBox->setRange(minHour, maxHour);
+      section.loopStartSpinBox->setValue(minHour);
+      section.loopEndSpinBox = new QFocusedSpinBox(groupBox);
+      section.loopEndSpinBox->setRange(minHour, maxHour);
+      section.loopEndSpinBox->setValue(
+         std::clamp(minHour + kDefaultIdxLoopHours_ - 1, minHour, maxHour));
+      loopRow->addWidget(new QLabel(tr("Loop:"), groupBox));
+      loopRow->addWidget(section.loopStartSpinBox);
+      loopRow->addWidget(new QLabel(tr("to"), groupBox));
+      loopRow->addWidget(section.loopEndSpinBox);
+      loopRow->addWidget(new QLabel(tr("h"), groupBox));
+      groupLayout->addLayout(loopRow);
+
+      section.exportLoopButton =
+         new QPushButton(tr("Export loop (animated WebP)..."), groupBox);
+      section.exportLoopButton->setToolTip(
+         tr("Saves every available hour in the loop range as a looping "
+            "animated WebP. Needs img2webp from libwebp's command-line "
+            "tools."));
+      groupLayout->addWidget(section.exportLoopButton);
+
       section.animationTimer = new QTimer(self_);
       section.animationTimer->setInterval(kRrfsAnimationIntervalMs_);
    }
@@ -500,6 +548,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                  // The hodograph alone is a selection too (it follows the same
                  // cycle and hour): list what is published for it
                  stored.gribManager->RefreshRrfsAvailability();
+                 RefreshSection(stored);
               }
 
               // Rrfs/Nbm start with no product active (see GribManager's
@@ -520,6 +569,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                  stored.hourSlider->setRange(
                     stored.gribManager->MinIdxForecastHour(),
                     stored.gribManager->MaxIdxForecastHour());
+                 RerangeIdxLoop(stored);
               }
            });
 
@@ -542,7 +592,23 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
          self_,
          [this, &stored, category]()
          {
-            const std::vector<int> hours = PlaybackHours(stored);
+            std::vector<int> hours;
+            if (category == map::GribCategory::Rrfs)
+            {
+               hours = PlaybackHours(stored);
+            }
+            else
+            {
+               // Snapped to hours that exist (NBM's step is non-uniform)
+               std::set<int> snapped;
+               for (int hour = stored.loopStartSpinBox->value();
+                    hour <= stored.loopEndSpinBox->value();
+                    ++hour)
+               {
+                  snapped.insert(stored.gribManager->SnapIdxForecastHour(hour));
+               }
+               hours.assign(snapped.begin(), snapped.end());
+            }
             if (hours.empty())
             {
                return;
@@ -556,11 +622,14 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                stored.playButton->setText(tr("Play"));
             }
 
-            // Start every hour's download now, in parallel, rather than
-            // one at a time as the export reaches each.
-            stored.gribManager->PrefetchRrfsForecastHours(
-               std::set<int>(hours.begin(), hours.end()));
-            RefreshHourButtons(stored);
+            if (category == map::GribCategory::Rrfs)
+            {
+               // Start every hour's download now, in parallel, rather than
+               // one at a time as the export reaches each.
+               stored.gribManager->PrefetchRrfsForecastHours(
+                  std::set<int>(hours.begin(), hours.end()));
+               RefreshHourButtons(stored);
+            }
 
             Q_EMIT self_->ExportLoopRequested(
                category,
@@ -627,6 +696,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
             // yet, so this is its nominal horizon until
             // RrfsAvailabilityChanged.)
             ApplyRrfsRange(stored);
+            RefreshSection(stored);
          });
 
       // What is published changed (S3 was listed): the hour picker, cycle list
@@ -774,6 +844,16 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
    }
    else if (IsIdxSection(category))
    {
+      connect(stored.loopStartSpinBox,
+              qOverload<int>(&QSpinBox::valueChanged),
+              self_,
+              [&stored](int start)
+              { stored.loopEndSpinBox->setMinimum(start); });
+      connect(stored.loopEndSpinBox,
+              qOverload<int>(&QSpinBox::valueChanged),
+              self_,
+              [&stored](int end) { stored.loopStartSpinBox->setMaximum(end); });
+
       connect(
          stored.cycleComboBox,
          qOverload<int>(&QComboBox::currentIndexChanged),
@@ -795,6 +875,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
             stored.hourSlider->setRange(
                stored.gribManager->MinIdxForecastHour(),
                stored.gribManager->MaxIdxForecastHour());
+            RerangeIdxLoop(stored);
 
             // setRange() only fires valueChanged if it had to clamp the
             // value into the new range -- re-snap explicitly too, since a
@@ -1307,6 +1388,27 @@ void GribDockWidget::Impl::RefreshSection(CategorySection& section)
 {
    const auto activeIndices = section.gribManager->ActiveProductIndices();
 
+   // An hourly RRFS cycle's file lacks the pressure levels the hodograph
+   // reads (see kHodographProduct_), so picking one explicitly leaves it
+   // mostly empty: say so rather than leave the user guessing.
+   QString hodographNote;
+   if (section.category == map::GribCategory::Rrfs &&
+       section.comboBox->IsChecked(kHodographProduct_) &&
+       !section.gribManager->IsUsingLatestRrfsCycle())
+   {
+      const auto cycle = section.gribManager->CurrentRrfsCycle();
+      const auto hour  = std::chrono::duration_cast<std::chrono::hours>(
+                            cycle.time_since_epoch())
+                            .count();
+      if (hour % 3 != 0)
+      {
+         hodographNote =
+            tr("\nThe hodograph needs a 3-hourly cycle (00, 03, 06... UTC); "
+               "this hourly one has no pressure levels, so it will be "
+               "mostly empty. Pick \"Latest\" or a 3-hourly cycle.");
+      }
+   }
+
    if (section.category == map::GribCategory::User &&
        manager::UserModelRegistry::Instance()->Models().empty())
    {
@@ -1321,7 +1423,7 @@ void GribDockWidget::Impl::RefreshSection(CategorySection& section)
       // to) zero active products -- see GribManager's own per-category
       // default. Unreachable for Mrms/Rtma, which keep the original
       // "always at least one" behavior.
-      section.statusLabel->setText(tr("(no products active)"));
+      section.statusLabel->setText(tr("(no products active)") + hodographNote);
       return;
    }
 
@@ -1341,7 +1443,8 @@ void GribDockWidget::Impl::RefreshSection(CategorySection& section)
                     (validTime.empty() ? "loading..." : validTime);
    }
 
-   section.statusLabel->setText(QString::fromStdString(statusText));
+   section.statusLabel->setText(QString::fromStdString(statusText) +
+                                hodographNote);
 }
 
 void GribDockWidget::Impl::BuildHodographLegend(QVBoxLayout* parentLayout,

@@ -347,6 +347,10 @@ public:
    [[nodiscard]] int IdxForecastHour() const;
    [[nodiscard]] int MaxIdxForecastHour() const;
 
+   // The hour SetIdxForecastHour() would settle on for `hour`, without
+   // selecting it -- for building a list of real hours (a loop export).
+   [[nodiscard]] int SnapIdxForecastHour(int hour) const;
+
    // First forecast hour that exists for this model (NBM has no F000).
    [[nodiscard]] int MinIdxForecastHour() const;
 
