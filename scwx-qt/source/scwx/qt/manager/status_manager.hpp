@@ -48,6 +48,14 @@ public:
                        std::int64_t       bytesReceived,
                        std::int64_t       totalBytes);
 
+   // A one-line notice with no progress -- something that went wrong (a
+   // download that failed, a frame that could not be applied) and that the user
+   // would otherwise only find in the log. Keyed by `id` like ReportProgress(),
+   // shown as its sentence alone (no byte counts), and counted as no download
+   // activity (IsBusy()). Nothing clears it: the status bar drops it by itself
+   // after about 15 seconds, long enough to be read.
+   void ReportMessage(const std::string& id, const std::string& description);
+
    // Clears one id's entry -- call once its download finishes
    // (successfully or not, cached-hit or real fetch); an id that's never
    // reported never appears in CurrentStatusText() at all.

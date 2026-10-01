@@ -123,6 +123,93 @@ TEST(GribIdx, ToRangeHeaderBoundedAndUnbounded)
    EXPECT_EQ(ToRangeHeader(unbounded), "bytes=1312828-");
 }
 
+// Real text captured live from
+// noaa-rrfs-ops-pds/rrfs.20260930/18/rrfs.t18z.2dfld.3km.f006.conus.grib2.idx
+// (2026-09-30): REFD at three levels, then (further down) the two APCP records
+// that share a parameter and level and differ only in step.
+static const std::string kRrfsIdxSample =
+   "1:0:d=2026093018:REFC:entire atmosphere (considered as a single "
+   "layer):6 hour fcst:\n"
+   "2:1200000:d=2026093018:REFD:1000 m above ground:6 hour fcst:\n"
+   "3:1800000:d=2026093018:REFD:4000 m above ground:6 hour fcst:\n"
+   "4:2500000:d=2026093018:TMP:2 m above ground:6 hour fcst:\n"
+   "5:4300000:d=2026093018:APCP:surface:5-6 hour acc fcst:\n"
+   "6:4527108:d=2026093018:APCP:surface:0-6 hour acc fcst:\n"
+   "7:4900000:d=2026093018:PRES:surface:6 hour fcst:\n";
+
+TEST(GribIdx, SelectRecordsMatchesParameterAndLevelAtAnyStep)
+{
+   const auto records = ParseIdx(kRrfsIdxSample);
+   ASSERT_EQ(records.size(), 7u);
+
+   // Both APCP records share parameter and level, so both are wanted -- the
+   // decoder separates them by step, as it does from the whole file.
+   const auto apcp = SelectRecords(records, {{"APCP", "surface"}});
+   ASSERT_EQ(apcp.size(), 2u);
+   EXPECT_EQ(apcp[0], 4u);
+   EXPECT_EQ(apcp[1], 5u);
+
+   // A level that is not the one named is not a match
+   const auto refd = SelectRecords(records, {{"REFD", "1000 m above ground"}});
+   ASSERT_EQ(refd.size(), 1u);
+   EXPECT_EQ(refd[0], 1u);
+
+   EXPECT_TRUE(
+      SelectRecords(records, {{"REFD", "500 m above ground"}}).empty());
+   EXPECT_TRUE(SelectRecords(records, {}).empty());
+}
+
+TEST(GribIdx, SelectRecordsKeepsFileOrderAcrossSelectors)
+{
+   const auto records = ParseIdx(kRrfsIdxSample);
+
+   // Selectors listed out of file order still come back in file order, once
+   // each
+   const auto selected = SelectRecords(
+      records,
+      {{"PRES", "surface"},
+       {"REFC", "entire atmosphere (considered as a single layer)"},
+       {"PRES", "surface"}});
+
+   ASSERT_EQ(selected.size(), 2u);
+   EXPECT_EQ(selected[0], 0u);
+   EXPECT_EQ(selected[1], 6u);
+}
+
+TEST(GribIdx, MergedRangesJoinsRecordsThatSitNextToEachOther)
+{
+   const auto records = ParseIdx(kRrfsIdxSample);
+
+   // Records 1,2 (REFD 1000 and 4000) are neighbours: one request. TMP (3) is
+   // adjacent to 2 as well, so 1-3 is one range; APCP (4,5) follows directly
+   // and joins it too. PRES (6) is the last record: open-ended.
+   const auto all = MergedRanges(records, {1, 2, 3, 4, 5, 6});
+   ASSERT_EQ(all.size(), 1u);
+   EXPECT_EQ(all[0].start, 1200000);
+   EXPECT_FALSE(all[0].end.has_value());
+
+   // A gap keeps them apart, each range ending one byte before the next record
+   const auto gap = MergedRanges(records, {1, 4});
+   ASSERT_EQ(gap.size(), 2u);
+   EXPECT_EQ(gap[0].start, 1200000);
+   EXPECT_EQ(*gap[0].end, 1800000 - 1);
+   EXPECT_EQ(gap[1].start, 4300000);
+   EXPECT_EQ(*gap[1].end, 4527108 - 1);
+}
+
+TEST(GribIdx, MergedRangesIgnoresOrderAndDuplicates)
+{
+   const auto records = ParseIdx(kRrfsIdxSample);
+
+   const auto ranges = MergedRanges(records, {5, 4, 4, 1, 1});
+   ASSERT_EQ(ranges.size(), 2u);
+   EXPECT_EQ(ranges[0].start, 1200000);
+   EXPECT_EQ(ranges[1].start, 4300000);
+   EXPECT_EQ(*ranges[1].end, 4900000 - 1); // records 4 and 5, merged
+
+   EXPECT_TRUE(MergedRanges(records, {}).empty());
+}
+
 } // namespace grib_idx
 } // namespace util
 } // namespace scwx

@@ -50,6 +50,14 @@ public:
                const std::string&              outputPath,
                const DownloadProgressCallback& progressCallback = nullptr);
 
+   // Downloads only the named fields of `key` (see AwsNexradDataProvider::
+   // DownloadGribFieldsByIndex()) -- ~6MB each where the whole file is ~84MB.
+   FieldDownloadStatus
+   DownloadFields(const std::string&                                key,
+                  const std::vector<util::grib_idx::FieldSelector>& selectors,
+                  const std::string&                                outputPath,
+                  const DownloadProgressCallback& progressCallback = nullptr);
+
 protected:
    std::string GetPrefix(std::chrono::system_clock::time_point date) override;
 

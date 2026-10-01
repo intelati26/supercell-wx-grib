@@ -1,4 +1,6 @@
 #include <scwx/qt/manager/grib_manager.hpp>
+#include <scwx/qt/manager/grib_field_download.hpp>
+#include <scwx/qt/manager/grib_field_selectors.hpp>
 #include <scwx/qt/manager/status_manager.hpp>
 #include <scwx/qt/manager/timeline_manager.hpp>
 #include <scwx/qt/manager/user_model_registry.hpp>
@@ -1311,6 +1313,42 @@ std::string CachedDownloadPath(const std::string& key)
    return CacheDir() + "/" + path;
 }
 
+// Where `product`'s bytes for S3 object `key` live in the cache. A product that
+// downloads only its own fields (see grib_fields::FieldsFor()) holds a small
+// file of just those, so it cannot share the whole-object path with other
+// products reading the same object -- each gets its own entry. Everything else
+// still caches the object itself under its key.
+std::string CacheKeyFor(map::GribCategory    category,
+                        const ProductConfig& product,
+                        const std::string&   key)
+{
+   if (grib_fields::FieldsFor(category, product.displayName) == nullptr)
+   {
+      return key;
+   }
+
+   std::string slug;
+   for (const char c : product.displayName)
+   {
+      const bool alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                         (c >= '0' && c <= '9');
+      const char out =
+         alnum ?
+            static_cast<char>(std::tolower(static_cast<unsigned char>(c))) :
+            '-';
+      if (out != '-' || (!slug.empty() && slug.back() != '-'))
+      {
+         slug += out;
+      }
+   }
+   while (!slug.empty() && slug.back() == '-')
+   {
+      slug.pop_back();
+   }
+
+   return key + ".fields-" + slug;
+}
+
 // StatusManager's own doc names this gap directly: a slow fetch already
 // reports byte progress, but "a stuck decode_grib call... look[s]
 // identical to nothing happening" once the download itself finishes --
@@ -2287,7 +2325,8 @@ void GribManager::PrefetchRrfsForecastHours(const std::set<int>& hours)
 
          const std::string key = provider::RrfsDataProvider::BuildKey(
             cycle, hour, product.rrfsFileFamily);
-         if (std::filesystem::exists(CachedDownloadPath(key)))
+         if (std::filesystem::exists(
+                CachedDownloadPath(CacheKeyFor(p->category_, product, key))))
          {
             continue;
          }
@@ -2315,15 +2354,17 @@ std::set<int> GribManager::CachedRrfsForecastHours() const
       return cached;
    }
 
-   const auto cycle  = CurrentRrfsCycle();
-   const auto family = Products(p->category_)[*index].rrfsFileFamily;
-   const int  maxHour =
+   const auto           cycle   = CurrentRrfsCycle();
+   const ProductConfig& product = Products(p->category_)[*index];
+   const int            maxHour =
       provider::RrfsDataProvider::MaxForecastHourForCycle(cycle);
 
    for (int hour = 0; hour <= maxHour; ++hour)
    {
-      if (std::filesystem::exists(CachedDownloadPath(
-             provider::RrfsDataProvider::BuildKey(cycle, hour, family))))
+      const std::string key = provider::RrfsDataProvider::BuildKey(
+         cycle, hour, product.rrfsFileFamily);
+      if (std::filesystem::exists(
+             CachedDownloadPath(CacheKeyFor(p->category_, product, key))))
       {
          cached.insert(hour);
       }
@@ -2592,8 +2633,11 @@ bool GribManager::FetchArchiveFrameForProduct(
    }
 
    {
+      const std::string cacheKey =
+         CacheKeyFor(p->category_, Products(p->category_)[productIndex], key);
+
       std::lock_guard lock(p->fetchMutex_);
-      if (key == p->lastKeys_[productIndex])
+      if (cacheKey == p->lastKeys_[productIndex])
       {
          // Already showing this one -- archive scrubbing/playback can
          // re-fire this handler rapidly, don't redo the request each time.
@@ -2706,7 +2750,10 @@ void GribManager::QueueLookup(
             // latest key between updates, and archive scrubbing/playback
             // re-fires rapidly over the same file.
             const auto shown = p->lastKeys_.find(productIndex);
-            if (shown != p->lastKeys_.cend() && shown->second == key)
+            if (shown != p->lastKeys_.cend() &&
+                shown->second ==
+                   CacheKeyFor(
+                      p->category_, Products(p->category_)[productIndex], key))
             {
                return;
             }
@@ -2755,13 +2802,16 @@ void GribManager::FetchShipSelection(std::size_t productIndex)
       p->lastRequestedKeys_[productIndex] = key2dfld + "|" + keyPrslev;
    }
 
-   if (!std::filesystem::exists(CachedDownloadPath(key2dfld)))
+   const ProductConfig& ship = Products(p->category_)[productIndex];
+   if (!std::filesystem::exists(
+          CachedDownloadPath(CacheKeyFor(p->category_, ship, key2dfld))))
    {
-      QueueShipInput(productIndex, key2dfld);
+      QueueShipInput(productIndex, key2dfld, false);
    }
-   if (!std::filesystem::exists(CachedDownloadPath(keyPrslev)))
+   if (!std::filesystem::exists(
+          CachedDownloadPath(CacheKeyFor(p->category_, ship, keyPrslev))))
    {
-      QueueShipInput(productIndex, keyPrslev);
+      QueueShipInput(productIndex, keyPrslev, true);
    }
 
    // Covers the case both were already cached (same "show when ready"
@@ -2800,8 +2850,11 @@ void GribManager::ApplyShipIfReady(
       rrfsProvider.ForecastHour(),
       provider::RrfsFileFamily::PressureLevel);
 
-   if (!std::filesystem::exists(CachedDownloadPath(key2dfld)) ||
-       !std::filesystem::exists(CachedDownloadPath(keyPrslev)))
+   const ProductConfig& ship = Products(p->category_)[productIndex];
+   if (!std::filesystem::exists(
+          CachedDownloadPath(CacheKeyFor(p->category_, ship, key2dfld))) ||
+       !std::filesystem::exists(
+          CachedDownloadPath(CacheKeyFor(p->category_, ship, keyPrslev))))
    {
       return; // not both ready yet
    }
@@ -2831,7 +2884,8 @@ void GribManager::ApplyShipIfReady(
 // would run decode_grib with the wrong (single-input) CLI form for
 // SHIP's two-input mode.
 void GribManager::QueueShipInput(std::size_t        productIndex,
-                                 const std::string& key)
+                                 const std::string& key,
+                                 bool               pressureLevel)
 {
    {
       std::lock_guard lock(p->fetchMutex_);
@@ -2843,13 +2897,22 @@ void GribManager::QueueShipInput(std::size_t        productIndex,
 
    std::shared_ptr<provider::AwsNexradDataProvider> provider =
       p->providers_.at(productIndex);
-   auto statusManager = manager::StatusManager::Instance();
+   auto                statusManager = manager::StatusManager::Instance();
+   const ProductConfig product       = Products(p->category_)[productIndex];
+   const std::string   cacheKey      = CacheKeyFor(p->category_, product, key);
 
    boost::asio::post(
       p->fetchPool_,
-      [this, productIndex, key, provider, statusManager]()
+      [this,
+       productIndex,
+       key,
+       cacheKey,
+       pressureLevel,
+       provider,
+       product,
+       statusManager]()
       {
-         const std::string cachedPath = CachedDownloadPath(key);
+         const std::string cachedPath = CachedDownloadPath(cacheKey);
          std::filesystem::create_directories(
             std::filesystem::path(cachedPath).parent_path());
 
@@ -2867,9 +2930,21 @@ void GribManager::QueueShipInput(std::size_t        productIndex,
                statusId, "SHIP", bytesReceived, totalBytes);
          };
 
+         // Each of SHIP's two files holds only the fields it reads from it
+         // (the 2dfld ones, or the pressure-level ones)
+         const grib_fields::ProductFields* fields =
+            grib_fields::FieldsFor(p->category_, product.displayName);
+
          auto& rrfsProvider = ProviderAs<provider::RrfsDataProvider>(*provider);
-         auto  downloaded =
-            rrfsProvider.DownloadRaw(key, cachedPath, progressCallback);
+         auto  downloaded   = DownloadFieldsOrObject(
+            rrfsProvider,
+            "SHIP",
+            fields == nullptr ?
+               std::vector<scwx::util::grib_idx::FieldSelector> {} :
+               (pressureLevel ? fields->secondary : fields->primary),
+            key,
+            cachedPath,
+            progressCallback);
          statusManager->ReportComplete(statusId);
 
          {
@@ -2908,8 +2983,10 @@ bool GribManager::ApplyShipDownload(std::size_t        productIndex,
 
    QStringList decodeArgs;
    decodeArgs << "--derived" << "ship"
-              << QString::fromStdString(CachedDownloadPath(key2dfld))
-              << QString::fromStdString(CachedDownloadPath(keyPrslev))
+              << QString::fromStdString(CachedDownloadPath(
+                    CacheKeyFor(p->category_, product, key2dfld)))
+              << QString::fromStdString(CachedDownloadPath(
+                    CacheKeyFor(p->category_, product, keyPrslev)))
               << QString::fromStdString(tmpFramePath)
               << QString::number(product.colorOffset)
               << QString::number(product.colorScale)
@@ -3317,18 +3394,23 @@ void GribManager::RequestFrame(
    const std::string&                                      key,
    const std::shared_ptr<provider::AwsNexradDataProvider>& provider)
 {
+   // `key` names the S3 object; the cache (and everything that tracks what is
+   // showing or wanted) is keyed by where this product's bytes of it live.
+   const std::string cacheKey =
+      CacheKeyFor(p->category_, Products(p->category_)[productIndex], key);
+
    {
       std::lock_guard lock(p->fetchMutex_);
-      p->lastRequestedKeys_[productIndex] = key;
+      p->lastRequestedKeys_[productIndex] = cacheKey;
    }
 
-   if (std::filesystem::exists(CachedDownloadPath(key)))
+   if (std::filesystem::exists(CachedDownloadPath(cacheKey)))
    {
       // Already on disk (a prior fetch, or a prefetch that's since
       // completed) -- just decode it. This is the "show when ready" path:
       // by the time playback actually reaches a prefetched time, this is
       // normally all that runs.
-      QueueCachedDecode(productIndex, key);
+      QueueCachedDecode(productIndex, cacheKey);
       return;
    }
 
@@ -3375,9 +3457,12 @@ void GribManager::QueueDownload(
    const std::string&                               key,
    std::shared_ptr<provider::AwsNexradDataProvider> provider)
 {
+   const std::string cacheKey =
+      CacheKeyFor(p->category_, Products(p->category_)[productIndex], key);
+
    {
       std::lock_guard lock(p->fetchMutex_);
-      auto [waiters, firstRequest] = p->downloadWaiters_.try_emplace(key);
+      auto [waiters, firstRequest] = p->downloadWaiters_.try_emplace(cacheKey);
       waiters->second.insert(productIndex);
       if (!firstRequest)
       {
@@ -3403,9 +3488,9 @@ void GribManager::QueueDownload(
 
    boost::asio::post(
       p->fetchPool_,
-      [this, productIndex, key, provider, product, statusManager]()
+      [this, productIndex, key, cacheKey, provider, product, statusManager]()
       {
-         const std::string cachedPath = CachedDownloadPath(key);
+         const std::string cachedPath = CachedDownloadPath(cacheKey);
          std::filesystem::create_directories(
             std::filesystem::path(cachedPath).parent_path());
 
@@ -3429,6 +3514,9 @@ void GribManager::QueueDownload(
          // that needs the concrete type back. category_ (unlike
          // providers_/activeProducts_) never changes after construction,
          // so reading it live via `this` from the pool thread is safe.
+         const grib_fields::ProductFields* fields =
+            grib_fields::FieldsFor(p->category_, product.displayName);
+
          std::optional<std::string> downloaded;
          switch (p->category_)
          {
@@ -3438,15 +3526,27 @@ void GribManager::QueueDownload(
                   .DownloadAndDecompress(key, cachedPath, progressCallback);
             break;
          case map::GribCategory::Rrfs:
-            downloaded =
-               ProviderAs<provider::RrfsDataProvider>(*provider).DownloadRaw(
-                  key, cachedPath, progressCallback);
+            downloaded = DownloadFieldsOrObject(
+               ProviderAs<provider::RrfsDataProvider>(*provider),
+               product.displayName,
+               fields != nullptr ?
+                  fields->primary :
+                  std::vector<scwx::util::grib_idx::FieldSelector> {},
+               key,
+               cachedPath,
+               progressCallback);
             break;
          case map::GribCategory::Rtma:
          default:
-            downloaded =
-               ProviderAs<provider::RtmaDataProvider>(*provider).DownloadRaw(
-                  key, cachedPath, progressCallback);
+            downloaded = DownloadFieldsOrObject(
+               ProviderAs<provider::RtmaDataProvider>(*provider),
+               product.displayName,
+               fields != nullptr ?
+                  fields->primary :
+                  std::vector<scwx::util::grib_idx::FieldSelector> {},
+               key,
+               cachedPath,
+               progressCallback);
             break;
          }
 
@@ -3456,7 +3556,7 @@ void GribManager::QueueDownload(
          std::set<std::size_t> waiters;
          {
             std::lock_guard lock(p->fetchMutex_);
-            const auto      entry = p->downloadWaiters_.find(key);
+            const auto      entry = p->downloadWaiters_.find(cacheKey);
             if (entry != p->downloadWaiters_.end())
             {
                waiters = std::move(entry->second);
@@ -3466,7 +3566,14 @@ void GribManager::QueueDownload(
 
          if (!downloaded.has_value())
          {
-            logger_->warn("Failed to download {}", key);
+            logger_->warn(
+               "Failed to download {} for {}", key, product.displayName);
+            statusManager->ReportMessage(
+               fmt::format("grib-error-{}-{}",
+                           static_cast<int>(p->category_),
+                           productIndex),
+               fmt::format("{}: download failed, will retry",
+                           product.displayName));
             return;
          }
 
@@ -3485,7 +3592,7 @@ void GribManager::QueueDownload(
          // file stays cached regardless, for a loop repeat or a scrub back.
          for (const std::size_t waiter : waiters)
          {
-            QueueCachedDecode(waiter, key);
+            QueueCachedDecode(waiter, cacheKey);
          }
       });
 }
@@ -3649,14 +3756,12 @@ bool GribManager::CommitDecodedFrame(std::size_t        productIndex,
          // A dropped frame leaves the map on the previous hour, which looks
          // like the loop simply stopped -- say so. Nothing clears this id, so
          // the status bar drops it by itself once it goes stale.
-         manager::StatusManager::Instance()->ReportProgress(
+         manager::StatusManager::Instance()->ReportMessage(
             fmt::format(
                "grib-swap-{}-{}", static_cast<int>(p->category_), productIndex),
             fmt::format("{}: could not update the frame ({})",
                         ProductName(productIndex),
-                        ec.message()),
-            0,
-            -1);
+                        ec.message()));
       }
       std::error_code removeEc;
       std::filesystem::remove(tmpFramePath, removeEc);

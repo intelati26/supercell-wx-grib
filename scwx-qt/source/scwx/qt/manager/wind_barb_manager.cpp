@@ -1,4 +1,6 @@
 #include <scwx/qt/manager/wind_barb_manager.hpp>
+#include <scwx/qt/manager/grib_field_download.hpp>
+#include <scwx/qt/manager/grib_field_selectors.hpp>
 #include <scwx/qt/manager/grib_manager.hpp>
 #include <scwx/qt/manager/status_manager.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
@@ -186,13 +188,15 @@ void WindBarbManager::Poll()
 
    logger_->info("New RTMA file for wind barbs: {}", latestKey);
 
-   const std::string cachedPath = CachedDownloadPath(latestKey);
+   // Only the fields barbs read (see grib_fields::WindBarbFields()), cached as
+   // an entry of their own rather than as the ~84MB object.
+   const std::string cacheKey   = latestKey + ".fields-windbarbs";
+   const std::string cachedPath = CachedDownloadPath(cacheKey);
    if (std::filesystem::exists(cachedPath))
    {
-      // Already cached, quite possibly by GribManager(Models) fetching
-      // the exact same file -- decode is cheap, do it right here rather
-      // than bouncing to the background pool.
-      if (ApplyCachedDownload(latestKey))
+      // Already cached -- decode is cheap, do it right here rather than
+      // bouncing to the background pool.
+      if (ApplyCachedDownload(cacheKey))
       {
          std::lock_guard lock(p->fetchMutex_);
          p->lastKey_ = latestKey;
@@ -205,14 +209,17 @@ void WindBarbManager::Poll()
 
    boost::asio::post(
       p->fetchPool_,
-      [this, latestKey, provider, statusManager]()
+      [this, latestKey, cacheKey, provider, statusManager]()
       {
          std::filesystem::create_directories(
-            std::filesystem::path(CachedDownloadPath(latestKey)).parent_path());
+            std::filesystem::path(CachedDownloadPath(cacheKey)).parent_path());
 
-         auto downloaded = provider->DownloadRaw(
+         auto downloaded = DownloadFieldsOrObject(
+            *provider,
+            "Wind Barbs",
+            grib_fields::WindBarbFields(),
             latestKey,
-            CachedDownloadPath(latestKey),
+            CachedDownloadPath(cacheKey),
             [&statusManager](std::int64_t bytesReceived,
                              std::int64_t totalBytes)
             {
@@ -224,6 +231,8 @@ void WindBarbManager::Poll()
          if (!downloaded.has_value())
          {
             logger_->warn("Failed to download {}", latestKey);
+            statusManager->ReportMessage(
+               "wind-barbs-error", "Wind Barbs: download failed, will retry");
             return;
          }
 
@@ -231,7 +240,7 @@ void WindBarbManager::Poll()
          // downloads were never evicted.
          GribManager::NoteCachedDownload(*downloaded);
 
-         if (ApplyCachedDownload(latestKey))
+         if (ApplyCachedDownload(cacheKey))
          {
             std::lock_guard lock(p->fetchMutex_);
             p->lastKey_ = latestKey;

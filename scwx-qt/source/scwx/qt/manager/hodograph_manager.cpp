@@ -1,4 +1,6 @@
 #include <scwx/qt/manager/hodograph_manager.hpp>
+#include <scwx/qt/manager/grib_field_download.hpp>
+#include <scwx/qt/manager/grib_field_selectors.hpp>
 #include <scwx/qt/manager/grib_manager.hpp>
 #include <scwx/qt/manager/status_manager.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
@@ -305,13 +307,15 @@ void HodographManager::Poll()
 
    logger_->info("New RRFS file for hodographs: {}", latestKey);
 
-   const std::string cachedPath = CachedDownloadPath(latestKey);
+   // Only the fields hodographs read (see grib_fields::HodographFields()),
+   // cached as an entry of their own rather than as the ~350MB object.
+   const std::string cacheKey   = latestKey + ".fields-hodograph";
+   const std::string cachedPath = CachedDownloadPath(cacheKey);
    if (std::filesystem::exists(cachedPath))
    {
-      // Already cached, quite possibly by GribManager(Rrfs) fetching the
-      // exact same file -- decode is cheap, do it right here rather than
+      // Already cached -- decode is cheap, do it right here rather than
       // bouncing to the background pool.
-      if (ApplyCachedDownload(latestKey))
+      if (ApplyCachedDownload(cacheKey))
       {
          std::lock_guard lock(p->fetchMutex_);
          p->lastKey_ = latestKey;
@@ -324,14 +328,17 @@ void HodographManager::Poll()
 
    boost::asio::post(
       p->fetchPool_,
-      [this, latestKey, provider, statusManager]()
+      [this, latestKey, cacheKey, provider, statusManager]()
       {
          std::filesystem::create_directories(
-            std::filesystem::path(CachedDownloadPath(latestKey)).parent_path());
+            std::filesystem::path(CachedDownloadPath(cacheKey)).parent_path());
 
-         auto downloaded = provider->DownloadRaw(
+         auto downloaded = DownloadFieldsOrObject(
+            *provider,
+            "Hodograph",
+            grib_fields::HodographFields(),
             latestKey,
-            CachedDownloadPath(latestKey),
+            CachedDownloadPath(cacheKey),
             [&statusManager](std::int64_t bytesReceived,
                              std::int64_t totalBytes)
             {
@@ -343,6 +350,8 @@ void HodographManager::Poll()
          if (!downloaded.has_value())
          {
             logger_->warn("Failed to download {}", latestKey);
+            statusManager->ReportMessage(
+               "hodograph-error", "Hodograph: download failed, will retry");
             return;
          }
 
@@ -350,7 +359,7 @@ void HodographManager::Poll()
          // downloads were never evicted.
          GribManager::NoteCachedDownload(*downloaded);
 
-         if (ApplyCachedDownload(latestKey))
+         if (ApplyCachedDownload(cacheKey))
          {
             std::lock_guard lock(p->fetchMutex_);
             p->lastKey_ = latestKey;

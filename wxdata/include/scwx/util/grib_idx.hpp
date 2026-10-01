@@ -66,4 +66,28 @@ std::optional<std::size_t> FindRecord(const std::vector<IdxRecord>& records,
 // or "bytes=start-" when `end` is unset.
 std::string ToRangeHeader(const ByteRange& range);
 
+// One field wanted out of a file: every record with this parameter and level,
+// whatever its step or qualifier. Deliberately not exact -- a file can hold the
+// same field at several steps (a sub-hourly file's 15/30/45/60 minute records,
+// or an hour's accumulation next to the run total), and the decoder that reads
+// the downloaded bytes already picks the right message from what it is given,
+// exactly as it does from the whole file. Selecting a few extra neighbouring
+// records costs little; guessing which one was meant could pick a wrong one.
+struct FieldSelector
+{
+   std::string parameter;
+   std::string level;
+};
+
+// Indexes (into `records`, in file order) of every record any selector matches.
+std::vector<std::size_t>
+SelectRecords(const std::vector<IdxRecord>&     records,
+              const std::vector<FieldSelector>& selectors);
+
+// The byte ranges that hold exactly the `selected` records (indexes into
+// `records`, in any order), with records that sit next to each other in the
+// file merged into one range so a run of fields is a single request.
+std::vector<ByteRange> MergedRanges(const std::vector<IdxRecord>&   records,
+                                    const std::vector<std::size_t>& selected);
+
 } // namespace scwx::util::grib_idx

@@ -7,6 +7,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace Aws::S3
 {
@@ -41,6 +42,18 @@ public:
    // bytes total."
    using DownloadProgressCallback =
       std::function<void(std::int64_t bytesReceived, std::int64_t totalBytes)>;
+
+   // How a DownloadGribFieldsByIndex() call ended. Callers choose what to do
+   // about each: a missing idx or a field not listed in it can fall back to
+   // downloading the whole file, a failed transfer should not (that would turn
+   // a network blip into hundreds of megabytes).
+   enum class FieldDownloadStatus : std::uint8_t
+   {
+      Downloaded,
+      IndexUnavailable,
+      NoMatchingRecord,
+      Failed
+   };
 
    [[nodiscard]] std::size_t cache_size() const override;
 
@@ -134,12 +147,40 @@ protected:
       const std::string&              outputPath,
       const DownloadProgressCallback& progressCallback = nullptr);
 
+   // Downloads just the GRIB2 messages of `key` that `selectors` name -- every
+   // record with a selected parameter and level, any step -- into one file at
+   // `outputPath`, using the object's ".idx" sidecar to find their byte ranges
+   // (see scwx::util::grib_idx). Messages that sit next to each other in the
+   // file are fetched as one range. Records are written in file order, so the
+   // result decodes like a smaller version of the original file. The idx text
+   // is kept in memory afterwards, so fetching several fields of one file (one
+   // per product, one per hodograph level) reads the idx once.
+   FieldDownloadStatus DownloadGribFieldsByIndex(
+      const std::string&                                bucketName,
+      const std::string&                                key,
+      const std::vector<util::grib_idx::FieldSelector>& selectors,
+      const std::string&                                outputPath,
+      const DownloadProgressCallback& progressCallback = nullptr);
+
    virtual std::string
    GetPrefix(std::chrono::system_clock::time_point date) = 0;
 
 private:
    class Impl;
    std::unique_ptr<Impl> p;
+
+   // The idx text for `key`, from memory if an earlier call fetched it.
+   std::optional<std::string> IndexText(const std::string& bucketName,
+                                        const std::string& key);
+
+   // Downloads each range in turn and joins them, in order, into outputPath.
+   // Progress runs across all of them as one download.
+   std::optional<std::string>
+   DownloadObjectRanges(const std::string& bucketName,
+                        const std::string& key,
+                        const std::vector<util::grib_idx::ByteRange>& ranges,
+                        const std::string&              outputPath,
+                        const DownloadProgressCallback& progressCallback);
 
    std::optional<std::string>
    DownloadObjectImpl(const std::string& bucketName,

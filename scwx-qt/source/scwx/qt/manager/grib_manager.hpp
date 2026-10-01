@@ -382,7 +382,9 @@ private:
    // that function's own completion unconditionally applies a *single*
    // key via ApplyCachedDownload(), which would invoke decode_grib with
    // the wrong CLI form for SHIP's two-input mode.
-   void QueueShipInput(std::size_t productIndex, const std::string& key);
+   void QueueShipInput(std::size_t        productIndex,
+                       const std::string& key,
+                       bool               pressureLevel);
 
    // Decodes SHIP from its two already-downloaded inputs and atomically
    // replaces productIndex's own frame file -- ApplyCachedDownload()'s

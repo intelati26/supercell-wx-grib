@@ -1,5 +1,8 @@
 #include <scwx/qt/manager/status_manager.hpp>
 
+#include <chrono>
+#include <thread>
+
 #include <gtest/gtest.h>
 
 namespace scwx
@@ -50,6 +53,46 @@ TEST(StatusManagerTest, ReportProgressAndComplete)
    // this id's own text no longer appears.
    EXPECT_EQ(statusManager->CurrentStatusText().find("Test Download"),
              std::string::npos);
+}
+
+// A failure notice is just its sentence: no byte counts or percentage, since it
+// reports something that went wrong, not progress.
+TEST(StatusManagerTest, ReportMessageShowsOnlyTheSentence)
+{
+   auto statusManager = StatusManager::Instance();
+
+   statusManager->ReportMessage("status-manager-test-message",
+                                "Test Product: download failed, will retry");
+
+   const std::string text = statusManager->CurrentStatusText();
+   EXPECT_NE(text.find("Test Product: download failed, will retry"),
+             std::string::npos)
+      << text;
+   EXPECT_EQ(text.find('%'), std::string::npos) << text;
+   EXPECT_EQ(text.find("MB"), std::string::npos) << text;
+
+   statusManager->ReportComplete("status-manager-test-message");
+}
+
+// A notice is not download activity: it must not look like something is still
+// in progress, and it outlives the few seconds an abandoned download does.
+TEST(StatusManagerTest, MessagesAreNotActivityAndOutliveStaleDownloads)
+{
+   using namespace std::chrono_literals;
+
+   auto statusManager = StatusManager::Instance();
+
+   statusManager->ReportMessage("status-manager-test-notice", "Notice only");
+   statusManager->ReportProgress(
+      "status-manager-test-notice-download", "Stale download", 0, -1);
+
+   // Past a stale download's lifetime (3 s), well inside a message's (15 s)
+   std::this_thread::sleep_for(3500ms);
+
+   const std::string text = statusManager->CurrentStatusText();
+   EXPECT_EQ(text, "Notice only") << text;
+
+   statusManager->ReportComplete("status-manager-test-notice");
 }
 
 TEST(StatusManagerTest, UnknownTotalOmitsFraction)

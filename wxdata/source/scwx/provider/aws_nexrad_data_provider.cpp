@@ -8,6 +8,9 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <mutex>
+#include <map>
+#include <deque>
 #include <fstream>
 #include <shared_mutex>
 #include <sstream>
@@ -52,6 +55,13 @@ public:
       std::string                           key_;
       std::chrono::system_clock::time_point lastModified_;
    };
+
+   // Idx text by "bucket/key": immutable once published, small (tens of KB),
+   // and wanted again for every other field of the same file.
+   static constexpr std::size_t       kMaxCachedIdx_ = 64;
+   std::mutex                         idxMutex_ {};
+   std::map<std::string, std::string> idxCache_ {};
+   std::deque<std::string>            idxCacheOrder_ {};
 
    explicit Impl(const std::string& radarSite,
                  const std::string& bucketName,
@@ -435,7 +445,7 @@ std::optional<std::string> AwsNexradDataProvider::DownloadGribMessageByIndex(
    const std::string&              outputPath,
    const DownloadProgressCallback& progressCallback)
 {
-   auto idxText = DownloadObjectString(bucketName, key + ".idx");
+   auto idxText = IndexText(bucketName, key);
    if (!idxText.has_value())
    {
       return std::nullopt;
@@ -459,6 +469,208 @@ std::optional<std::string> AwsNexradDataProvider::DownloadGribMessageByIndex(
 
    return DownloadObjectRange(
       bucketName, key, range, outputPath, progressCallback);
+}
+
+std::optional<std::string>
+AwsNexradDataProvider::IndexText(const std::string& bucketName,
+                                 const std::string& key)
+{
+   const std::string cacheKey = bucketName + "/" + key;
+
+   {
+      std::scoped_lock lock(p->idxMutex_);
+      const auto       it = p->idxCache_.find(cacheKey);
+      if (it != p->idxCache_.end())
+      {
+         return it->second;
+      }
+   }
+
+   auto text = DownloadObjectString(bucketName, key + ".idx");
+   if (!text.has_value())
+   {
+      return std::nullopt;
+   }
+
+   {
+      std::scoped_lock lock(p->idxMutex_);
+      if (p->idxCache_.emplace(cacheKey, *text).second)
+      {
+         p->idxCacheOrder_.push_back(cacheKey);
+         while (p->idxCacheOrder_.size() > Impl::kMaxCachedIdx_)
+         {
+            p->idxCache_.erase(p->idxCacheOrder_.front());
+            p->idxCacheOrder_.pop_front();
+         }
+      }
+   }
+
+   return text;
+}
+
+std::optional<std::string> AwsNexradDataProvider::DownloadObjectRanges(
+   const std::string&                            bucketName,
+   const std::string&                            key,
+   const std::vector<util::grib_idx::ByteRange>& ranges,
+   const std::string&                            outputPath,
+   const DownloadProgressCallback&               progressCallback)
+{
+   // Progress for the whole job: bytes finished so far plus the current range.
+   // Every range but possibly the last has a known length; the last (the
+   // file's final message) reports its own length once its response starts.
+   std::int64_t knownTotal = 0;
+   for (const auto& range : ranges)
+   {
+      if (range.end.has_value())
+      {
+         knownTotal += *range.end - range.start + 1;
+      }
+   }
+   const bool openEnded = !ranges.empty() && !ranges.back().end.has_value();
+
+   static std::atomic<std::uint64_t> jobCounter {0};
+   const std::string                 jobPrefix =
+      fmt::format("{}.{}", outputPath, jobCounter.fetch_add(1));
+
+   std::vector<std::string> segmentPaths;
+   const auto               cleanUp = [&segmentPaths]()
+   {
+      std::error_code ec;
+      for (const auto& path : segmentPaths)
+      {
+         std::filesystem::remove(path, ec);
+      }
+   };
+
+   std::int64_t finished = 0;
+   for (std::size_t i = 0; i < ranges.size(); ++i)
+   {
+      const std::string segmentPath = fmt::format("{}.seg{}", jobPrefix, i);
+      segmentPaths.push_back(segmentPath);
+
+      DownloadProgressCallback rangeProgress = nullptr;
+      if (progressCallback)
+      {
+         const bool         last = (i + 1 == ranges.size());
+         const std::int64_t base = finished;
+         rangeProgress = [=](std::int64_t received, std::int64_t total)
+         {
+            std::int64_t overall = -1;
+            if (!openEnded)
+            {
+               overall = knownTotal;
+            }
+            else if (last && total > 0)
+            {
+               overall = knownTotal + total;
+            }
+            progressCallback(base + received, overall);
+         };
+      }
+
+      if (!DownloadObjectImpl(
+              bucketName, key, ranges[i], segmentPath, rangeProgress)
+              .has_value())
+      {
+         cleanUp();
+         return std::nullopt;
+      }
+
+      std::error_code ec;
+      const auto      size = std::filesystem::file_size(segmentPath, ec);
+      finished += ec ? 0 : static_cast<std::int64_t>(size);
+   }
+
+   // Join the segments in order, under a partial name so a failure never
+   // leaves a truncated file where a cache check would take it for complete.
+   const std::string partialPath = jobPrefix + ".part";
+   {
+      std::ofstream     joined(partialPath, std::ios::binary | std::ios::trunc);
+      std::vector<char> buffer(1U << 20);
+      bool              ok = static_cast<bool>(joined);
+
+      for (const auto& path : segmentPaths)
+      {
+         if (!ok)
+         {
+            break;
+         }
+
+         std::ifstream segment(path, std::ios::binary);
+         if (!segment)
+         {
+            ok = false;
+            break;
+         }
+
+         while (segment.read(buffer.data(),
+                             static_cast<std::streamsize>(buffer.size())) ||
+                segment.gcount() > 0)
+         {
+            joined.write(buffer.data(), segment.gcount());
+         }
+         ok = joined.good() && segment.eof();
+      }
+
+      joined.close();
+      ok = ok && !joined.fail();
+
+      if (!ok)
+      {
+         std::error_code ec;
+         std::filesystem::remove(partialPath, ec);
+         cleanUp();
+         logger_->warn("Could not join the downloaded ranges of {}", key);
+         return std::nullopt;
+      }
+   }
+   cleanUp();
+
+   std::error_code ec;
+   std::filesystem::rename(partialPath, outputPath, ec);
+   if (ec)
+   {
+      logger_->warn(
+         "Could not move {} into place: {}", outputPath, ec.message());
+      std::filesystem::remove(partialPath, ec);
+      return std::nullopt;
+   }
+
+   return outputPath;
+}
+
+AwsNexradDataProvider::FieldDownloadStatus
+AwsNexradDataProvider::DownloadGribFieldsByIndex(
+   const std::string&                                bucketName,
+   const std::string&                                key,
+   const std::vector<util::grib_idx::FieldSelector>& selectors,
+   const std::string&                                outputPath,
+   const DownloadProgressCallback&                   progressCallback)
+{
+   const auto idxText = IndexText(bucketName, key);
+   if (!idxText.has_value())
+   {
+      return FieldDownloadStatus::IndexUnavailable;
+   }
+
+   const auto records  = util::grib_idx::ParseIdx(*idxText);
+   const auto selected = util::grib_idx::SelectRecords(records, selectors);
+   if (selected.empty())
+   {
+      logger_->warn(
+         "No idx record for any of {} field(s) in {}", selectors.size(), key);
+      return FieldDownloadStatus::NoMatchingRecord;
+   }
+
+   const auto ranges = util::grib_idx::MergedRanges(records, selected);
+   if (!DownloadObjectRanges(
+           bucketName, key, ranges, outputPath, progressCallback)
+           .has_value())
+   {
+      return FieldDownloadStatus::Failed;
+   }
+
+   return FieldDownloadStatus::Downloaded;
 }
 
 std::optional<std::string> AwsNexradDataProvider::DownloadObjectImpl(

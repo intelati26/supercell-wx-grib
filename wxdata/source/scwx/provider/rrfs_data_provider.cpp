@@ -278,4 +278,14 @@ RrfsDataProvider::DownloadRaw(const std::string&              key,
                               const DownloadProgressCallback& progressCallback)
 { return DownloadObject(p->bucketName_, key, outputPath, progressCallback); }
 
+AwsNexradDataProvider::FieldDownloadStatus RrfsDataProvider::DownloadFields(
+   const std::string&                                key,
+   const std::vector<util::grib_idx::FieldSelector>& selectors,
+   const std::string&                                outputPath,
+   const DownloadProgressCallback&                   progressCallback)
+{
+   return DownloadGribFieldsByIndex(
+      p->bucketName_, key, selectors, outputPath, progressCallback);
+}
+
 } // namespace scwx::provider

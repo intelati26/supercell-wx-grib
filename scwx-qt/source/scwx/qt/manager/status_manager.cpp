@@ -1,5 +1,6 @@
 #include <scwx/qt/manager/status_manager.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <map>
 #include <mutex>
@@ -35,11 +36,20 @@ std::string FormatBytes(std::int64_t bytes)
 // the *only* way an entry ever clears.
 constexpr std::chrono::seconds kStaleThreshold_ {3};
 
+// A message (see StatusManager::ReportMessage()) is reported once and never
+// refreshed, so it stays up long enough to be read rather than for the few
+// seconds an abandoned download does.
+constexpr std::chrono::seconds kMessageLifetime_ {15};
+
 struct ProgressEntry
 {
    std::string  description;
    std::int64_t bytesReceived {};
    std::int64_t totalBytes {-1};
+
+   // A notice rather than a download: shown as its sentence alone, kept for
+   // kMessageLifetime_, and not counted as activity.
+   bool isMessage {false};
 
    // Monotonic sequence number -- which entry is "most recent" for
    // CurrentStatusText()'s own single-line display, since std::map's own
@@ -55,7 +65,9 @@ void PruneStaleEntries(std::map<std::string, ProgressEntry>& entries)
    const auto now = std::chrono::steady_clock::now();
    for (auto it = entries.begin(); it != entries.end();)
    {
-      if (now - it->second.lastUpdate > kStaleThreshold_)
+      const auto lifetime =
+         it->second.isMessage ? kMessageLifetime_ : kStaleThreshold_;
+      if (now - it->second.lastUpdate > lifetime)
       {
          it = entries.erase(it);
       }
@@ -126,6 +138,7 @@ void StatusManager::ReportProgress(const std::string& id,
       entry.description     = description;
       entry.bytesReceived   = bytesReceived;
       entry.totalBytes      = totalBytes;
+      entry.isMessage       = false;
       entry.sequence        = p->nextSequence_++;
       entry.lastUpdate      = std::chrono::steady_clock::now();
 
@@ -134,6 +147,24 @@ void StatusManager::ReportProgress(const std::string& id,
       // any still-active download keeps refreshing its own entry well
       // within kStaleThreshold_, so this never prunes something genuinely
       // in progress.
+      PruneStaleEntries(p->entries_);
+   }
+   Q_EMIT StatusChanged();
+}
+
+void StatusManager::ReportMessage(const std::string& id,
+                                  const std::string& description)
+{
+   {
+      std::scoped_lock lock(p->mutex_);
+      auto&            entry = p->entries_[id];
+      entry.description      = description;
+      entry.bytesReceived    = 0;
+      entry.totalBytes       = -1;
+      entry.isMessage        = true;
+      entry.sequence         = p->nextSequence_++;
+      entry.lastUpdate       = std::chrono::steady_clock::now();
+
       PruneStaleEntries(p->entries_);
    }
    Q_EMIT StatusChanged();
@@ -167,9 +198,12 @@ std::string StatusManager::CurrentStatusText() const
       }
    }
 
-   std::string text =
-      mostRecent->description + ": " + FormatBytes(mostRecent->bytesReceived);
-   if (mostRecent->totalBytes > 0)
+   std::string text = mostRecent->description;
+   if (!mostRecent->isMessage)
+   {
+      text += ": " + FormatBytes(mostRecent->bytesReceived);
+   }
+   if (!mostRecent->isMessage && mostRecent->totalBytes > 0)
    {
       text += " of " + FormatBytes(mostRecent->totalBytes);
    }
@@ -186,7 +220,10 @@ bool StatusManager::IsBusy() const
 {
    std::lock_guard lock(p->mutex_);
    PruneStaleEntries(p->entries_);
-   return !p->entries_.empty();
+   return std::any_of(p->entries_.cbegin(),
+                      p->entries_.cend(),
+                      [](const auto& entry)
+                      { return !entry.second.isMessage; });
 }
 
 void StatusManager::CheckForStaleEntries()
