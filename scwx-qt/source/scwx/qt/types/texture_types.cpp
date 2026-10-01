@@ -1,5 +1,7 @@
 #include <scwx/qt/types/texture_types.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <unordered_map>
 
 namespace scwx
@@ -57,7 +59,91 @@ static const std::unordered_map<ImageTexture, TextureInfo> imageTextureInfo_ {
    {ImageTexture::MapTilerLogo,
     {"images/maptiler-logo", ":/res/textures/images/maptiler-logo.svg"}},
    {ImageTexture::OpenFreeMapLogo,
-    {"images/openfreemap-logo", ":res/textures/images/openfreemap-logo.jpg"}}};
+    {"images/openfreemap-logo", ":res/textures/images/openfreemap-logo.jpg"}},
+   {ImageTexture::WindBarb000,
+    {"images/wind-barb-000", ":/res/icons/wind-barbs/barb_000.svg"}},
+   {ImageTexture::WindBarb005,
+    {"images/wind-barb-005", ":/res/icons/wind-barbs/barb_005.svg"}},
+   {ImageTexture::WindBarb010,
+    {"images/wind-barb-010", ":/res/icons/wind-barbs/barb_010.svg"}},
+   {ImageTexture::WindBarb015,
+    {"images/wind-barb-015", ":/res/icons/wind-barbs/barb_015.svg"}},
+   {ImageTexture::WindBarb020,
+    {"images/wind-barb-020", ":/res/icons/wind-barbs/barb_020.svg"}},
+   {ImageTexture::WindBarb025,
+    {"images/wind-barb-025", ":/res/icons/wind-barbs/barb_025.svg"}},
+   {ImageTexture::WindBarb030,
+    {"images/wind-barb-030", ":/res/icons/wind-barbs/barb_030.svg"}},
+   {ImageTexture::WindBarb035,
+    {"images/wind-barb-035", ":/res/icons/wind-barbs/barb_035.svg"}},
+   {ImageTexture::WindBarb040,
+    {"images/wind-barb-040", ":/res/icons/wind-barbs/barb_040.svg"}},
+   {ImageTexture::WindBarb045,
+    {"images/wind-barb-045", ":/res/icons/wind-barbs/barb_045.svg"}},
+   {ImageTexture::WindBarb050,
+    {"images/wind-barb-050", ":/res/icons/wind-barbs/barb_050.svg"}},
+   {ImageTexture::WindBarb055,
+    {"images/wind-barb-055", ":/res/icons/wind-barbs/barb_055.svg"}},
+   {ImageTexture::WindBarb060,
+    {"images/wind-barb-060", ":/res/icons/wind-barbs/barb_060.svg"}},
+   {ImageTexture::WindBarb065,
+    {"images/wind-barb-065", ":/res/icons/wind-barbs/barb_065.svg"}},
+   {ImageTexture::WindBarb070,
+    {"images/wind-barb-070", ":/res/icons/wind-barbs/barb_070.svg"}},
+   {ImageTexture::WindBarb075,
+    {"images/wind-barb-075", ":/res/icons/wind-barbs/barb_075.svg"}},
+   {ImageTexture::WindBarb080,
+    {"images/wind-barb-080", ":/res/icons/wind-barbs/barb_080.svg"}},
+   {ImageTexture::WindBarb085,
+    {"images/wind-barb-085", ":/res/icons/wind-barbs/barb_085.svg"}},
+   {ImageTexture::WindBarb090,
+    {"images/wind-barb-090", ":/res/icons/wind-barbs/barb_090.svg"}},
+   {ImageTexture::WindBarb095,
+    {"images/wind-barb-095", ":/res/icons/wind-barbs/barb_095.svg"}},
+   {ImageTexture::WindBarb100,
+    {"images/wind-barb-100", ":/res/icons/wind-barbs/barb_100.svg"}},
+   {ImageTexture::WindBarbGust000,
+    {"images/wind-barb-gust-000", ":/res/icons/wind-barbs/barb_gust_000.svg"}},
+   {ImageTexture::WindBarbGust005,
+    {"images/wind-barb-gust-005", ":/res/icons/wind-barbs/barb_gust_005.svg"}},
+   {ImageTexture::WindBarbGust010,
+    {"images/wind-barb-gust-010", ":/res/icons/wind-barbs/barb_gust_010.svg"}},
+   {ImageTexture::WindBarbGust015,
+    {"images/wind-barb-gust-015", ":/res/icons/wind-barbs/barb_gust_015.svg"}},
+   {ImageTexture::WindBarbGust020,
+    {"images/wind-barb-gust-020", ":/res/icons/wind-barbs/barb_gust_020.svg"}},
+   {ImageTexture::WindBarbGust025,
+    {"images/wind-barb-gust-025", ":/res/icons/wind-barbs/barb_gust_025.svg"}},
+   {ImageTexture::WindBarbGust030,
+    {"images/wind-barb-gust-030", ":/res/icons/wind-barbs/barb_gust_030.svg"}},
+   {ImageTexture::WindBarbGust035,
+    {"images/wind-barb-gust-035", ":/res/icons/wind-barbs/barb_gust_035.svg"}},
+   {ImageTexture::WindBarbGust040,
+    {"images/wind-barb-gust-040", ":/res/icons/wind-barbs/barb_gust_040.svg"}},
+   {ImageTexture::WindBarbGust045,
+    {"images/wind-barb-gust-045", ":/res/icons/wind-barbs/barb_gust_045.svg"}},
+   {ImageTexture::WindBarbGust050,
+    {"images/wind-barb-gust-050", ":/res/icons/wind-barbs/barb_gust_050.svg"}},
+   {ImageTexture::WindBarbGust055,
+    {"images/wind-barb-gust-055", ":/res/icons/wind-barbs/barb_gust_055.svg"}},
+   {ImageTexture::WindBarbGust060,
+    {"images/wind-barb-gust-060", ":/res/icons/wind-barbs/barb_gust_060.svg"}},
+   {ImageTexture::WindBarbGust065,
+    {"images/wind-barb-gust-065", ":/res/icons/wind-barbs/barb_gust_065.svg"}},
+   {ImageTexture::WindBarbGust070,
+    {"images/wind-barb-gust-070", ":/res/icons/wind-barbs/barb_gust_070.svg"}},
+   {ImageTexture::WindBarbGust075,
+    {"images/wind-barb-gust-075", ":/res/icons/wind-barbs/barb_gust_075.svg"}},
+   {ImageTexture::WindBarbGust080,
+    {"images/wind-barb-gust-080", ":/res/icons/wind-barbs/barb_gust_080.svg"}},
+   {ImageTexture::WindBarbGust085,
+    {"images/wind-barb-gust-085", ":/res/icons/wind-barbs/barb_gust_085.svg"}},
+   {ImageTexture::WindBarbGust090,
+    {"images/wind-barb-gust-090", ":/res/icons/wind-barbs/barb_gust_090.svg"}},
+   {ImageTexture::WindBarbGust095,
+    {"images/wind-barb-gust-095", ":/res/icons/wind-barbs/barb_gust_095.svg"}},
+   {ImageTexture::WindBarbGust100,
+    {"images/wind-barb-gust-100", ":/res/icons/wind-barbs/barb_gust_100.svg"}}};
 
 static const std::unordered_map<LineTexture, TextureInfo> lineTextureInfo_ {
    {LineTexture::Default1x7,
@@ -66,23 +152,40 @@ static const std::unordered_map<LineTexture, TextureInfo> lineTextureInfo_ {
     {"lines/test-pattern", ":/res/textures/lines/test-pattern.png"}}};
 
 const std::string& GetTextureName(ImageTexture imageTexture)
-{
-   return imageTextureInfo_.at(imageTexture).name_;
-}
+{ return imageTextureInfo_.at(imageTexture).name_; }
 
 const std::string& GetTextureName(LineTexture lineTexture)
-{
-   return lineTextureInfo_.at(lineTexture).name_;
-}
+{ return lineTextureInfo_.at(lineTexture).name_; }
 
 const std::string& GetTexturePath(ImageTexture imageTexture)
-{
-   return imageTextureInfo_.at(imageTexture).path_;
-}
+{ return imageTextureInfo_.at(imageTexture).path_; }
 
 const std::string& GetTexturePath(LineTexture lineTexture)
+{ return lineTextureInfo_.at(lineTexture).path_; }
+
+ImageTexture GetWindBarbTexture(double speedKnots)
 {
-   return lineTextureInfo_.at(lineTexture).path_;
+   // WindBarb000..WindBarb100 are declared consecutively (5kt apart), so
+   // the nearest bucket is just an offset from WindBarb000 -- no lookup
+   // table needed.
+   constexpr int kMaxBucket = 20; // (100 - 0) / 5
+
+   int bucket = static_cast<int>(std::lround(speedKnots / 5.0));
+   bucket     = std::clamp(bucket, 0, kMaxBucket);
+
+   return static_cast<ImageTexture>(
+      static_cast<int>(ImageTexture::WindBarb000) + bucket);
+}
+
+ImageTexture GetWindBarbGustTexture(double speedKnots)
+{
+   constexpr int kMaxBucket = 20; // (100 - 0) / 5
+
+   int bucket = static_cast<int>(std::lround(speedKnots / 5.0));
+   bucket     = std::clamp(bucket, 0, kMaxBucket);
+
+   return static_cast<ImageTexture>(
+      static_cast<int>(ImageTexture::WindBarbGust000) + bucket);
 }
 
 } // namespace types

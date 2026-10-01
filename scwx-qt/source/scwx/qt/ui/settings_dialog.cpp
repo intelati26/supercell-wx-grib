@@ -13,11 +13,13 @@
 #include <scwx/qt/map/map_provider.hpp>
 #include <scwx/qt/settings/audio_settings.hpp>
 #include <scwx/qt/settings/general_settings.hpp>
+#include <scwx/qt/settings/hodograph_settings.hpp>
 #include <scwx/qt/settings/palette_settings.hpp>
 #include <scwx/qt/settings/product_settings.hpp>
 #include <scwx/qt/settings/settings_interface.hpp>
 #include <scwx/qt/settings/text_settings.hpp>
 #include <scwx/qt/settings/unit_settings.hpp>
+#include <scwx/qt/settings/wind_barb_settings.hpp>
 #include <scwx/qt/types/alert_types.hpp>
 #include <scwx/qt/types/font_types.hpp>
 #include <scwx/qt/types/location_types.hpp>
@@ -155,6 +157,11 @@ public:
           &showMapCenter_,
           &showMapLogo_,
           &showSmoothedRangeFolding_,
+          &showGustBarbs_,
+          &windBarbIconScale_,
+          &windBarbDensityScale_,
+          &showHodographRangeRings_,
+          &hodographSizeScale_,
           &updateNotificationsEnabled_,
           &cursorIconAlwaysOn_,
           &cursorIconScale_,
@@ -285,6 +292,11 @@ public:
    settings::SettingsInterface<bool>         showMapCenter_ {};
    settings::SettingsInterface<bool>         showMapLogo_ {};
    settings::SettingsInterface<bool>         showSmoothedRangeFolding_ {};
+   settings::SettingsInterface<bool>         showGustBarbs_ {};
+   settings::SettingsInterface<double>       windBarbIconScale_ {};
+   settings::SettingsInterface<double>       windBarbDensityScale_ {};
+   settings::SettingsInterface<bool>         showHodographRangeRings_ {};
+   settings::SettingsInterface<double>       hodographSizeScale_ {};
    settings::SettingsInterface<bool>         updateNotificationsEnabled_ {};
    settings::SettingsInterface<bool>         cursorIconAlwaysOn_ {};
    settings::SettingsInterface<double>       cursorIconScale_ {};
@@ -364,9 +376,7 @@ SettingsDialog::SettingsDialog(QMapLibre::Settings& mapSettings,
 }
 
 SettingsDialog::~SettingsDialog()
-{
-   delete ui;
-}
+{ delete ui; }
 
 void SettingsDialogImpl::ConnectSignals()
 {
@@ -570,6 +580,10 @@ void SettingsDialogImpl::SetupGeneralTab()
       settings::GeneralSettings::Instance();
    settings::ProductSettings& productSettings =
       settings::ProductSettings::Instance();
+   settings::WindBarbSettings& windBarbSettings =
+      settings::WindBarbSettings::Instance();
+   settings::HodographSettings& hodographSettings =
+      settings::HodographSettings::Instance();
 
    QObject::connect(
       self_->ui->themeComboBox,
@@ -984,6 +998,27 @@ void SettingsDialogImpl::SetupGeneralTab()
       productSettings.show_smoothed_range_folding());
    showSmoothedRangeFolding_.SetEditWidget(
       self_->ui->showSmoothedRangeFoldingCheckBox);
+
+   showGustBarbs_.SetSettingsVariable(windBarbSettings.show_gust_barbs());
+   showGustBarbs_.SetEditWidget(self_->ui->showGustBarbsCheckBox);
+
+   windBarbIconScale_.SetSettingsVariable(windBarbSettings.icon_scale());
+   windBarbIconScale_.SetEditWidget(self_->ui->windBarbIconScaleSpinBox);
+   windBarbIconScale_.SetResetButton(self_->ui->resetWindBarbIconScaleButton);
+
+   windBarbDensityScale_.SetSettingsVariable(windBarbSettings.density_scale());
+   windBarbDensityScale_.SetEditWidget(self_->ui->windBarbDensityScaleSpinBox);
+   windBarbDensityScale_.SetResetButton(
+      self_->ui->resetWindBarbDensityScaleButton);
+
+   showHodographRangeRings_.SetSettingsVariable(
+      hodographSettings.show_range_rings());
+   showHodographRangeRings_.SetEditWidget(
+      self_->ui->showHodographRangeRingsCheckBox);
+
+   hodographSizeScale_.SetSettingsVariable(hodographSettings.size_scale());
+   hodographSizeScale_.SetEditWidget(self_->ui->hodographSizeScaleSpinBox);
+   hodographSizeScale_.SetResetButton(self_->ui->resetHodographSizeScaleButton);
 
    updateNotificationsEnabled_.SetSettingsVariable(
       generalSettings.update_notifications_enabled());
@@ -1524,8 +1559,8 @@ QImage SettingsDialogImpl::GenerateColorTableImage(
    std::size_t width  = max - min + 1u;
    std::size_t height = 1u;
    QImage      image(static_cast<int>(width),
-                static_cast<int>(height),
-                QImage::Format::Format_ARGB32);
+                     static_cast<int>(height),
+                     QImage::Format::Format_ARGB32);
 
    for (std::size_t i = min; i <= max; ++i)
    {
@@ -1605,9 +1640,9 @@ QFont SettingsDialogImpl::GetSelectedFont()
    std::string fontFamily = fontFamilies_.at(selectedFontCategory_)
                                .GetSettingsVariable()
                                ->GetStagedOrValue();
-   std::string fontStyle = fontStyles_.at(selectedFontCategory_)
-                              .GetSettingsVariable()
-                              ->GetStagedOrValue();
+   std::string fontStyle  = fontStyles_.at(selectedFontCategory_)
+                               .GetSettingsVariable()
+                               ->GetStagedOrValue();
    units::font_size::points<double> fontSize {
       fontPointSizes_.at(selectedFontCategory_)
          .GetSettingsVariable()
@@ -1623,9 +1658,7 @@ QFont SettingsDialogImpl::GetSelectedFont()
 }
 
 void SettingsDialogImpl::SelectFontCategory(types::FontCategory fontCategory)
-{
-   selectedFontCategory_ = fontCategory;
-}
+{ selectedFontCategory_ = fontCategory; }
 
 void SettingsDialogImpl::UpdateFontDisplayData()
 {
@@ -1721,9 +1754,7 @@ void SettingsDialogImpl::ResetToDefault()
 
 std::string SettingsDialogImpl::RadarSiteLabel(
    std::shared_ptr<config::RadarSite>& radarSite)
-{
-   return fmt::format("{} ({})", radarSite->id(), radarSite->location_name());
-}
+{ return fmt::format("{} ({})", radarSite->id(), radarSite->location_name()); }
 
 // NOLINTEND(cppcoreguidelines-owning-memory)
 

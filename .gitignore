@@ -38,3 +38,6 @@ _codeql_detected_source_root
 
 # aqtinstall
 aqtinstall.log
+
+# Local pre-push working notes, not meant to be committed
+/REPOSITORY_CONTENT_AUDIT.md

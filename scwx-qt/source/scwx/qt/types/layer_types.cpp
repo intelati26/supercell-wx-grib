@@ -23,6 +23,12 @@ static const std::unordered_map<LayerType, std::string> layerTypeName_ {
 static const std::unordered_map<DataLayer, std::string> dataLayerName_ {
    {DataLayer::OverlayProduct, "Overlay Product"},
    {DataLayer::RadarRange, "Radar Range"},
+   {DataLayer::GribMrms, "MRMS"},
+   {DataLayer::GribRtma, "RTMA"},
+   {DataLayer::GribRrfs, "RRFS"},
+   {DataLayer::GribNbm, "NBM"},
+   {DataLayer::WindBarbs, "Wind Barbs"},
+   {DataLayer::Hodograph, "Hodograph"},
    {DataLayer::Unknown, "?"}};
 
 static const std::unordered_map<InformationLayer, std::string>
@@ -62,9 +68,7 @@ LayerType GetLayerType(const std::string& name)
 }
 
 std::string GetLayerTypeName(LayerType layerType)
-{
-   return layerTypeName_.at(layerType);
-}
+{ return layerTypeName_.at(layerType); }
 
 DataLayer GetDataLayer(const std::string& name)
 {
@@ -85,9 +89,7 @@ DataLayer GetDataLayer(const std::string& name)
 }
 
 std::string GetDataLayerName(DataLayer layer)
-{
-   return dataLayerName_.at(layer);
-}
+{ return dataLayerName_.at(layer); }
 
 InformationLayer GetInformationLayer(const std::string& name)
 {
@@ -108,9 +110,7 @@ InformationLayer GetInformationLayer(const std::string& name)
 }
 
 std::string GetInformationLayerName(InformationLayer layer)
-{
-   return informationLayerName_.at(layer);
-}
+{ return informationLayerName_.at(layer); }
 
 MapLayer GetMapLayer(const std::string& name)
 {
@@ -131,9 +131,7 @@ MapLayer GetMapLayer(const std::string& name)
 }
 
 std::string GetMapLayerName(MapLayer layer)
-{
-   return mapLayerName_.at(layer);
-}
+{ return mapLayerName_.at(layer); }
 
 std::string GetLayerDescriptionName(LayerDescription description)
 {
@@ -176,14 +174,10 @@ std::string GetLayerName(types::LayerType        type,
 }
 
 bool LayerSupportsOpacity(LayerType type)
-{
-   return type != LayerType::Map && type != LayerType::Unknown;
-}
+{ return type != LayerType::Map && type != LayerType::Unknown; }
 
 float ClampLayerOpacity(float opacity)
-{
-   return std::clamp(opacity, 0.0f, 1.0f);
-}
+{ return std::clamp(opacity, 0.0f, 1.0f); }
 
 int LayerOpacityToPercent(float opacity)
 {
@@ -197,9 +191,7 @@ int LayerOpacityToPercent(float opacity)
 }
 
 float LayerOpacityFromPercent(int percent)
-{
-   return ClampLayerOpacity(static_cast<float>(percent) / 100.0f);
-}
+{ return ClampLayerOpacity(static_cast<float>(percent) / 100.0f); }
 
 void tag_invoke(boost::json::value_from_tag,
                 boost::json::value& jv,

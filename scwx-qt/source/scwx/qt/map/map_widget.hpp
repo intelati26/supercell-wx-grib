@@ -18,6 +18,7 @@
 #include <qmaplibre.hpp>
 
 #include <QGestureEvent>
+#include <QImage>
 #include <QOpenGLWidget>
 #include <QPoint>
 #include <QPropertyAnimation>
@@ -75,6 +76,16 @@ public:
    [[nodiscard]] std::string             GetColorTableUnits() const;
 
    void ScreenCapture(types::CaptureType captureType);
+
+   /**
+    * @brief Grabs the current framebuffer as an image, synchronously --
+    * QOpenGLWidget::grabFramebuffer() forces a repaint itself if needed, so
+    * (unlike ScreenCapture() above) this doesn't need to route through
+    * paintGL()'s own post-processing step. For callers that want the image
+    * itself (e.g. to composite an overlay onto it) rather than having it
+    * saved/copied automatically.
+    */
+   [[nodiscard]] QImage CaptureImage();
 
    void SelectElevation(float elevation);
 
@@ -142,6 +153,22 @@ public:
                          double zoom,
                          double bearing,
                          double pitch);
+
+   /**
+    * @brief Sets the current map view to fit a geographic bounding box,
+    * north-up with no tilt. Computes the correct center/zoom for the
+    * current pane size via QMapLibre::Map::coordinateZoomForBounds()
+    * rather than a fixed per-region zoom.
+    *
+    * @param [in] southLatitude Southwest corner latitude in degrees
+    * @param [in] westLongitude Southwest corner longitude in degrees
+    * @param [in] northLatitude Northeast corner latitude in degrees
+    * @param [in] eastLongitude Northeast corner longitude in degrees
+    */
+   void SetMapBounds(double southLatitude,
+                     double westLongitude,
+                     double northLatitude,
+                     double eastLongitude);
 
    void GetMapViewParameters(double& latitude,
                              double& longitude,

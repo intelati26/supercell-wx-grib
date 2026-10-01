@@ -3,6 +3,7 @@
 #include <scwx/qt/map/map_provider.hpp>
 #include <scwx/qt/settings/audio_settings.hpp>
 #include <scwx/qt/settings/general_settings.hpp>
+#include <scwx/qt/settings/hodograph_settings.hpp>
 #include <scwx/qt/settings/hotkey_settings.hpp>
 #include <scwx/qt/settings/map_settings.hpp>
 #include <scwx/qt/settings/palette_settings.hpp>
@@ -10,6 +11,7 @@
 #include <scwx/qt/settings/text_settings.hpp>
 #include <scwx/qt/settings/ui_settings.hpp>
 #include <scwx/qt/settings/unit_settings.hpp>
+#include <scwx/qt/settings/wind_barb_settings.hpp>
 #include <scwx/util/json.hpp>
 #include <scwx/util/logger.hpp>
 
@@ -156,6 +158,7 @@ boost::json::value SettingsManager::Impl::ConvertSettingsToJson()
 
    settings::GeneralSettings::Instance().WriteJson(settingsJson);
    settings::AudioSettings::Instance().WriteJson(settingsJson);
+   settings::HodographSettings::Instance().WriteJson(settingsJson);
    settings::HotkeySettings::Instance().WriteJson(settingsJson);
    settings::MapSettings::Instance().WriteJson(settingsJson);
    settings::PaletteSettings::Instance().WriteJson(settingsJson);
@@ -163,6 +166,7 @@ boost::json::value SettingsManager::Impl::ConvertSettingsToJson()
    settings::TextSettings::Instance().WriteJson(settingsJson);
    settings::UiSettings::Instance().WriteJson(settingsJson);
    settings::UnitSettings::Instance().WriteJson(settingsJson);
+   settings::WindBarbSettings::Instance().WriteJson(settingsJson);
 
    return settingsJson;
 }
@@ -173,6 +177,7 @@ void SettingsManager::Impl::GenerateDefaultSettings()
 
    settings::GeneralSettings::Instance().SetDefaults();
    settings::AudioSettings::Instance().SetDefaults();
+   settings::HodographSettings::Instance().SetDefaults();
    settings::HotkeySettings::Instance().SetDefaults();
    settings::MapSettings::Instance().SetDefaults();
    settings::PaletteSettings::Instance().SetDefaults();
@@ -180,6 +185,7 @@ void SettingsManager::Impl::GenerateDefaultSettings()
    settings::TextSettings::Instance().SetDefaults();
    settings::UiSettings::Instance().SetDefaults();
    settings::UnitSettings::Instance().SetDefaults();
+   settings::WindBarbSettings::Instance().SetDefaults();
 }
 
 bool SettingsManager::Impl::LoadSettings(
@@ -191,6 +197,7 @@ bool SettingsManager::Impl::LoadSettings(
 
    jsonDirty |= !settings::GeneralSettings::Instance().ReadJson(settingsJson);
    jsonDirty |= !settings::AudioSettings::Instance().ReadJson(settingsJson);
+   jsonDirty |= !settings::HodographSettings::Instance().ReadJson(settingsJson);
    jsonDirty |= !settings::HotkeySettings::Instance().ReadJson(settingsJson);
    jsonDirty |= !settings::MapSettings::Instance().ReadJson(settingsJson);
    jsonDirty |= !settings::PaletteSettings::Instance().ReadJson(settingsJson);
@@ -198,6 +205,7 @@ bool SettingsManager::Impl::LoadSettings(
    jsonDirty |= !settings::TextSettings::Instance().ReadJson(settingsJson);
    jsonDirty |= !settings::UiSettings::Instance().ReadJson(settingsJson);
    jsonDirty |= !settings::UnitSettings::Instance().ReadJson(settingsJson);
+   jsonDirty |= !settings::WindBarbSettings::Instance().ReadJson(settingsJson);
 
    return jsonDirty;
 }

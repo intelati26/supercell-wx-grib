@@ -1,0 +1,579 @@
+#include <scwx/qt/map/hodograph_layer.hpp>
+#include <scwx/qt/map/grib_frame_info.hpp>
+#include <scwx/qt/gl/draw/geo_lines.hpp>
+#include <scwx/qt/manager/hodograph_manager.hpp>
+#include <scwx/qt/settings/hodograph_settings.hpp>
+#include <scwx/qt/util/geographic_lib.hpp>
+#include <scwx/util/logger.hpp>
+
+#include <cmath>
+#include <fstream>
+#include <optional>
+#include <vector>
+
+#include <fmt/format.h>
+
+#include <QGuiApplication>
+
+namespace scwx::qt::map
+{
+
+static const std::string logPrefix_ = "scwx::qt::map::hodograph_layer";
+static const auto        logger_    = scwx::util::Logger::Create(logPrefix_);
+
+// 1 m/s = 1.9438445 kt (exact: 1 kt = 1852 m / 3600 s) -- same constant
+// WindBarbLayer's own file defines, duplicated rather than shared since
+// it's a plain, well-known unit conversion, not shared logic.
+static constexpr double kMetersPerSecondToKnots_ = 1.9438445;
+
+namespace
+{
+
+// Same shape as WindBarbLayer's own ParsedFrame -- one decoded field's
+// Lambert grid geometry plus its raw values. Duplicated rather than
+// shared: each layer's own frame set (RTMA's 3 fields vs. RRFS's 34+1)
+// is different enough, and small enough, that a shared struct would just
+// be a thin wrapper around ExtractNumber/LambertGrid, which both layers
+// already call directly from grib_frame_info.hpp.
+struct ParsedFrame
+{
+   long               grid_nx {};
+   long               grid_ny {};
+   LambertGrid        grid {};
+   std::string        validTime;
+   double             missingValue {};
+   std::vector<float> values;
+};
+
+std::optional<ParsedFrame> ParseFrame(const std::string& path)
+{
+   std::ifstream in(path, std::ios::binary);
+   if (!in)
+   {
+      return std::nullopt;
+   }
+
+   std::string header;
+   std::getline(in, header);
+
+   try
+   {
+      ParsedFrame frame;
+      frame.grid_nx      = static_cast<long>(ExtractNumber(header, "nx"));
+      frame.grid_ny      = static_cast<long>(ExtractNumber(header, "ny"));
+      frame.grid.lat1    = ExtractNumber(header, "lat1");
+      frame.grid.lon1    = ExtractNumber(header, "lon1");
+      frame.grid.lov     = ExtractNumberOr(header, "lov", 0.0);
+      frame.grid.lad     = ExtractNumberOr(header, "lad", 0.0);
+      frame.grid.latin1  = ExtractNumberOr(header, "latin1", 0.0);
+      frame.grid.latin2  = ExtractNumberOr(header, "latin2", 0.0);
+      frame.grid.dx      = ExtractNumberOr(header, "dx", 0.0);
+      frame.grid.dy      = ExtractNumberOr(header, "dy", 0.0);
+      frame.grid.radius  = ExtractNumberOr(header, "radius", 0.0);
+      frame.validTime    = ExtractStringOr(header, "validTime", {});
+      frame.missingValue = ExtractNumber(header, "missingValue");
+
+      const auto byteLength =
+         static_cast<std::size_t>(ExtractNumber(header, "byteLength"));
+      frame.values.resize(byteLength / sizeof(float));
+      in.read(reinterpret_cast<char*>(frame.values.data()),
+              static_cast<std::streamsize>(byteLength));
+
+      if (!in || frame.values.size() !=
+                    static_cast<std::size_t>(frame.grid_nx * frame.grid_ny))
+      {
+         return std::nullopt;
+      }
+
+      return frame;
+   }
+   catch (const std::runtime_error& ex)
+   {
+      logger_->warn("Could not parse frame {}: {}", path, ex.what());
+      return std::nullopt;
+   }
+}
+
+// Same decimation idiom as WindBarbLayer's own SelectBarbPoints.
+std::vector<std::pair<long, long>>
+SelectHodographPoints(long nx, long ny, long stride)
+{
+   std::vector<std::pair<long, long>> points;
+
+   if (stride < 1)
+   {
+      return points;
+   }
+
+   points.reserve(
+      static_cast<std::size_t>((nx / stride + 1) * (ny / stride + 1)));
+
+   for (long j = 0; j < ny; j += stride)
+   {
+      for (long i = 0; i < nx; i += stride)
+      {
+         points.emplace_back(i, j);
+      }
+   }
+
+   return points;
+}
+
+// Decimation stride and geographic scale for one zoom band.
+//
+// stride: hodographs are visually busier than barbs (a whole polyline
+// per point, not one glyph) -- sparser at every comparable zoom level
+// than WindBarbLayer's own tiers, tuned by eye as a first guess, not
+// reused from there (see the plan doc's own "decimation density" open
+// question).
+//
+// metersPerMs: unlike WindBarbLayer's icons (a fixed *pixel* size via
+// GeoIcons' screen-space offset mechanism), a hodograph drawn through
+// GeoLines is sized in real geographic *metres* (its endpoints are real
+// lat/lon coordinates -- see this class's own header comment). This is
+// metres of on-map offset per 1 m/s of wind, tuned per tier so a ~30 m/s
+// (~60kt) vector -- strong, not extreme -- reads as a legible but not
+// overwhelming size at that tier's typical viewing distance. A genuinely
+// fixed-pixel-size hodograph would need computing metres-per-pixel from
+// the current view and isn't attempted here -- see the plan doc's own
+// "on-screen size" open question.
+//
+// visible: below zoom 6 (CONUS/regional), any real geographic size this
+// primitive can draw is an imperceptible speck -- rather than pick an
+// arbitrarily huge metersPerMs to compensate (which would then be
+// wildly oversized at the next tier up), hodographs simply aren't drawn
+// at all below this zoom.
+struct ZoomTier
+{
+   long   stride;
+   double metersPerMs;
+   bool   visible;
+
+   bool operator==(const ZoomTier&) const = default;
+};
+
+ZoomTier TierForZoom(double zoom)
+{
+   if (zoom < 6.0)
+   {
+      return {0, 0.0, false};
+   }
+   else if (zoom < 7.5)
+   {
+      return {30, 90.0, true};
+   }
+   else if (zoom < 9.0)
+   {
+      return {14, 140.0, true};
+   }
+   else
+   {
+      return {6, 220.0, true};
+   }
+}
+
+// Reads manager::HodographManager::BandForHeight()'s own shared table
+// (not a locally-hardcoded one) specifically so this and
+// GribDockWidget's legend can never drift apart -- see that table's own
+// doc for the color/band convention itself.
+boost::gil::rgba8_pixel_t HeightBandColor(float heightMeters)
+{
+   const auto& rgb = manager::HodographManager::BandForHeight(heightMeters).rgb;
+   return {rgb[0], rgb[1], rgb[2], 255};
+}
+
+// Concentric speed-reference rings drawn behind each hodograph, the same
+// idea as the reference screenshot that originally motivated this
+// feature (see docs/gridded-hodograph-plan.md) -- one of that doc's own
+// open questions, resolved here rather than left out entirely. Every
+// 20kt out to 60kt is a first-guess interval, not derived from anything
+// (most real hodographs of interest fall well inside a 60kt outer ring);
+// segment count is a circle-smoothness/cost tradeoff, cheap enough at
+// this decimation density to not matter.
+constexpr double kRangeRingIntervalKnots_ = 20.0;
+constexpr int    kRangeRingCount_         = 3;
+constexpr int    kRangeRingSegments_      = 24;
+
+// Muted gray, fully opaque -- deliberately not relying on alpha
+// blending (unconfirmed whether GeoLines' draw state enables it) to read
+// as "background reference," just a plain, visually quieter color than
+// any real height-band line color.
+const boost::gil::rgba8_pixel_t kRangeRingColor_ {170, 170, 170, 255};
+
+// Draws one hodograph's full set of range rings (see kRangeRingCount_)
+// around `center`, scaled by the same metersPerMs the wind vectors
+// themselves use so a ring genuinely means "this many knots" at the
+// current zoom tier. Approximates each ring as a kRangeRingSegments_-
+// sided polygon via GeographicLib::GetCoordinate's angle+distance
+// overload (the same helper LinkedVectors' own tick marks already use) --
+// GeoLines has no native circle/arc primitive, so this is the
+// straightforward way to get one out of straight line segments.
+void DrawRangeRings(gl::draw::GeoLines&       geoLines,
+                    const common::Coordinate& center,
+                    double                    metersPerMs)
+{
+   for (int ring = 1; ring <= kRangeRingCount_; ++ring)
+   {
+      const double speedMs =
+         (kRangeRingIntervalKnots_ * ring) / kMetersPerSecondToKnots_;
+      const double radiusM = speedMs * metersPerMs;
+
+      common::Coordinate prev = util::GeographicLib::GetCoordinate(
+         center,
+         units::angle::degrees<double> {0.0},
+         units::length::meters<double> {radiusM});
+
+      for (int seg = 1; seg <= kRangeRingSegments_; ++seg)
+      {
+         const double             angleDeg = 360.0 * seg / kRangeRingSegments_;
+         const common::Coordinate next     = util::GeographicLib::GetCoordinate(
+            center,
+            units::angle::degrees<double> {angleDeg},
+            units::length::meters<double> {radiusM});
+
+         auto line = geoLines.AddLine();
+         geoLines.SetLineLocation(line,
+                                  static_cast<float>(prev.latitude_),
+                                  static_cast<float>(prev.longitude_),
+                                  static_cast<float>(next.latitude_),
+                                  static_cast<float>(next.longitude_));
+         geoLines.SetLineModulate(line, kRangeRingColor_);
+         geoLines.SetLineWidth(line, 1.0f);
+         geoLines.SetLineVisible(line, true);
+
+         prev = next;
+      }
+   }
+}
+
+} // namespace
+
+class HodographLayer::Impl
+{
+public:
+   explicit Impl(HodographLayer*                       self,
+                 const std::shared_ptr<gl::GlContext>& glContext) :
+       self_ {self}, geoLines_ {std::make_shared<gl::draw::GeoLines>(glContext)}
+   {
+      QObject::connect(hodographManager_.get(),
+                       &manager::HodographManager::HodographDataReady,
+                       self_,
+                       [this]() { ReloadHodographs(); });
+   }
+   ~Impl() = default;
+
+   Impl(const Impl&)            = delete;
+   Impl& operator=(const Impl&) = delete;
+
+   void ReloadHodographs();
+   void RebuildLines(ZoomTier tier);
+
+   HodographLayer* self_;
+
+   std::shared_ptr<gl::draw::GeoLines>        geoLines_;
+   std::shared_ptr<manager::HodographManager> hodographManager_ {
+      manager::HodographManager::Instance()};
+
+   // Cached by ReloadHodographs() (fires on HodographManager::
+   // HodographDataReady) and consumed by RebuildLines() (also called
+   // from Render() on a zoom-tier change) -- same reasoning as
+   // WindBarbLayer's own dirFrame_/speedFrame_/gustFrame_ split from
+   // RebuildIcons.
+   std::vector<std::optional<ParsedFrame>> uFrames_;
+   std::vector<std::optional<ParsedFrame>> vFrames_;
+   std::optional<ParsedFrame>              terrainFrame_;
+
+   // {-1, 0.0, false} never matches a real computed tier, guaranteeing
+   // the first Render() call rebuilds.
+   ZoomTier lastTier_ {-1, 0.0, false};
+};
+
+void HodographLayer::Impl::ReloadHodographs()
+{
+   const auto& levels = manager::HodographManager::Levels();
+
+   std::vector<std::optional<ParsedFrame>> uFrames(levels.size());
+   std::vector<std::optional<ParsedFrame>> vFrames(levels.size());
+
+   for (std::size_t i = 0; i < levels.size(); ++i)
+   {
+      uFrames[i] = ParseFrame(manager::HodographManager::GetUFramePath(i));
+      vFrames[i] = ParseFrame(manager::HodographManager::GetVFramePath(i));
+
+      if (!uFrames[i] || !vFrames[i])
+      {
+         logger_->warn("Could not load hodograph frame for level {}", i);
+         return;
+      }
+   }
+
+   auto terrainFrame =
+      ParseFrame(manager::HodographManager::GetTerrainFramePath());
+   if (!terrainFrame)
+   {
+      logger_->warn("Could not load hodograph terrain frame");
+      return;
+   }
+
+   // Every level plus terrain comes from the same decoded file, so their
+   // grids should always match -- this guards a partial/corrupt write,
+   // not a real mismatch.
+   for (std::size_t i = 0; i < levels.size(); ++i)
+   {
+      if (uFrames[i]->grid_nx != terrainFrame->grid_nx ||
+          uFrames[i]->grid_ny != terrainFrame->grid_ny ||
+          vFrames[i]->grid_nx != terrainFrame->grid_nx ||
+          vFrames[i]->grid_ny != terrainFrame->grid_ny)
+      {
+         logger_->warn("Hodograph frame grid mismatch at level {}", i);
+         return;
+      }
+   }
+
+   logger_->debug("ReloadHodographs()");
+
+   uFrames_      = std::move(uFrames);
+   vFrames_      = std::move(vFrames);
+   terrainFrame_ = std::move(terrainFrame);
+
+   RebuildLines(lastTier_);
+}
+
+void HodographLayer::Impl::RebuildLines(ZoomTier tier)
+{
+   if (uFrames_.empty() || !terrainFrame_)
+   {
+      return;
+   }
+
+   logger_->debug("RebuildLines(stride={}, metersPerMs={}, visible={})",
+                  tier.stride,
+                  tier.metersPerMs,
+                  tier.visible);
+
+   lastTier_ = tier;
+
+   geoLines_->StartLines();
+
+   if (tier.visible && tier.stride >= 1)
+   {
+      // Read once per rebuild, not per point -- same reasoning as
+      // WindBarbLayer's own showGustBarbs read.
+      const bool showRangeRings =
+         settings::HodographSettings::Instance().show_range_rings().GetValue();
+
+      const auto& levels  = manager::HodographManager::Levels();
+      const auto& terrain = *terrainFrame_;
+
+      for (const auto& [i, j] :
+           SelectHodographPoints(terrain.grid_nx, terrain.grid_ny, tier.stride))
+      {
+         const auto index = static_cast<std::size_t>(j) *
+                               static_cast<std::size_t>(terrain.grid_nx) +
+                            static_cast<std::size_t>(i);
+         if (index >= terrain.values.size())
+         {
+            continue;
+         }
+
+         const float terrainM = terrain.values[index];
+         if (!std::isfinite(terrainM) ||
+             static_cast<double>(terrainM) == terrain.missingValue)
+         {
+            continue;
+         }
+
+         // (east, north) offsets in metres for every valid (non-terrain-
+         // masked) level at this point, in height order -- see
+         // HodographManager::Level's own doc on why a heightAboveSea
+         // level below terrain is real, not missing, and must be
+         // skipped rather than decoded wrong.
+         std::vector<std::pair<double, double>> offsets;
+         std::vector<float>                     offsetHeights;
+         offsets.reserve(levels.size());
+         offsetHeights.reserve(levels.size());
+
+         for (std::size_t lvl = 0; lvl < levels.size(); ++lvl)
+         {
+            if (index >= uFrames_[lvl]->values.size() ||
+                index >= vFrames_[lvl]->values.size())
+            {
+               continue;
+            }
+
+            const float u = uFrames_[lvl]->values[index];
+            const float v = vFrames_[lvl]->values[index];
+
+            // eccodes' own missingValue sentinel (a real, finite number,
+            // e.g. RRFS's own convention -- *not* NaN, confirmed by
+            // decoding a real heightAboveSea level directly: ~20% of a
+            // real CONUS grid came back exactly equal to it, matching
+            // decode_grib's own ComputeStp/ComputeVectorMagnitude
+            // handling of the same sentinel) is the authoritative "this
+            // cell has no data here" signal -- RRFS appears to already
+            // mask a heightAboveSea level below its own model terrain
+            // this way. The isfinite() checks are a defensive second
+            // layer, and the explicit terrainM comparison below is a
+            // third, independent physical check against the *public*
+            // orog field (not necessarily identical to whatever internal
+            // terrain RRFS masked against) -- keeping all three is cheap
+            // and each catches a slightly different failure mode.
+            if (!std::isfinite(u) || !std::isfinite(v) ||
+                static_cast<double>(u) == uFrames_[lvl]->missingValue ||
+                static_cast<double>(v) == vFrames_[lvl]->missingValue)
+            {
+               continue;
+            }
+
+            if (levels[lvl].aboveSea && levels[lvl].heightMeters < terrainM)
+            {
+               continue;
+            }
+
+            offsets.emplace_back(static_cast<double>(u) * tier.metersPerMs,
+                                 static_cast<double>(v) * tier.metersPerMs);
+            offsetHeights.push_back(levels[lvl].heightMeters);
+         }
+
+         if (offsets.size() < 2)
+         {
+            // Nothing meaningful to connect (e.g. every heightAboveSea
+            // level masked below terrain, leaving only 0-1 AGL points).
+            continue;
+         }
+
+         const glm::dvec2 latLon = LambertGridToLatLon(
+            terrain.grid, static_cast<double>(i), static_cast<double>(j));
+         const common::Coordinate center {latLon.x, latLon.y};
+
+         // Drawn first so the actual wind polyline renders on top of it,
+         // not the other way around.
+         if (showRangeRings)
+         {
+            DrawRangeRings(*geoLines_, center, tier.metersPerMs);
+         }
+
+         // Surface (first/lowest) level's own wind, for the hover text --
+         // standard meteorological "direction FROM" convention: the
+         // vector (u, v) points in the direction the wind blows *toward*
+         // (bearing = atan2(east, north)); "from" is that plus 180
+         // degrees.
+         const double surfaceU = offsets[0].first / tier.metersPerMs;
+         const double surfaceV = offsets[0].second / tier.metersPerMs;
+         const double speedKnots =
+            std::hypot(surfaceU, surfaceV) * kMetersPerSecondToKnots_;
+         double towardDeg = std::atan2(surfaceU, surfaceV) * 180.0 / M_PI;
+         double fromDeg   = std::fmod(towardDeg + 180.0 + 360.0, 360.0);
+
+         const std::string hoverText = fmt::format(
+            "Hodograph ({} levels)\n{:.0f} kt @ {:03.0f}° (10m)\n"
+            "Valid: {}",
+            offsets.size(),
+            speedKnots,
+            fromDeg,
+            terrain.validTime);
+
+         for (std::size_t seg = 0; seg + 1 < offsets.size(); ++seg)
+         {
+            const auto c1 = util::GeographicLib::GetCoordinate(
+               center,
+               units::meters<double> {offsets[seg].first},
+               units::meters<double> {offsets[seg].second});
+            const auto c2 = util::GeographicLib::GetCoordinate(
+               center,
+               units::meters<double> {offsets[seg + 1].first},
+               units::meters<double> {offsets[seg + 1].second});
+
+            auto line = geoLines_->AddLine();
+            geoLines_->SetLineLocation(line,
+                                       static_cast<float>(c1.latitude_),
+                                       static_cast<float>(c1.longitude_),
+                                       static_cast<float>(c2.latitude_),
+                                       static_cast<float>(c2.longitude_));
+            geoLines_->SetLineModulate(line,
+                                       HeightBandColor(offsetHeights[seg + 1]));
+            geoLines_->SetLineWidth(line, 2.0f);
+            geoLines_->SetLineVisible(line, true);
+            geoLines_->SetLineHoverText(line, hoverText);
+         }
+      }
+   }
+
+   geoLines_->FinishLines();
+}
+
+HodographLayer::HodographLayer(
+   const std::shared_ptr<gl::GlContext>& glContext) :
+    DrawLayer(glContext, "HodographLayer"),
+    p(std::make_unique<Impl>(this, glContext))
+{ AddDrawItem(p->geoLines_); }
+
+HodographLayer::~HodographLayer() = default;
+
+void HodographLayer::Initialize(const std::shared_ptr<MapContext>& mapContext)
+{
+   logger_->debug("Initialize()");
+   DrawLayer::Initialize(mapContext);
+
+   p->ReloadHodographs();
+}
+
+void HodographLayer::Render(
+   const std::shared_ptr<MapContext>&            mapContext,
+   const QMapLibre::CustomLayerRenderParameters& params)
+{
+   const ZoomTier baseTier = TierForZoom(params.zoom);
+
+   // User-adjustable multiplier on top of the fixed per-tier base scale
+   // (see HodographSettings::size_scale()) -- read every Render() call,
+   // not cached, same reasoning as WindBarbLayer's own settings read.
+   const double sizeScale =
+      settings::HodographSettings::Instance().size_scale().GetValue();
+
+   const ZoomTier tier {
+      baseTier.stride, baseTier.metersPerMs * sizeScale, baseTier.visible};
+
+   if (!(tier == p->lastTier_))
+   {
+      p->RebuildLines(tier);
+   }
+
+   DrawLayer::Render(mapContext, params);
+}
+
+bool HodographLayer::RunMousePicking(
+   const std::shared_ptr<MapContext>&            mapContext,
+   const QMapLibre::CustomLayerRenderParameters& params,
+   const QPointF&                                mouseLocalPos,
+   const QPointF&                                mouseGlobalPos,
+   const glm::vec2&                              mouseCoords,
+   const common::Coordinate&                     mouseGeoCoords,
+   std::shared_ptr<types::EventHandler>&         eventHandler)
+{
+   // Shift-gated, matching the app-wide "Shift = show me the data"
+   // convention (RadarProductLayer/GribProductLayer/WindBarbLayer) --
+   // hodograph hover text is speed/direction/valid-time data, not a
+   // label.
+   if (!(QGuiApplication::keyboardModifiers() &
+         Qt::KeyboardModifier::ShiftModifier))
+   {
+      return false;
+   }
+
+   return DrawLayer::RunMousePicking(mapContext,
+                                     params,
+                                     mouseLocalPos,
+                                     mouseGlobalPos,
+                                     mouseCoords,
+                                     mouseGeoCoords,
+                                     eventHandler);
+}
+
+void HodographLayer::Deinitialize()
+{
+   logger_->debug("Deinitialize()");
+
+   DrawLayer::Deinitialize();
+}
+
+} // namespace scwx::qt::map

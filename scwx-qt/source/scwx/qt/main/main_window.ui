@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>Supercell Wx</string>
+   <string>SupercellGRIB</string>
   </property>
   <property name="windowIcon">
    <iconset resource="../../../../scwx-qt.qrc">

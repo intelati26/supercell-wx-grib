@@ -8,6 +8,9 @@
 #include <scwx/qt/manager/timeline_manager.hpp>
 #include <scwx/qt/map/alert_layer.hpp>
 #include <scwx/qt/map/color_table_layer.hpp>
+#include <scwx/qt/map/grib_product_layer.hpp>
+#include <scwx/qt/map/hodograph_layer.hpp>
+#include <scwx/qt/map/wind_barb_layer.hpp>
 #include <scwx/qt/map/layer_wrapper.hpp>
 #include <scwx/qt/map/map_provider.hpp>
 #include <scwx/qt/map/map_settings.hpp>
@@ -90,9 +93,7 @@ namespace
 constexpr int kFallbackEraseCursorRadiusPx {8};
 
 std::string CustomAlertLayerId(awips::Phenomenon phenomenon)
-{
-   return fmt::format("alert.{}", awips::GetPhenomenonCode(phenomenon));
-}
+{ return fmt::format("alert.{}", awips::GetPhenomenonCode(phenomenon)); }
 
 std::string CustomLayerId(types::LayerType        type,
                           types::LayerDescription description)
@@ -107,9 +108,7 @@ std::string CustomLayerId(types::LayerType        type,
 }
 
 float LayerOpacity(const types::LayerInfo& info)
-{
-   return types::LayerSupportsOpacity(info.type_) ? info.opacity_ : 1.0f;
-}
+{ return types::LayerSupportsOpacity(info.type_) ? info.opacity_ : 1.0f; }
 
 /** Ring + eraser in pixmap so KDE/Wayland compositor tracks cursor with zero
  * lag. Pixmap radius is capped (~124px) for display only; geographic erase pick
@@ -168,7 +167,7 @@ QString FormatMeasurementDistance(double meters)
       settings::UnitSettings::Instance().distance_units().GetValue());
    const double display = meters * scwx::common::kKilometersPerMeter *
                           types::GetDistanceUnitsScale(units);
-   std::string abbrev = types::GetDistanceUnitsAbbreviation(units);
+   std::string  abbrev  = types::GetDistanceUnitsAbbreviation(units);
    if (abbrev.empty())
    {
       abbrev = "user";
@@ -335,8 +334,8 @@ public:
    void                  UpdateMeasureLabels();
    void                  UpdateColorTable(const std::string& colorPalette);
    void                  UpdateColorTable(
-                       const std::string&                             colorPalette,
-                       const std::shared_ptr<view::RadarProductView>& radarProductView);
+      const std::string&                             colorPalette,
+      const std::shared_ptr<view::RadarProductView>& radarProductView);
    void UpdateLoadedStyle();
    bool UpdateStoredMapParameters();
    void CheckLevel3Availability();
@@ -398,6 +397,12 @@ public:
    std::shared_ptr<manager::RadarProductManager> radarProductManager_;
 
    std::shared_ptr<RadarProductLayer>         radarProductLayer_;
+   std::shared_ptr<GribProductLayer>          gribMrmsLayer_;
+   std::shared_ptr<GribProductLayer>          gribRtmaLayer_;
+   std::shared_ptr<GribProductLayer>          gribRrfsLayer_;
+   std::shared_ptr<GribProductLayer>          gribNbmLayer_;
+   std::shared_ptr<WindBarbLayer>             windBarbLayer_;
+   std::shared_ptr<HodographLayer>            hodographLayer_;
    std::shared_ptr<OverlayLayer>              overlayLayer_;
    std::shared_ptr<OverlayProductLayer>       overlayProductLayer_ {nullptr};
    std::shared_ptr<PlacefileLayer>            placefileLayer_;
@@ -1049,9 +1054,7 @@ std::uint16_t MapWidget::GetVcp() const
 }
 
 bool MapWidget::GetRadarWireframeEnabled() const
-{
-   return p->context_->settings().radarWireframeEnabled_;
-}
+{ return p->context_->settings().radarWireframeEnabled_; }
 
 void MapWidget::SetRadarWireframeEnabled(bool wireframeEnabled)
 {
@@ -1061,9 +1064,7 @@ void MapWidget::SetRadarWireframeEnabled(bool wireframeEnabled)
 }
 
 bool MapWidget::GetSmoothingEnabled() const
-{
-   return p->smoothingEnabled_;
-}
+{ return p->smoothingEnabled_; }
 
 void MapWidget::SetSmoothingEnabled(bool smoothingEnabled)
 {
@@ -1462,6 +1463,31 @@ void MapWidget::SetMapParameters(
    }
 }
 
+void MapWidget::SetMapBounds(double southLatitude,
+                             double westLongitude,
+                             double northLatitude,
+                             double eastLongitude)
+{
+   if (p->map_ == nullptr)
+   {
+      return;
+   }
+
+   // coordinateZoomForBounds() computes the center/zoom that fits this box
+   // in the *current* viewport size -- unlike hand-picking a fixed zoom per
+   // named region, this stays correct regardless of the pane's own size or
+   // aspect ratio (a narrow pane needs a different zoom than a wide one to
+   // fit the same geographic box).
+   const auto coordinateZoom = p->map_->coordinateZoomForBounds(
+      {southLatitude, westLongitude}, {northLatitude, eastLongitude});
+
+   SetMapParameters(coordinateZoom.first.first,
+                    coordinateZoom.first.second,
+                    coordinateZoom.second,
+                    0.0,
+                    0.0);
+}
+
 void MapWidgetImpl::SyncStoredViewFromMap()
 {
    if (map_ == nullptr)
@@ -1482,9 +1508,7 @@ void MapWidgetImpl::RequestRepaint()
 }
 
 void MapWidgetImpl::CancelPaneContextMenuDebounce()
-{
-   ++paneContextMenuDebounce_;
-}
+{ ++paneContextMenuDebounce_; }
 
 void MapWidgetImpl::GetMapViewParameters(double& latitude,
                                          double& longitude,
@@ -1515,14 +1539,10 @@ void MapWidget::GetMapViewParameters(double& latitude,
                                      double& zoom,
                                      double& bearing,
                                      double& pitch) const
-{
-   p->GetMapViewParameters(latitude, longitude, zoom, bearing, pitch);
-}
+{ p->GetMapViewParameters(latitude, longitude, zoom, bearing, pitch); }
 
 void MapWidget::SetInitialMapStyle(const std::string& styleName)
-{
-   p->initialStyleName_ = styleName;
-}
+{ p->initialStyleName_ = styleName; }
 
 void MapWidget::SetMapStyle(const std::string& styleName, bool force)
 {
@@ -1581,9 +1601,7 @@ void MapWidget::UpdateMouseCoordinate(const common::Coordinate& coordinate)
 }
 
 qreal MapWidget::pixelRatio()
-{
-   return devicePixelRatioF();
-}
+{ return devicePixelRatioF(); }
 
 void MapWidget::changeStyle()
 {
@@ -1619,6 +1637,28 @@ void MapWidget::DumpLayerList() const
    }
    logger_->info("Layers: {}", p->map_->layerIds().join(", ").toStdString());
 }
+
+namespace
+{
+
+// Mutual AddAreaSibling wiring for one pair of "area" layers (see
+// GenericLayer::AddAreaSibling/CombineAreaHoverText) -- a no-op if either
+// side doesn't exist yet. Promoted to a helper once GribCategory grew
+// from 2 to 3 families (Mrms/Rtma/Rrfs): each family's construction site
+// now needs to wire itself to *two* other GRIB layers instead of one,
+// and radar's own recreation site wires to all three -- four call sites
+// repeating the same "if both exist, wire both ways" shape.
+void WireAreaSiblingPair(const std::shared_ptr<GenericLayer>& a,
+                         const std::shared_ptr<GenericLayer>& b)
+{
+   if (a != nullptr && b != nullptr)
+   {
+      a->AddAreaSibling(b);
+      b->AddAreaSibling(a);
+   }
+}
+
+} // namespace
 
 void MapWidgetImpl::AddLayers()
 {
@@ -1678,6 +1718,65 @@ void MapWidgetImpl::AddLayers()
       }
    }
 
+   // Release any of these existence-guarded layer objects whose category
+   // isn't displayed for this pane any more, rather than leaving them
+   // (and the shared_ptr each holds on its own singleton manager --
+   // HodographLayer/WindBarbLayer both keep one from *Manager::Instance())
+   // alive forever once first created. Confirmed as a real, live bug:
+   // HodographManager/WindBarbManager have no visibility awareness of
+   // their own -- each starts an unconditional 4-minute poll (downloading
+   // and running ~21 decode_grib calls for HodographManager) the moment
+   // its layer is first added to *any* pane, and previously had no way to
+   // ever stop again, since turning the layer's own display off here only
+   // ever skipped re-adding it, never released the reference keeping its
+   // manager alive. GribManager doesn't need this same treatment --
+   // unlike Hodograph/WindBarbs, it already gates its own background work
+   // on an explicit product-activation list (see GribManager::
+   // SetProductActive()), a real, separate mechanism from pane
+   // visibility -- but it's released here too since a pane no longer
+   // displaying a GRIB category has no more use for that pane-local layer
+   // object either.
+   auto isDisplayedHere = [&customLayers, this](types::DataLayer layer)
+   {
+      for (const auto& customLayer : customLayers)
+      {
+         if (customLayer.type_ == types::LayerType::Data &&
+             std::holds_alternative<types::DataLayer>(
+                customLayer.description_) &&
+             std::get<types::DataLayer>(customLayer.description_) == layer)
+         {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
+            return customLayer.displayed_[id_];
+         }
+      }
+      return false;
+   };
+
+   if (!isDisplayedHere(types::DataLayer::Hodograph))
+   {
+      hodographLayer_ = nullptr;
+   }
+   if (!isDisplayedHere(types::DataLayer::WindBarbs))
+   {
+      windBarbLayer_ = nullptr;
+   }
+   if (!isDisplayedHere(types::DataLayer::GribMrms))
+   {
+      gribMrmsLayer_ = nullptr;
+   }
+   if (!isDisplayedHere(types::DataLayer::GribRtma))
+   {
+      gribRtmaLayer_ = nullptr;
+   }
+   if (!isDisplayedHere(types::DataLayer::GribRrfs))
+   {
+      gribRrfsLayer_ = nullptr;
+   }
+   if (!isDisplayedHere(types::DataLayer::GribNbm))
+   {
+      gribNbmLayer_ = nullptr;
+   }
+
    if (annotationLayer_ == nullptr)
    {
       annotationLayer_ = std::make_shared<MapAnnotationLayer>(glContext_);
@@ -1718,6 +1817,20 @@ void MapWidgetImpl::AddLayer(types::LayerType        type,
       if (radarProductView != nullptr)
       {
          radarProductLayer_ = std::make_shared<RadarProductLayer>(glContext_);
+
+         // Unlike the GRIB layers below, this one is recreated on every
+         // radar site change (no existence guard), so it needs to
+         // re-wire itself to whichever GRIB layers already exist each
+         // time -- they persist across radar site changes and don't
+         // re-wire themselves to a replaced radar instance on their own.
+         // Only this direction of each pair is done here; each GRIB <->
+         // GRIB pair is wired once, from their own (guarded) construction
+         // below, and does not need redoing when radar is recreated.
+         WireAreaSiblingPair(radarProductLayer_, gribMrmsLayer_);
+         WireAreaSiblingPair(radarProductLayer_, gribRtmaLayer_);
+         WireAreaSiblingPair(radarProductLayer_, gribRrfsLayer_);
+         WireAreaSiblingPair(radarProductLayer_, gribNbmLayer_);
+
          AddLayer(layerName, radarProductLayer_, before);
       }
    }
@@ -1825,6 +1938,93 @@ void MapWidgetImpl::AddLayer(types::LayerType        type,
          }
          break;
 
+      // Not gated on
+      // radarProductView, unlike the other Data layers above -- none of
+      // the three has a dependency on the selected radar site. Each
+      // cross-wires itself to whichever of {the other two GRIB
+      // categories, radar} already exist for this pane, so their
+      // Shift-hover tooltips can combine (see GenericLayer::
+      // AddAreaSibling/CombineAreaHoverText) -- order-independent for
+      // each GRIB <-> GRIB pair, since whichever is added second is the
+      // one that finds the other already there and does the (mutual)
+      // wiring; radar's side of each radar <-> GRIB pair is instead
+      // redone every time radar itself is recreated (see the
+      // LayerType::Radar case above), since unlike these three, radar
+      // has no existence guard and gets rebuilt on every site change.
+      case types::DataLayer::GribMrms:
+         if (gribMrmsLayer_ == nullptr)
+         {
+            gribMrmsLayer_ = std::make_shared<GribProductLayer>(
+               glContext_, map::GribCategory::Mrms);
+            WireAreaSiblingPair(gribMrmsLayer_, gribRtmaLayer_);
+            WireAreaSiblingPair(gribMrmsLayer_, gribRrfsLayer_);
+            WireAreaSiblingPair(gribMrmsLayer_, gribNbmLayer_);
+            WireAreaSiblingPair(gribMrmsLayer_, radarProductLayer_);
+         }
+         AddLayer(layerName, gribMrmsLayer_, before);
+         break;
+
+      case types::DataLayer::GribRtma:
+         if (gribRtmaLayer_ == nullptr)
+         {
+            gribRtmaLayer_ = std::make_shared<GribProductLayer>(
+               glContext_, map::GribCategory::Rtma);
+            WireAreaSiblingPair(gribRtmaLayer_, gribMrmsLayer_);
+            WireAreaSiblingPair(gribRtmaLayer_, gribRrfsLayer_);
+            WireAreaSiblingPair(gribRtmaLayer_, gribNbmLayer_);
+            WireAreaSiblingPair(gribRtmaLayer_, radarProductLayer_);
+         }
+         AddLayer(layerName, gribRtmaLayer_, before);
+         break;
+
+      case types::DataLayer::GribRrfs:
+         if (gribRrfsLayer_ == nullptr)
+         {
+            gribRrfsLayer_ = std::make_shared<GribProductLayer>(
+               glContext_, map::GribCategory::Rrfs);
+            WireAreaSiblingPair(gribRrfsLayer_, gribMrmsLayer_);
+            WireAreaSiblingPair(gribRrfsLayer_, gribRtmaLayer_);
+            WireAreaSiblingPair(gribRrfsLayer_, gribNbmLayer_);
+            WireAreaSiblingPair(gribRrfsLayer_, radarProductLayer_);
+         }
+         AddLayer(layerName, gribRrfsLayer_, before);
+         break;
+
+      case types::DataLayer::GribNbm:
+         if (gribNbmLayer_ == nullptr)
+         {
+            gribNbmLayer_ = std::make_shared<GribProductLayer>(
+               glContext_, map::GribCategory::Nbm);
+            WireAreaSiblingPair(gribNbmLayer_, gribMrmsLayer_);
+            WireAreaSiblingPair(gribNbmLayer_, gribRtmaLayer_);
+            WireAreaSiblingPair(gribNbmLayer_, gribRrfsLayer_);
+            WireAreaSiblingPair(gribNbmLayer_, radarProductLayer_);
+         }
+         AddLayer(layerName, gribNbmLayer_, before);
+         break;
+
+      // Unlike the three GRIB layers above, wind barbs are point icons,
+      // not a continuous "area" field -- their hover text goes through
+      // GeoIcons' own per-icon hover pathway, so there's no
+      // AddAreaSibling wiring needed here.
+      case types::DataLayer::WindBarbs:
+         if (windBarbLayer_ == nullptr)
+         {
+            windBarbLayer_ = std::make_shared<WindBarbLayer>(glContext_);
+         }
+         AddLayer(layerName, windBarbLayer_, before);
+         break;
+
+      // Same reasoning as WindBarbs above -- GeoLines' own hover pathway,
+      // no AddAreaSibling wiring needed.
+      case types::DataLayer::Hodograph:
+         if (hodographLayer_ == nullptr)
+         {
+            hodographLayer_ = std::make_shared<HodographLayer>(glContext_);
+         }
+         AddLayer(layerName, hodographLayer_, before);
+         break;
+
       default:
          break;
       }
@@ -1848,9 +2048,7 @@ void MapWidgetImpl::AddPlacefileLayer(const std::string& placefileName,
 
 std::string
 MapWidgetImpl::GetPlacefileLayerName(const std::string& placefileName)
-{
-   return types::GetLayerName(types::LayerType::Placefile, placefileName);
-}
+{ return types::GetLayerName(types::LayerType::Placefile, placefileName); }
 
 void MapWidgetImpl::AddLayer(const std::string&                   id,
                              const std::shared_ptr<GenericLayer>& layer,
@@ -2198,14 +2396,10 @@ void MapWidget::mouseReleaseEvent(QMouseEvent* ev)
 }
 
 std::shared_ptr<MapAnnotationLayer> MapWidget::map_annotation_layer() const
-{
-   return p->annotationLayer_;
-}
+{ return p->annotationLayer_; }
 
 void MapWidget::SyncEraseCursor()
-{
-   p->UpdateAnnotationCursor();
-}
+{ p->UpdateAnnotationCursor(); }
 
 void MapWidget::resizeEvent(QResizeEvent* event)
 {
@@ -2744,9 +2938,7 @@ void MapWidget::mapChanged(QMapLibre::Map::MapChange mapChange)
 }
 
 void MapWidgetImpl::UpdateLoadedStyle()
-{
-   styleLayers_ = map_->layerIds();
-}
+{ styleLayers_ = map_->layerIds(); }
 
 void MapWidgetImpl::RadarProductManagerConnect()
 {
@@ -3007,6 +3199,11 @@ void MapWidgetImpl::RadarProductViewDisconnect()
    }
 }
 
+QImage MapWidget::CaptureImage()
+{
+   return grabFramebuffer();
+}
+
 void MapWidgetImpl::ScreenCaptureCopy()
 {
    const QImage image     = widget_->grabFramebuffer();
@@ -3191,9 +3388,7 @@ void MapWidgetImpl::Update()
 }
 
 void MapWidgetImpl::UpdateColorTable(const std::string& colorPalette)
-{
-   UpdateColorTable(colorPalette, context_->radar_product_view());
-}
+{ UpdateColorTable(colorPalette, context_->radar_product_view()); }
 
 void MapWidgetImpl::UpdateColorTable(
    const std::string&                             colorPalette,

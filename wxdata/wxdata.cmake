@@ -67,8 +67,10 @@ set(SRC_CONFIG source/scwx/config/ondas_config.cpp
                source/scwx/config/ondas_config_loader.cpp)
 set(HDR_GR include/scwx/gr/color.hpp
            include/scwx/gr/gr_types.hpp
+           include/scwx/gr/outlook_placefile.hpp
            include/scwx/gr/placefile.hpp)
 set(SRC_GR source/scwx/gr/color.cpp
+           source/scwx/gr/outlook_placefile.cpp
            source/scwx/gr/placefile.cpp)
 set(HDR_NETWORK include/scwx/network/cpr.hpp
                 include/scwx/network/dir_list.hpp
@@ -85,12 +87,16 @@ set(HDR_PROVIDER include/scwx/provider/aws_level2_data_provider.hpp
                  include/scwx/provider/http_nexrad_data_provider.hpp
                  include/scwx/provider/iem_api_provider.hpp
                  include/scwx/provider/iem_api_provider.ipp
+                 include/scwx/provider/mrms_data_provider.hpp
+                 include/scwx/provider/nbm_data_provider.hpp
                  include/scwx/provider/nexrad_data_provider.hpp
                  include/scwx/provider/nexrad_data_provider_factory.hpp
                  include/scwx/provider/nws_api_provider.hpp
                  include/scwx/provider/nws_level3_behavior.hpp
                  include/scwx/provider/ondas_level2_data_provider.hpp
                  include/scwx/provider/ondas_level3_behavior.hpp
+                 include/scwx/provider/rrfs_data_provider.hpp
+                 include/scwx/provider/rtma_data_provider.hpp
                  include/scwx/provider/warnings_provider.hpp)
 set(SRC_PROVIDER source/scwx/provider/aws_level2_data_provider.cpp
                  source/scwx/provider/aws_level2_chunks_data_provider.cpp
@@ -99,12 +105,16 @@ set(SRC_PROVIDER source/scwx/provider/aws_level2_data_provider.cpp
                  source/scwx/provider/http_level3_data_provider.cpp
                  source/scwx/provider/http_nexrad_data_provider.cpp
                  source/scwx/provider/iem_api_provider.cpp
+                 source/scwx/provider/mrms_data_provider.cpp
+                 source/scwx/provider/nbm_data_provider.cpp
                  source/scwx/provider/nexrad_data_provider.cpp
                  source/scwx/provider/nexrad_data_provider_factory.cpp
                  source/scwx/provider/nws_api_provider.cpp
                  source/scwx/provider/nws_level3_behavior.cpp
                  source/scwx/provider/ondas_level2_data_provider.cpp
                  source/scwx/provider/ondas_level3_behavior.cpp
+                 source/scwx/provider/rrfs_data_provider.cpp
+                 source/scwx/provider/rtma_data_provider.cpp
                  source/scwx/provider/warnings_provider.cpp)
 set(HDR_TYPES include/scwx/types/iem_types.hpp
               include/scwx/types/ntp_types.hpp
@@ -118,6 +128,7 @@ set(HDR_UTIL include/scwx/util/digest.hpp
              include/scwx/util/enum.hpp
              include/scwx/util/environment.hpp
              include/scwx/util/float.hpp
+             include/scwx/util/grib_idx.hpp
              include/scwx/util/hash.hpp
              include/scwx/util/iterator.hpp
              include/scwx/util/json.hpp
@@ -132,6 +143,7 @@ set(HDR_UTIL include/scwx/util/digest.hpp
 set(SRC_UTIL source/scwx/util/digest.cpp
              source/scwx/util/environment.cpp
              source/scwx/util/float.cpp
+             source/scwx/util/grib_idx.cpp
              source/scwx/util/hash.cpp
              source/scwx/util/json.cpp
              source/scwx/util/logger.cpp

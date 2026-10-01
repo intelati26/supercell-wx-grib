@@ -12,8 +12,10 @@
 #include <scwx/qt/config/radar_site.hpp>
 #include <scwx/qt/manager/alert_manager.hpp>
 #include <scwx/qt/manager/hotkey_manager.hpp>
+#include <scwx/qt/manager/outlook_manager.hpp>
 #include <scwx/qt/manager/placefile_manager.hpp>
 #include <scwx/qt/manager/settings_manager.hpp>
+#include <scwx/qt/manager/status_manager.hpp>
 #include <scwx/qt/manager/marker_manager.hpp>
 #include <scwx/qt/manager/position_manager.hpp>
 #include <scwx/qt/manager/radar_product_manager.hpp>
@@ -25,7 +27,9 @@
 #include <scwx/qt/map/map_widget.hpp>
 #include <scwx/qt/model/layer_model.hpp>
 #include <scwx/qt/model/radar_site_model.hpp>
+#include <scwx/qt/manager/grib_manager.hpp>
 #include <scwx/qt/settings/general_settings.hpp>
+#include <scwx/qt/util/grib_legend.hpp>
 #include <scwx/qt/settings/map_settings.hpp>
 #include <scwx/qt/settings/product_settings.hpp>
 #include <scwx/qt/settings/ui_settings.hpp>
@@ -36,6 +40,7 @@
 #include <scwx/qt/ui/collapsible_group.hpp>
 #include <scwx/qt/ui/export_settings_dialog.hpp>
 #include <scwx/qt/ui/flow_layout.hpp>
+#include <scwx/qt/ui/grib_dock_widget.hpp>
 #include <scwx/qt/ui/gps_info_dialog.hpp>
 #include <scwx/qt/ui/imgui_debug_dialog.hpp>
 #include <scwx/qt/ui/layer_dialog.hpp>
@@ -98,7 +103,7 @@ namespace scwx::qt::main
 {
 
 static const std::string logPrefix_ = "scwx::qt::main::main_window";
-static const auto        logger_    = util::Logger::Create(logPrefix_);
+static const auto        logger_    = scwx::util::Logger::Create(logPrefix_);
 
 namespace
 {
@@ -210,6 +215,7 @@ public:
        settings_ {},
        activeMap_ {nullptr},
        alertManager_ {manager::AlertManager::Instance()},
+       outlookManager_ {manager::OutlookManager::Instance()},
        placefileManager_ {manager::PlacefileManager::Instance()},
        markerManager_ {manager::MarkerManager::Instance()},
        positionManager_ {manager::PositionManager::Instance()},
@@ -295,6 +301,8 @@ public:
                            const std::string&        productName,
                            int16_t                   productCode);
    void ApplyStoredColorTableThreshold(map::MapWidget* mapWidget);
+   void ExportGribSnapshot(map::GribCategory category,
+                           const QString&    categoryLabel);
    void HandleMapPaneLinkViewToggled(std::size_t     mapIndex,
                                      map::MapWidget* map,
                                      bool            linked);
@@ -352,6 +360,7 @@ public:
    QLabel* timeLabel_ {nullptr};
 
    ui::AlertDockWidget*                  alertDockWidget_ {};
+   ui::GribDockWidget*                   gribDockWidget_ {};
    QPointer<ui::MapAnnotationDockWidget> mapAnnotationDock_ {};
    ui::AnimationDockWidget*              animationDockWidget_ {};
    ui::AboutDialog*                      aboutDialog_ {};
@@ -380,12 +389,15 @@ public:
    std::shared_ptr<manager::AlertManager>  alertManager_;
    std::shared_ptr<manager::HotkeyManager> hotkeyManager_ {
       manager::HotkeyManager::Instance()};
+   std::shared_ptr<manager::OutlookManager>   outlookManager_;
    std::shared_ptr<manager::PlacefileManager> placefileManager_;
    std::shared_ptr<manager::MarkerManager>    markerManager_;
    std::shared_ptr<manager::PositionManager>  positionManager_;
    std::shared_ptr<manager::TextEventManager> textEventManager_;
    std::shared_ptr<manager::TimelineManager>  timelineManager_;
    std::shared_ptr<manager::UpdateManager>    updateManager_;
+   std::shared_ptr<manager::StatusManager>    statusManager_ {
+      manager::StatusManager::Instance()};
 
    std::shared_ptr<model::LayerModel> layerModel_ {
       model::LayerModel::Instance()};
@@ -480,6 +492,40 @@ MainWindow::MainWindow(QWidget* parent) :
    p->alertDockWidget_ = new ui::AlertDockWidget(this);
    addDockWidget(Qt::BottomDockWidgetArea, p->alertDockWidget_);
 
+   // No anchor action in main_window.ui for this yet (unlike
+   // Alerts/Radar Toolbox below) -- appended to the View menu directly to
+   // avoid touching that file. One combined dock, not one per category --
+   // each category gets its own section inside it, via a checkable
+   // multi-select dropdown rather than a plain single-select one, so more
+   // than one product per category can be active at once (see
+   // manager::GribManager::SetProductActive).
+   p->gribDockWidget_ = new ui::GribDockWidget(this);
+   addDockWidget(Qt::RightDockWidgetArea, p->gribDockWidget_);
+   p->gribDockWidget_->toggleViewAction()->setText(tr("&GRIB"));
+   ui->menuView->addAction(p->gribDockWidget_->toggleViewAction());
+   p->gribDockWidget_->hide();
+
+   connect(p->gribDockWidget_,
+           &ui::GribDockWidget::MapBoundsRequested,
+           this,
+           [this](double southLatitude,
+                 double westLongitude,
+                 double northLatitude,
+                 double eastLongitude)
+           {
+              if (p->activeMap_ != nullptr)
+              {
+                 p->activeMap_->SetMapBounds(
+                    southLatitude, westLongitude, northLatitude, eastLongitude);
+              }
+           });
+
+   connect(p->gribDockWidget_,
+           &ui::GribDockWidget::ExportSnapshotRequested,
+           this,
+           [this](map::GribCategory category, const QString& categoryLabel)
+           { p->ExportGribSnapshot(category, categoryLabel); });
+
    p->mapAnnotationDock_ =
       new ui::MapAnnotationDockWidget(p->mainWindow_->ui->centralwidget);
    p->mapAnnotationDock_->AttachToMap(p->activeMap_);
@@ -523,8 +569,10 @@ MainWindow::MainWindow(QWidget* parent) :
    // Marker Manager Dialog
    p->markerDialog_ = new ui::MarkerDialog(this);
 
-   // Layer Dialog
+   // Layer Manager (dockable, GIMP/Photoshop-style, not a floating dialog)
    p->layerDialog_ = new ui::LayerDialog(this);
+   addDockWidget(Qt::RightDockWidgetArea, p->layerDialog_);
+   p->layerDialog_->hide();
 
    // Import/Export Dialogs
    p->importSettingsWizard_ = new ui::import::ImportSettingsWizard(this);
@@ -626,6 +674,30 @@ MainWindow::MainWindow(QWidget* parent) :
    statusBarLayout->addWidget(p->timeLabel_, 0, 1);
    ui->statusbar->addPermanentWidget(statusBarWidget);
 
+   // Background fetch/decode activity (GribManager/WindBarbManager/
+   // HodographManager, so far -- see StatusManager's own class comment)
+   // shows in the status bar's own *non-permanent* message area, on the
+   // left -- exactly what QStatusBar::showMessage()/clearMessage() are
+   // for, and (confirmed) nothing else in this app was already using
+   // them, unlike the permanent widgets on the right (coordinate/time)
+   // which are a live readout, not a transient "something is happening"
+   // signal.
+   connect(p->statusManager_.get(),
+           &manager::StatusManager::StatusChanged,
+           this,
+           [this]()
+           {
+              const std::string text = p->statusManager_->CurrentStatusText();
+              if (text.empty())
+              {
+                 ui->statusbar->clearMessage();
+              }
+              else
+              {
+                 ui->statusbar->showMessage(QString::fromStdString(text));
+              }
+           });
+
    // ImGui Debug Dialog
    p->imGuiDebugDialog_ = new ui::ImGuiDebugDialog(this);
 
@@ -659,9 +731,7 @@ MainWindow::MainWindow(QWidget* parent) :
 }
 
 MainWindow::~MainWindow()
-{
-   delete ui;
-}
+{ delete ui; }
 
 void MainWindow::keyPressEvent(QKeyEvent* ev)
 {
@@ -829,89 +899,55 @@ void MainWindow::on_actionOpenTextEvent_triggered()
 }
 
 void MainWindow::on_actionScreenCaptureCopy_triggered()
-{
-   p->ScreenCapture(types::CaptureType::Copy);
-}
+{ p->ScreenCapture(types::CaptureType::Copy); }
 
 void MainWindow::on_actionScreenCaptureSaveImage_triggered()
-{
-   p->ScreenCapture(types::CaptureType::SaveImage);
-}
+{ p->ScreenCapture(types::CaptureType::SaveImage); }
 
 void MainWindow::on_actionImport_triggered()
-{
-   p->importSettingsWizard_->show();
-}
+{ p->importSettingsWizard_->show(); }
 
 void MainWindow::on_actionExport_triggered()
-{
-   p->exportSettingsDialog_->show();
-}
+{ p->exportSettingsDialog_->show(); }
 
 void MainWindow::on_actionSettings_triggered()
-{
-   p->settingsDialog_->show();
-}
+{ p->settingsDialog_->show(); }
 
 void MainWindow::on_actionExit_triggered()
-{
-   close();
-}
+{ close(); }
 
 void MainWindow::on_actionGpsInfo_triggered()
-{
-   p->gpsInfoDialog_->show();
-}
+{ p->gpsInfoDialog_->show(); }
 
 void MainWindow::on_actionRecreateMapLayout_triggered()
-{
-   p->RecreateMapLayoutFromUser(false);
-}
+{ p->RecreateMapLayoutFromUser(false); }
 
 void MainWindow::on_actionPanesLinkColumnWidth_toggled(bool checked)
-{
-   p->SetLinkRowSplitters(checked);
-}
+{ p->SetLinkRowSplitters(checked); }
 
 void MainWindow::on_actionPanesLinkColumnHeight_toggled(bool checked)
-{
-   p->SetLinkColumnHeights(checked);
-}
+{ p->SetLinkColumnHeights(checked); }
 
 void MainWindow::on_actionPanesMatchMapStyle_toggled(bool checked)
-{
-   p->OnPanesMatchMapStyleToggled(checked);
-}
+{ p->OnPanesMatchMapStyleToggled(checked); }
 
 void MainWindow::on_actionPanes1x1_triggered()
-{
-   p->ApplyMapGridPreset(1, 1);
-}
+{ p->ApplyMapGridPreset(1, 1); }
 
 void MainWindow::on_actionPanes1x2_triggered()
-{
-   p->ApplyMapGridPreset(1, 2);
-}
+{ p->ApplyMapGridPreset(1, 2); }
 
 void MainWindow::on_actionPanes2x1_triggered()
-{
-   p->ApplyMapGridPreset(2, 1);
-}
+{ p->ApplyMapGridPreset(2, 1); }
 
 void MainWindow::on_actionPanes2x2_triggered()
-{
-   p->ApplyMapGridPreset(2, 2);
-}
+{ p->ApplyMapGridPreset(2, 2); }
 
 void MainWindow::on_actionPanes3x3_triggered()
-{
-   p->ApplyMapGridPreset(3, 3);
-}
+{ p->ApplyMapGridPreset(3, 3); }
 
 void MainWindow::on_actionPanesCustom_triggered()
-{
-   p->settingsDialog_->show();
-}
+{ p->settingsDialog_->show(); }
 
 void MainWindow::on_actionColorTable_triggered(bool checked)
 {
@@ -934,34 +970,26 @@ void MainWindow::on_actionRadarSites_triggered(bool checked)
 }
 
 void MainWindow::on_actionPlacefileManager_triggered()
-{
-   p->placefileDialog_->show();
-}
+{ p->placefileDialog_->show(); }
 
 void MainWindow::on_actionMarkerManager_triggered()
-{
-   p->markerDialog_->show();
-}
+{ p->markerDialog_->show(); }
 
 void MainWindow::on_actionLayerManager_triggered()
 {
-   p->layerDialog_->show();
+   // Toggle rather than always show, now that this is a dock (matches
+   // clicking a dock's own title bar / other docks' toggleViewAction()).
+   p->layerDialog_->toggleViewAction()->trigger();
 }
 
 void MainWindow::on_actionImGuiDebug_triggered()
-{
-   p->imGuiDebugDialog_->show();
-}
+{ p->imGuiDebugDialog_->show(); }
 
 void MainWindow::on_actionDumpLayerList_triggered()
-{
-   p->activeMap_->DumpLayerList();
-}
+{ p->activeMap_->DumpLayerList(); }
 
 void MainWindow::on_actionDumpRadarProductRecords_triggered()
-{
-   manager::RadarProductManager::DumpRecords();
-}
+{ manager::RadarProductManager::DumpRecords(); }
 
 void MainWindow::on_actionFullScreen_triggered(bool checked)
 {
@@ -1007,24 +1035,16 @@ void MainWindow::on_actionFullScreen_triggered(bool checked)
 }
 
 void MainWindow::on_actionRadarWireframe_triggered(bool checked)
-{
-   p->activeMap_->SetRadarWireframeEnabled(checked);
-}
+{ p->activeMap_->SetRadarWireframeEnabled(checked); }
 
 void MainWindow::on_actionUserManual_triggered()
-{
-   QDesktopServices::openUrl(QUrl {"https://supercell-wx.readthedocs.io/"});
-}
+{ QDesktopServices::openUrl(QUrl {"https://supercell-wx.readthedocs.io/"}); }
 
 void MainWindow::on_actionDiscord_triggered()
-{
-   QDesktopServices::openUrl(QUrl {"https://discord.gg/vFMV76brwU"});
-}
+{ QDesktopServices::openUrl(QUrl {"https://discord.gg/vFMV76brwU"}); }
 
 void MainWindow::on_actionGitHubRepository_triggered()
-{
-   QDesktopServices::openUrl(QUrl {"https://github.com/dpaulat/supercell-wx"});
-}
+{ QDesktopServices::openUrl(QUrl {"https://github.com/dpaulat/supercell-wx"}); }
 
 void MainWindow::on_actionCheckForUpdates_triggered()
 {
@@ -1058,9 +1078,7 @@ void MainWindow::on_actionCheckForUpdates_triggered()
 }
 
 void MainWindow::on_actionAboutSupercellWx_triggered()
-{
-   p->aboutDialog_->show();
-}
+{ p->aboutDialog_->show(); }
 
 void MainWindow::on_radarSiteHomeButton_clicked()
 {
@@ -1078,9 +1096,7 @@ void MainWindow::on_radarSiteHomeButton_clicked()
 }
 
 void MainWindow::on_radarSiteSelectButton_clicked()
-{
-   p->radarSiteDialog_->show();
-}
+{ p->radarSiteDialog_->show(); }
 
 void MainWindowImpl::AsyncSetup()
 {
@@ -1466,9 +1482,7 @@ void MainWindowImpl::RecreateMapLayoutFromUser(
 }
 
 void MainWindowImpl::ConfigureMapLayout()
-{
-   RebuildMapLayoutContainer();
-}
+{ RebuildMapLayoutContainer(); }
 
 void MainWindowImpl::ScheduleMapLayoutSyncIfGridChanged()
 {
@@ -3157,8 +3171,8 @@ void MainWindowImpl::ConnectOtherSignals()
            this,
            [this]()
            {
-              timeLabel_->setText(
-                 QString::fromStdString(util::TimeString(util::time::now())));
+              timeLabel_->setText(QString::fromStdString(
+                 scwx::util::TimeString(scwx::util::time::now())));
               timeLabel_->setVisible(true);
            });
    clockTimer_.start(1000);
@@ -3186,15 +3200,15 @@ void MainWindowImpl::ConnectOtherSignals()
       generalSettings.clock_format().changed_signal().connect(
          [](const auto& event)
          {
-            util::time::set_default_clock_format(
-               util::GetClockFormat(event.newValue_));
+            scwx::util::time::set_default_clock_format(
+               scwx::util::GetClockFormat(event.newValue_));
          });
    defaultTimeZoneConnection_ =
       generalSettings.default_time_zone().changed_signal().connect(
          [this](auto&&...)
          {
             const auto defaultTimeZone = activeMap_->GetDefaultTimeZone();
-            util::time::set_current_time_zone(defaultTimeZone);
+            scwx::util::time::set_current_time_zone(defaultTimeZone);
             animationDockWidget_->UpdateTimeZone(defaultTimeZone);
          });
 
@@ -3231,8 +3245,8 @@ void MainWindowImpl::ConnectOtherSignals()
          { ScheduleMapLayoutSyncIfGridChanged(); }));
 
    // Ensure default clock format is initialized
-   util::time::set_default_clock_format(
-      util::GetClockFormat(generalSettings.clock_format().GetValue()));
+   scwx::util::time::set_default_clock_format(
+      scwx::util::GetClockFormat(generalSettings.clock_format().GetValue()));
 }
 
 void MainWindowImpl::InitializeLayerDisplayActions()
@@ -3431,6 +3445,50 @@ void MainWindowImpl::ApplyStoredColorTableThreshold(map::MapWidget* mapWidget)
    mapWidget->SetColorTableThreshold(threshold);
 }
 
+void MainWindowImpl::ExportGribSnapshot(map::GribCategory category,
+                                        const QString&    categoryLabel)
+{
+   if (activeMap_ == nullptr)
+   {
+      return;
+   }
+
+   QImage image = activeMap_->CaptureImage();
+
+   auto gribManager = manager::GribManager::Instance(category);
+   qt::util::grib_legend::DrawLegend(
+      image, *gribManager, category, categoryLabel.toStdString());
+
+   auto&             generalSettings = settings::GeneralSettings::Instance();
+   const std::string defaultFolder =
+      generalSettings.screen_capture_folder().GetValue();
+
+   std::string productName = gribManager->CurrentProductName();
+   std::replace(productName.begin(), productName.end(), ' ', '_');
+
+   const QString defaultPath = QString::fromStdString(fmt::format(
+      "{}/{}_{}.png", defaultFolder, categoryLabel.toStdString(), productName));
+
+   const QString path = QFileDialog::getSaveFileName(mainWindow_,
+                                                      tr("Export GRIB Snapshot"),
+                                                      defaultPath,
+                                                      tr("PNG Image (*.png)"));
+
+   if (path.isEmpty())
+   {
+      return;
+   }
+
+   if (!image.save(path))
+   {
+      logger_->error("Unable to save GRIB snapshot: {}", path.toStdString());
+   }
+   else
+   {
+      logger_->info("GRIB snapshot saved: {}", path.toStdString());
+   }
+}
+
 void MainWindowImpl::SetActiveMap(map::MapWidget* mapWidget)
 {
    if (mapWidget != nullptr &&
@@ -3474,9 +3532,7 @@ void MainWindowImpl::UpdateAvailableLevel3Products()
 }
 
 void MainWindowImpl::UpdateElevationSelection(float elevation)
-{
-   level2SettingsWidget_->UpdateElevationSelection(elevation);
-}
+{ level2SettingsWidget_->UpdateElevationSelection(elevation); }
 
 void MainWindowImpl::HandleMapPaneLinkViewToggled(std::size_t     mapIndex,
                                                   map::MapWidget* map,
@@ -3789,7 +3845,7 @@ void MainWindowImpl::UpdateRadarSite()
    if (radarSite != nullptr)
    {
       mainWindow_->setWindowTitle(
-         tr("Supercell Wx - %1").arg(QString::fromStdString(radarSite->id())));
+         tr("SupercellGRIB - %1").arg(QString::fromStdString(radarSite->id())));
 
       mainWindow_->ui->radarSiteValueLabel->setVisible(true);
       mainWindow_->ui->radarLocationLabel->setVisible(true);
@@ -3805,7 +3861,7 @@ void MainWindowImpl::UpdateRadarSite()
    }
    else
    {
-      mainWindow_->setWindowTitle(tr("Supercell Wx"));
+      mainWindow_->setWindowTitle(tr("SupercellGRIB"));
 
       mainWindow_->ui->radarSiteValueLabel->setVisible(false);
       mainWindow_->ui->radarLocationLabel->setVisible(false);
@@ -3818,7 +3874,7 @@ void MainWindowImpl::UpdateRadarSite()
    placefileManager_->SetRadarSite(radarSite);
 
    const auto timeZone = activeMap_->GetDefaultTimeZone();
-   util::time::set_current_time_zone(timeZone);
+   scwx::util::time::set_current_time_zone(timeZone);
    animationDockWidget_->UpdateTimeZone(timeZone);
 }
 

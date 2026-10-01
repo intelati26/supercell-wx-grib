@@ -52,6 +52,7 @@ struct GeoIconDrawItem : types::EventHandler
    double                      x_ {};
    double                      y_ {};
    units::degrees<double>      angle_ {};
+   float                       scale_ {1.0f};
    std::string                 iconSheet_ {};
    std::size_t                 iconIndex_ {};
    std::string                 hoverText_ {};
@@ -151,14 +152,10 @@ GeoIcons& GeoIcons::operator=(GeoIcons&&) noexcept = default;
 
 void GeoIcons::set_selected_time(
    std::chrono::system_clock::time_point selectedTime)
-{
-   p->selectedTime_ = selectedTime;
-}
+{ p->selectedTime_ = selectedTime; }
 
 void GeoIcons::set_thresholded(bool thresholded)
-{
-   p->thresholded_ = thresholded;
-}
+{ p->thresholded_ = thresholded; }
 
 void GeoIcons::Initialize()
 {
@@ -343,9 +340,7 @@ void GeoIcons::Deinitialize()
 }
 
 void GeoIcons::SetVisible(bool visible)
-{
-   p->visible_ = visible;
-}
+{ p->visible_ = visible; }
 
 void GeoIcons::StartIconSheets()
 {
@@ -398,9 +393,7 @@ void GeoIcons::StartIcons()
 }
 
 std::shared_ptr<GeoIconDrawItem> GeoIcons::AddIcon()
-{
-   return p->newIconList_.emplace_back(std::make_shared<GeoIconDrawItem>());
-}
+{ return p->newIconList_.emplace_back(std::make_shared<GeoIconDrawItem>()); }
 
 void GeoIcons::SetIconVisible(const std::shared_ptr<GeoIconDrawItem>& di,
                               bool                                    visible)
@@ -465,6 +458,16 @@ void GeoIcons::SetIconAngle(const std::shared_ptr<GeoIconDrawItem>& di,
    if (di->angle_ != angle)
    {
       di->angle_ = angle;
+      p->dirtyIcons_.insert(di);
+   }
+}
+
+void GeoIcons::SetIconScale(const std::shared_ptr<GeoIconDrawItem>& di,
+                            float                                   scale)
+{
+   if (di->scale_ != scale)
+   {
+      di->scale_ = scale;
       p->dirtyIcons_.insert(di);
    }
 }
@@ -608,13 +611,17 @@ void GeoIcons::Impl::UpdateSingleBuffer(
    const float x = static_cast<float>(di->x_);
    const float y = static_cast<float>(di->y_);
 
-   // Icon size
-   const float iw = static_cast<float>(icon->iconWidth_);
-   const float ih = static_cast<float>(icon->iconHeight_);
+   // Icon size, scaled by this instance's own scale_ (default 1.0 --
+   // every existing caller keeps the icon sheet's native pixel size
+   // exactly as before; only a caller that actually calls SetIconScale
+   // is affected).
+   const float iw = static_cast<float>(icon->iconWidth_) * di->scale_;
+   const float ih = static_cast<float>(icon->iconHeight_) * di->scale_;
 
-   // Hot X/Y (zero-based icon center)
-   const float hx = static_cast<float>(icon->hotX_);
-   const float hy = static_cast<float>(icon->hotY_);
+   // Hot X/Y (zero-based icon center), scaled the same way so the anchor
+   // point stays at the same fraction of the icon regardless of scale_.
+   const float hx = static_cast<float>(icon->hotX_) * di->scale_;
+   const float hy = static_cast<float>(icon->hotY_) * di->scale_;
 
    // Final X/Y offsets in pixels
    const float lx = std::roundf(x - hx);
@@ -1010,9 +1017,7 @@ bool GeoIcons::RunMousePicking(
 void GeoIcons::RegisterEventHandler(
    const std::shared_ptr<GeoIconDrawItem>& di,
    const std::function<void(QEvent*)>&     eventHandler)
-{
-   di->event_ = eventHandler;
-}
+{ di->event_ = eventHandler; }
 
 } // namespace draw
 } // namespace gl
