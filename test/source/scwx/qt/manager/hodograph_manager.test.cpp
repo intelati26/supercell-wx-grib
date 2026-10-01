@@ -1,6 +1,8 @@
+#include <scwx/provider/rrfs_data_provider.hpp>
 #include <scwx/qt/manager/hodograph_manager.hpp>
 
 #include <chrono>
+#include <cstdio>
 #include <format>
 #include <fstream>
 #include <thread>
@@ -79,6 +81,76 @@ TEST(HodographManagerTest, CycleForecastHourSelection)
    }
 
    EXPECT_TRUE(found) << "Last header seen: " << header;
+}
+
+// Real S3 access. "Latest" is the newest cycle S3 really has, which is usually
+// an hourly one -- and an hourly cycle has no F000, the hour a hodograph asks
+// for by default. It must move to a published hour and load, not sit empty.
+TEST(HodographManagerTest, LatestCycleHasEveryLevel)
+{
+   using namespace std::chrono;
+   using namespace std::chrono_literals;
+
+   provider::RrfsDataProvider::ResetAvailabilityForTesting();
+
+   auto      hodographManager = HodographManager::Instance();
+   const int marker           = 0;
+
+   // Drawing first: the manager only polls while a layer reports it is drawing
+   // (and SetDrawing()'s own poll waits for an event loop this test does not
+   // run), so the setters below -- which poll directly -- must come after.
+   hodographManager->SetDrawing(&marker, true);
+   hodographManager->SetForecastHour(0);
+   hodographManager->UseLatestCycle();
+
+   // A frame from a recent cycle (the pinned-cycle test above leaves one from
+   // 8-14 hours ago in the same cache): the newest cycle is at most a few hours
+   // old.
+   using sys_days = time_point<system_clock, days>;
+
+   const auto cutoff = system_clock::now() - hours {7};
+   // The highest level: absent from an hourly cycle's file
+   const std::string uFramePath =
+      HodographManager::GetUFramePath(HodographManager::Levels().size() - 1);
+
+   bool        found = false;
+   std::string header;
+   for (int i = 0; i < 240 && !found; ++i) // up to two minutes
+   {
+      std::ifstream in(uFramePath, std::ios::binary);
+      if (in.is_open())
+      {
+         std::getline(in, header);
+
+         const auto at = header.find("\"validTime\":\"");
+         int        y = 0, mo = 0, d = 0, h = 0, mi = 0, sec = 0;
+         if (at != std::string::npos && std::sscanf(header.c_str() + at + 13,
+                                                    "%4d-%2d-%2dT%2d:%2d:%2d",
+                                                    &y,
+                                                    &mo,
+                                                    &d,
+                                                    &h,
+                                                    &mi,
+                                                    &sec) == 6)
+         {
+            const auto valid =
+               sys_days {year {y} / month {static_cast<unsigned>(mo)} /
+                         day {static_cast<unsigned>(d)}} +
+               hours {h} + minutes {mi} + seconds {sec};
+            found = valid > cutoff;
+         }
+      }
+      if (!found)
+      {
+         std::this_thread::sleep_for(500ms);
+      }
+   }
+
+   hodographManager->SetDrawing(&marker, false);
+   provider::RrfsDataProvider::ResetAvailabilityForTesting();
+
+   EXPECT_TRUE(found) << "No hodograph frame from a recent cycle; last header: "
+                      << header;
 }
 
 } // namespace manager

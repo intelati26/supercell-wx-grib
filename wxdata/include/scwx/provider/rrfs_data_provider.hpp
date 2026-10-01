@@ -167,8 +167,12 @@ public:
    // Lists S3 now (a few requests) unless it did so within the last half minute
    // and `force` is false; blocking, so call it from a background thread.
    // Returns whether anything it knows changed. Afterwards CurrentCycle() in
-   // "latest" mode is the newest cycle that really has this provider's file
-   // family, not a lag-adjusted guess.
+   // "latest" mode is the newest *3-hourly* cycle that really has files, not a
+   // lag-adjusted guess -- and one cycle for both file families when there is
+   // one that has both. Never an hourly cycle: its 2dfld file holds half of the
+   // records of a 3-hourly one (no CAPE, helicity, cloud cover, satellite
+   // bands, most of the hodograph's winds) and it has no pressure-level file;
+   // hourly cycles remain selectable with SetCycle().
    bool RefreshAvailability(bool force = false);
 
    // Forecast hours of `cycle`'s `family` files that are published and usable
@@ -179,10 +183,10 @@ public:
    PublishedHours(std::chrono::system_clock::time_point cycle,
                   RrfsFileFamily                        family) const;
 
-   // The cycles a picker can offer for `family`, newest first: every cycle up
-   // to the newest one that has files of it (the one "latest" resolves to) --
-   // empty before the first listing. Pressure-level files exist only for the
-   // 3-hourly cycles, so only those are listed for that family.
+   // The cycles a picker can offer for `family`, newest first: every cycle that
+   // exists today or yesterday, hourly ones included (pressure-level files
+   // exist only for the 3-hourly cycles, so only those are listed for that
+   // family) -- empty before the first listing.
    [[nodiscard]] std::vector<std::chrono::system_clock::time_point>
    PublishedCycles(RrfsFileFamily family) const;
 

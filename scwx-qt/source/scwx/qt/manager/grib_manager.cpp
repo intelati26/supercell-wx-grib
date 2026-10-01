@@ -3650,6 +3650,9 @@ void GribManager::QueueDownload(
          const grib_fields::ProductFields* fields =
             grib_fields::FieldsFor(p->category_, product.displayName);
 
+         auto fieldStatus =
+            provider::AwsNexradDataProvider::FieldDownloadStatus::Downloaded;
+
          std::optional<std::string> downloaded;
          switch (p->category_)
          {
@@ -3667,7 +3670,8 @@ void GribManager::QueueDownload(
                   std::vector<scwx::util::grib_idx::FieldSelector> {},
                key,
                cachedPath,
-               progressCallback);
+               progressCallback,
+               &fieldStatus);
             break;
          case map::GribCategory::Rtma:
          default:
@@ -3679,7 +3683,8 @@ void GribManager::QueueDownload(
                   std::vector<scwx::util::grib_idx::FieldSelector> {},
                key,
                cachedPath,
-               progressCallback);
+               progressCallback,
+               &fieldStatus);
             break;
          }
 
@@ -3701,12 +3706,22 @@ void GribManager::QueueDownload(
          {
             logger_->warn(
                "Failed to download {} for {}", key, product.displayName);
+
+            // A field the cycle's file does not hold (an hourly RRFS cycle's
+            // file has half the records of a 3-hourly one) will not appear by
+            // trying again; a failed or not-yet-published download may.
+            const bool absent = fieldStatus ==
+                                provider::AwsNexradDataProvider::
+                                   FieldDownloadStatus::NoMatchingRecord;
             statusManager->ReportMessage(
                fmt::format("grib-error-{}-{}",
                            static_cast<int>(p->category_),
                            productIndex),
-               fmt::format("{}: download failed, will retry",
-                           product.displayName));
+               absent ? fmt::format("{}: not in this cycle's data (hourly "
+                                    "cycles carry fewer fields)",
+                                    product.displayName) :
+                        fmt::format("{}: download failed, will retry",
+                                    product.displayName));
             return;
          }
 

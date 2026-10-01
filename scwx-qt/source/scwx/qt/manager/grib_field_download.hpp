@@ -29,7 +29,11 @@ namespace scwx::qt::manager
 //
 // `TypedProvider` is RrfsDataProvider or RtmaDataProvider: each exposes the
 // idx download and the whole-object DownloadRaw() for its own bucket.
-// `label` names what is being fetched in the log.
+// `label` names what is being fetched in the log. `status`, if given, receives
+// how a field download ended (Downloaded for a whole-object download), so a
+// caller can tell "this cycle's file does not hold the field" -- permanent, as
+// with a product an hourly cycle lacks -- from a download that failed and may
+// work later.
 template<typename TypedProvider>
 std::optional<std::string> DownloadFieldsOrObject(
    TypedProvider&                                          provider,
@@ -38,17 +42,28 @@ std::optional<std::string> DownloadFieldsOrObject(
    const std::string&                                      key,
    const std::string&                                      cachedPath,
    const scwx::provider::AwsNexradDataProvider::DownloadProgressCallback&
-      progress)
+                                                               progress,
+   scwx::provider::AwsNexradDataProvider::FieldDownloadStatus* statusOut =
+      nullptr)
 {
    using Status = scwx::provider::AwsNexradDataProvider::FieldDownloadStatus;
 
    if (selectors.empty())
    {
-      return provider.DownloadRaw(key, cachedPath, progress);
+      auto whole = provider.DownloadRaw(key, cachedPath, progress);
+      if (statusOut != nullptr)
+      {
+         *statusOut = whole.has_value() ? Status::Downloaded : Status::Failed;
+      }
+      return whole;
    }
 
    const Status status =
       provider.DownloadFields(key, selectors, cachedPath, progress);
+   if (statusOut != nullptr)
+   {
+      *statusOut = status;
+   }
 
    if (status == Status::Downloaded)
    {

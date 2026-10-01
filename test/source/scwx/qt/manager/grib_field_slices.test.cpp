@@ -196,8 +196,9 @@ TEST(GribFieldSlicesTest, ReflectivityHoursDownloadOnlyTheirField)
 
 // Real S3 access. What the picker offers must be what is really published: the
 // manager lists the bucket after a product is checked, "Latest" becomes the
-// newest cycle that has files (not a clock guess), and the selected hour moves
-// onto one that exists -- an hourly cycle has no F000.
+// newest 3-hourly cycle that has files (not a clock guess), the hour range is
+// the hours that exist, and an hour that does not exist -- F000 of an hourly
+// cycle -- moves to one that does.
 TEST(GribFieldSlicesTest, AvailabilityFollowsWhatIsPublished)
 {
    using namespace std::chrono_literals;
@@ -207,51 +208,73 @@ TEST(GribFieldSlicesTest, AvailabilityFollowsWhatIsPublished)
    const std::string productName = "Simulated Reflectivity (1km AGL)";
    auto gribManager = GribManager::Instance(map::GribCategory::Rrfs);
 
-   bool                          announced = false;
+   int                           announced = 0;
    const QMetaObject::Connection connection =
       QObject::connect(gribManager.get(),
                        &GribManager::RrfsAvailabilityChanged,
-                       [&announced]() { announced = true; });
+                       [&announced]() { ++announced; });
+
+   // The result of a listing comes back through the GUI thread's event loop
+   const auto waitForAnnouncement = [&](int previous)
+   {
+      for (int i = 0; i < 1200 && announced == previous; ++i) // up to a minute
+      {
+         QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
+         std::this_thread::sleep_for(50ms);
+      }
+      return announced > previous;
+   };
 
    gribManager->SetRrfsForecastHour(0);
    gribManager->SetProductActive(productName,
                                  true); // lists S3 in the background
+   ASSERT_TRUE(waitForAnnouncement(0)) << "S3 was not listed";
 
-   // The result comes back through the GUI thread's event loop
-   for (int i = 0; i < 1200 && !announced; ++i) // up to a minute
-   {
-      QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
-      std::this_thread::sleep_for(50ms);
-   }
-   ASSERT_TRUE(announced) << "S3 was not listed";
-
+   // "Latest": a real, 3-hourly cycle, with hours that exist
    const auto published = gribManager->PublishedRrfsForecastHours();
    ASSERT_TRUE(published.has_value());
    ASSERT_FALSE(published->empty());
 
-   // Nothing beyond the cycle's own horizon, and never the future
    const auto cycle = gribManager->CurrentRrfsCycle();
+   EXPECT_TRUE(gribManager->IsUsingLatestRrfsCycle());
+   EXPECT_FALSE(provider::RrfsDataProvider::UsesSubhVariant(cycle));
+   EXPECT_LE(cycle, std::chrono::system_clock::now());
    EXPECT_LE(*published->rbegin(),
              provider::RrfsDataProvider::MaxForecastHourForCycle(cycle));
-   EXPECT_LE(cycle, std::chrono::system_clock::now());
+   EXPECT_TRUE(published->contains(gribManager->RrfsForecastHour()));
 
-   // "Latest" is the newest cycle the picker offers
    const auto cycles = gribManager->PublishedRrfsCycles();
    ASSERT_FALSE(cycles.empty());
-   EXPECT_TRUE(gribManager->IsUsingLatestRrfsCycle());
-   EXPECT_EQ(cycles.front(), cycle);
    EXPECT_TRUE(std::is_sorted(cycles.begin(), cycles.end(), std::greater<> {}));
+   EXPECT_NE(std::find(cycles.begin(), cycles.end(), cycle), cycles.end());
 
-   // The hour selected (F000, set above) is on a published hour: it moved to
-   // the first one if the cycle has no F000
-   EXPECT_TRUE(published->contains(gribManager->RrfsForecastHour()))
-      << "hour " << gribManager->RrfsForecastHour() << " is not published";
-   if (provider::RrfsDataProvider::UsesSubhVariant(cycle))
+   // An hourly cycle chosen explicitly has no F000: the selected hour moves to
+   // the first one that exists
+   const auto hourly = std::find_if(
+      cycles.begin(),
+      cycles.end(),
+      [](auto candidate)
+      { return provider::RrfsDataProvider::UsesSubhVariant(candidate); });
+   if (hourly != cycles.end())
    {
-      EXPECT_GE(gribManager->RrfsForecastHour(), 1);
+      const int before = announced;
+      gribManager->SetRrfsForecastHour(0);
+      gribManager->SetRrfsCycle(*hourly);
+      ASSERT_TRUE(waitForAnnouncement(before))
+         << "the chosen cycle was not listed";
+
+      const auto hourlyHours = gribManager->PublishedRrfsForecastHours();
+      ASSERT_TRUE(hourlyHours.has_value());
+      if (!hourlyHours->empty())
+      {
+         EXPECT_FALSE(hourlyHours->contains(0));
+         EXPECT_GE(gribManager->RrfsForecastHour(), 1);
+         EXPECT_TRUE(hourlyHours->contains(gribManager->RrfsForecastHour()));
+      }
    }
 
    QObject::disconnect(connection);
+   gribManager->UseLatestRrfsCycle();
    gribManager->SetProductActive(productName, false);
    provider::RrfsDataProvider::ResetAvailabilityForTesting();
 }

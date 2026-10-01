@@ -321,13 +321,23 @@ bool RrfsDataProvider::RefreshAvailability(bool force)
       listHours(p->cycleOverride_, RrfsFileFamily::PressureLevel);
    }
 
-   // ... and the newest cycles until each family has its latest
-   std::size_t searched = 0;
+   // ... and the newest *3-hourly* cycles until one has both families. "Latest"
+   // is always a 3-hourly cycle, never an hourly one: an hourly cycle's 2dfld
+   // file holds only half of a 3-hourly cycle's records (no CAPE, helicity,
+   // cloud cover, satellite bands, ...; 5 of the hodograph's 35 fields), and a
+   // pressure-level file does not exist for it at all -- so a "latest" that
+   // followed the newest hourly cycle would point most products at a file that
+   // does not contain them. Hourly cycles stay selectable explicitly.
+   std::optional<TimePoint> firstTwoD;
+   std::optional<TimePoint> firstPressure;
+   std::size_t              searched = 0;
    for (const TimePoint cycle : candidates)
    {
-      if (searched++ == kMaxCyclesSearched_ ||
-          (found.latest.count(RrfsFileFamily::TwoDField) != 0 &&
-           found.latest.count(RrfsFileFamily::PressureLevel) != 0))
+      if (UsesSubhVariant(cycle))
+      {
+         continue;
+      }
+      if (searched++ == kMaxCyclesSearched_)
       {
          break;
       }
@@ -335,20 +345,48 @@ bool RrfsDataProvider::RefreshAvailability(bool force)
       for (const auto family :
            {RrfsFileFamily::TwoDField, RrfsFileFamily::PressureLevel})
       {
-         if (found.latest.count(family) != 0)
+         if (found.hours.count({cycle, family}) == 0)
          {
-            continue;
+            listHours(cycle, family);
          }
+      }
 
-         if (found.hours.count({cycle, family}) == 0 &&
-             !listHours(cycle, family))
-         {
-            continue;
-         }
-         if (!found.hours[{cycle, family}].empty())
-         {
-            found.latest[family] = cycle;
-         }
+      const auto hasFiles = [&](RrfsFileFamily family)
+      {
+         const auto it = found.hours.find({cycle, family});
+         return it != found.hours.end() && !it->second.empty();
+      };
+
+      if (hasFiles(RrfsFileFamily::TwoDField) && !firstTwoD.has_value())
+      {
+         firstTwoD = cycle;
+      }
+      if (hasFiles(RrfsFileFamily::PressureLevel) && !firstPressure.has_value())
+      {
+         firstPressure = cycle;
+      }
+
+      // One cycle for everything -- a single hour slider drives every product,
+      // so they must not each resolve their own
+      if (hasFiles(RrfsFileFamily::TwoDField) &&
+          hasFiles(RrfsFileFamily::PressureLevel))
+      {
+         found.latest[RrfsFileFamily::TwoDField]     = cycle;
+         found.latest[RrfsFileFamily::PressureLevel] = cycle;
+         break;
+      }
+   }
+
+   // No cycle has both yet (the prslev files lag): each family's own newest
+   if (found.latest.empty())
+   {
+      if (firstTwoD.has_value())
+      {
+         found.latest[RrfsFileFamily::TwoDField] = *firstTwoD;
+      }
+      if (firstPressure.has_value())
+      {
+         found.latest[RrfsFileFamily::PressureLevel] = *firstPressure;
       }
    }
 
@@ -418,19 +456,12 @@ RrfsDataProvider::PublishedCycles(RrfsFileFamily family) const
       return cycles;
    }
 
-   // Every cycle up to the newest one that has files of this family. A newer
-   // cycle may already have a directory but nothing in it yet; and pressure-
-   // level files exist only for the 3-hourly cycles.
-   const auto latest = state->second.latest.find(family);
-   if (latest == state->second.latest.end())
-   {
-      return cycles;
-   }
-
+   // Every cycle that exists, hourly ones included (they can be selected, even
+   // though "latest" never is one); pressure-level files exist only for the
+   // 3-hourly cycles.
    for (const TimePoint cycle : state->second.cycles)
    {
-      if (cycle <= latest->second &&
-          (family == RrfsFileFamily::TwoDField || !UsesSubhVariant(cycle)))
+      if (family == RrfsFileFamily::TwoDField || !UsesSubhVariant(cycle))
       {
          cycles.push_back(cycle);
       }

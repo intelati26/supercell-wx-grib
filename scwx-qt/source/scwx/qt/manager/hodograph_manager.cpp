@@ -288,6 +288,22 @@ void HodographManager::Poll()
       }
    }
 
+   // What RRFS has really published decides which cycle "latest" is and which
+   // hours exist (see RrfsDataProvider::RefreshAvailability(); one listing is
+   // shared with every other RRFS user, and repeated calls inside half a minute
+   // do not list again). An hourly cycle has no F000, so an hour that does not
+   // exist -- the default 0 -- moves to the nearest one that does.
+   p->provider_->RefreshAvailability();
+   if (const auto published = p->provider_->PublishedHours(
+          p->provider_->CurrentCycle(), provider::RrfsFileFamily::TwoDField);
+       published.has_value() && !published->empty() &&
+       !published->contains(p->provider_->ForecastHour()))
+   {
+      const auto next = published->lower_bound(p->provider_->ForecastHour());
+      p->provider_->SetForecastHour(
+         next != published->end() ? *next : *published->rbegin());
+   }
+
    auto [newObjects, totalObjects] = p->provider_->Refresh();
    logger_->debug(
       "Refresh: {} new / {} total objects", newObjects, totalObjects);

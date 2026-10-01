@@ -418,9 +418,11 @@ TEST(RrfsDataProvider, ParseCycleHoursReadsTheDirectoriesOfOneDay)
 }
 
 // Real S3 access. "Latest" must be a cycle that really has files -- not a lag
-// guess that can land on a cycle still being written (or one hourly cycles are
-// newer than) -- and the hours it reports must be ones that really exist.
-TEST(RrfsDataProvider, RefreshAvailabilityFindsTheNewestPublishedCycle)
+// guess that can land on a cycle still being written -- and it must be a
+// 3-hourly one: an hourly cycle's files hold half the records of a 3-hourly
+// cycle's (and it has no pressure-level file), so following the newest hourly
+// cycle would point most products at a file that does not contain them.
+TEST(RrfsDataProvider, RefreshAvailabilityFindsTheNewestPublished3HourlyCycle)
 {
    RrfsDataProvider::ResetAvailabilityForTesting();
 
@@ -431,38 +433,48 @@ TEST(RrfsDataProvider, RefreshAvailabilityFindsTheNewestPublishedCycle)
 
    ASSERT_TRUE(provider.RefreshAvailability(true));
 
+   // Latest mode now resolves to a real cycle: 3-hourly, not in the future
+   EXPECT_TRUE(provider.IsUsingLatestCycle());
+   const auto latest = provider.CurrentCycle();
+   EXPECT_FALSE(RrfsDataProvider::UsesSubhVariant(latest));
+   EXPECT_LE(latest, std::chrono::system_clock::now());
+
+   // ...with published hours that are real: from F000 (a 3-hourly cycle has
+   // one) up to what is out so far, never beyond the cycle's own horizon
+   const auto published =
+      provider.PublishedHours(latest, RrfsFileFamily::TwoDField);
+   ASSERT_TRUE(published.has_value());
+   ASSERT_FALSE(published->empty());
+   EXPECT_EQ(*published->begin(), 0);
+   EXPECT_LE(*published->rbegin(),
+             RrfsDataProvider::MaxForecastHourForCycle(latest));
+
+   // The picker offers every cycle that exists, hourly ones too, newest first,
+   // and "latest" is among them
    const auto cycles = provider.PublishedCycles(RrfsFileFamily::TwoDField);
    ASSERT_FALSE(cycles.empty());
    EXPECT_TRUE(std::is_sorted(cycles.begin(), cycles.end(), std::greater<> {}));
+   EXPECT_NE(std::find(cycles.begin(), cycles.end(), latest), cycles.end());
 
-   // Latest mode now resolves to the newest of them, and not to the future
-   EXPECT_TRUE(provider.IsUsingLatestCycle());
-   EXPECT_EQ(provider.CurrentCycle(), cycles.front());
-   EXPECT_LE(provider.CurrentCycle(), std::chrono::system_clock::now());
-
-   // Its hours are real: contiguous from F000 (3-hourly) or F001 (hourly) up to
-   // what has been published, never beyond the cycle's own horizon
-   const auto hoursPublished = provider.PublishedHours(
-      provider.CurrentCycle(), RrfsFileFamily::TwoDField);
-   ASSERT_TRUE(hoursPublished.has_value());
-   ASSERT_FALSE(hoursPublished->empty());
-   EXPECT_LE(
-      *hoursPublished->rbegin(),
-      RrfsDataProvider::MaxForecastHourForCycle(provider.CurrentCycle()));
-   EXPECT_GE(*hoursPublished->begin(),
-             RrfsDataProvider::UsesSubhVariant(provider.CurrentCycle()) ? 1 :
-                                                                          0);
+   // Pressure-level files exist only for 3-hourly cycles, so only those are
+   // offered for that family, and it shares the one latest cycle when it has
+   // files there too (a single hour slider drives every product)
+   for (const auto cycle :
+        provider.PublishedCycles(RrfsFileFamily::PressureLevel))
+   {
+      EXPECT_FALSE(RrfsDataProvider::UsesSubhVariant(cycle));
+   }
+   RrfsDataProvider pressure;
+   pressure.SetFileFamily(RrfsFileFamily::PressureLevel);
+   if (pressure.PublishedHours(latest, RrfsFileFamily::PressureLevel)
+          .value_or(std::set<int> {})
+          .size() > 0)
+   {
+      EXPECT_EQ(pressure.CurrentCycle(), latest);
+   }
 
    // A repeat inside the half-minute window does not list again
    EXPECT_FALSE(provider.RefreshAvailability());
-
-   // The pressure-level files exist only for the 3-hourly cycles, so its latest
-   // is never an hourly one
-   const auto prslev = provider.PublishedCycles(RrfsFileFamily::PressureLevel);
-   if (!prslev.empty())
-   {
-      EXPECT_FALSE(RrfsDataProvider::UsesSubhVariant(prslev.front()));
-   }
 
    RrfsDataProvider::ResetAvailabilityForTesting();
 }
