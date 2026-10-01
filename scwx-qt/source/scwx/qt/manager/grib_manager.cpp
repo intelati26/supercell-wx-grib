@@ -3633,8 +3633,11 @@ bool GribManager::CommitDecodedFrame(std::size_t        productIndex,
    if (wanted)
    {
       // Retries while Windows refuses to replace a frame a reader has open
-      // (the map layer, the dock, or the PNG export reading it).
-      util::ReplaceFileWithRetry(tmpFramePath, framePath, ec);
+      // (the map layer, the dock, or the PNG export reading it). Several
+      // seconds, not the couple the other sites use: this runs on a
+      // background decode thread, and giving up drops the hour entirely.
+      constexpr int kSwapAttempts = 200;
+      util::ReplaceFileWithRetry(tmpFramePath, framePath, ec, kSwapAttempts);
    }
 
    if (!wanted || ec)
@@ -3642,6 +3645,18 @@ bool GribManager::CommitDecodedFrame(std::size_t        productIndex,
       if (ec)
       {
          logger_->warn("Could not replace frame file: {}", ec.message());
+
+         // A dropped frame leaves the map on the previous hour, which looks
+         // like the loop simply stopped -- say so. Nothing clears this id, so
+         // the status bar drops it by itself once it goes stale.
+         manager::StatusManager::Instance()->ReportProgress(
+            fmt::format(
+               "grib-swap-{}-{}", static_cast<int>(p->category_), productIndex),
+            fmt::format("{}: could not update the frame ({})",
+                        ProductName(productIndex),
+                        ec.message()),
+            0,
+            -1);
       }
       std::error_code removeEc;
       std::filesystem::remove(tmpFramePath, removeEc);

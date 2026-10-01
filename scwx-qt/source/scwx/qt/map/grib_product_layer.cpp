@@ -580,6 +580,12 @@ void GribProductLayer::Impl::LoadFrame(std::size_t   productIndex,
          return;
       }
 
+      // Release the file now rather than at the end of this function: on
+      // Windows the next hour's frame cannot be swapped in while any reader
+      // has it open, and the upload and scan below take long enough (times
+      // every pane) to make that a real window.
+      in.close();
+
       // 16-bit when this frame's values allow it without a visible change
       // (see FitsHalfFloatTexture), halving the texture's GPU memory; GL
       // converts the 32-bit upload itself. The tooltip is unaffected --
