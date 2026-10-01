@@ -7,6 +7,7 @@
 #include <iterator>
 #include <map>
 #include <mutex>
+#include <ranges>
 #include <regex>
 
 #include <fmt/chrono.h>
@@ -49,7 +50,7 @@ struct Availability
    std::chrono::steady_clock::time_point                         refreshed {};
    bool                                                          known {false};
 
-   bool SameFindings(const Availability& other) const
+   [[nodiscard]] bool SameFindings(const Availability& other) const
    {
       return cycles == other.cycles && hours == other.hours &&
              latest == other.latest;
@@ -142,8 +143,8 @@ std::chrono::system_clock::time_point RrfsDataProvider::CurrentCycle() const
    // The newest cycle S3 really has files of this family for, once
    // RefreshAvailability() has listed it ...
    {
-      std::lock_guard lock(gAvailabilityMutex);
-      const auto      state = gAvailability.find(p->bucketName_);
+      const std::scoped_lock lock(gAvailabilityMutex);
+      const auto             state = gAvailability.find(p->bucketName_);
       if (state != gAvailability.end())
       {
          const auto latest = state->second.latest.find(p->fileFamily_);
@@ -211,11 +212,8 @@ std::set<int> RrfsDataProvider::ParsePublishedHours(
    // Usable means the .idx is there too: the app reads only the messages it
    // needs through it, and the idx can lag the file.
    std::set<int> usable;
-   std::set_intersection(grib.begin(),
-                         grib.end(),
-                         idx.begin(),
-                         idx.end(),
-                         std::inserter(usable, usable.begin()));
+   std::ranges::set_intersection(
+      grib, idx, std::inserter(usable, usable.begin()));
    return usable;
 }
 
@@ -239,7 +237,7 @@ RrfsDataProvider::ParseCycleHours(const std::vector<std::string>& directories,
 
 void RrfsDataProvider::ResetAvailabilityForTesting()
 {
-   std::lock_guard lock(gAvailabilityMutex);
+   const std::scoped_lock lock(gAvailabilityMutex);
    gAvailability.clear();
 }
 
@@ -248,8 +246,8 @@ bool RrfsDataProvider::RefreshAvailability(bool force)
    using namespace std::chrono;
 
    {
-      std::lock_guard lock(gAvailabilityMutex);
-      const auto      state = gAvailability.find(p->bucketName_);
+      const std::scoped_lock lock(gAvailabilityMutex);
+      const auto             state = gAvailability.find(p->bucketName_);
       if (!force && state != gAvailability.end() && state->second.known &&
           steady_clock::now() - state->second.refreshed < kAvailabilityTtl_)
       {
@@ -275,9 +273,9 @@ bool RrfsDataProvider::RefreshAvailability(bool force)
       listedAny = true;
 
       const auto cycleHours = ParseCycleHours(*directories, dayString);
-      for (auto it = cycleHours.rbegin(); it != cycleHours.rend(); ++it)
+      for (const int cycleHour : std::views::reverse(cycleHours))
       {
-         const TimePoint cycle = day + std::chrono::hours {*it};
+         const TimePoint cycle = day + std::chrono::hours {cycleHour};
          if (cycle <= now)
          {
             candidates.push_back(cycle);
@@ -390,8 +388,8 @@ bool RrfsDataProvider::RefreshAvailability(bool force)
       }
    }
 
-   std::lock_guard lock(gAvailabilityMutex);
-   Availability&   state = gAvailability[p->bucketName_];
+   const std::scoped_lock lock(gAvailabilityMutex);
+   Availability&          state = gAvailability[p->bucketName_];
 
    Availability merged = state;
    merged.cycles       = found.cycles;
@@ -427,7 +425,7 @@ std::optional<std::set<int>>
 RrfsDataProvider::PublishedHours(std::chrono::system_clock::time_point cycle,
                                  RrfsFileFamily family) const
 {
-   std::lock_guard lock(gAvailabilityMutex);
+   const std::scoped_lock lock(gAvailabilityMutex);
 
    const auto state = gAvailability.find(p->bucketName_);
    if (state == gAvailability.end())
@@ -446,7 +444,7 @@ RrfsDataProvider::PublishedHours(std::chrono::system_clock::time_point cycle,
 std::vector<std::chrono::system_clock::time_point>
 RrfsDataProvider::PublishedCycles(RrfsFileFamily family) const
 {
-   std::lock_guard lock(gAvailabilityMutex);
+   const std::scoped_lock lock(gAvailabilityMutex);
 
    std::vector<TimePoint> cycles;
 
@@ -466,7 +464,7 @@ RrfsDataProvider::PublishedCycles(RrfsFileFamily family) const
          cycles.push_back(cycle);
       }
    }
-   std::sort(cycles.begin(), cycles.end(), std::greater<> {});
+   std::ranges::sort(cycles, std::greater<> {});
    return cycles;
 }
 

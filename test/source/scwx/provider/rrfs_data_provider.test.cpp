@@ -453,8 +453,8 @@ TEST(RrfsDataProvider, RefreshAvailabilityFindsTheNewestPublished3HourlyCycle)
    // and "latest" is among them
    const auto cycles = provider.PublishedCycles(RrfsFileFamily::TwoDField);
    ASSERT_FALSE(cycles.empty());
-   EXPECT_TRUE(std::is_sorted(cycles.begin(), cycles.end(), std::greater<> {}));
-   EXPECT_NE(std::find(cycles.begin(), cycles.end(), latest), cycles.end());
+   EXPECT_TRUE(std::ranges::is_sorted(cycles, std::greater<> {}));
+   EXPECT_NE(std::ranges::find(cycles, latest), cycles.end());
 
    // Pressure-level files exist only for 3-hourly cycles, so only those are
    // offered for that family, and it shares the one latest cycle when it has

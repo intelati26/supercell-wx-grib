@@ -390,9 +390,8 @@ TEST_F(GribDockWidgetTest, RrfsHourGridFollowsWhatIsPublished)
          buttons.push_back(button);
       }
    }
-   std::sort(buttons.begin(),
-             buttons.end(),
-             [](auto* a, auto* b) { return a->text() < b->text(); });
+   std::ranges::sort(buttons,
+                     [](auto* a, auto* b) { return a->text() < b->text(); });
 
    const int last = *published->rbegin();
    ASSERT_EQ(static_cast<int>(buttons.size()), last + 1)
@@ -411,7 +410,7 @@ TEST_F(GribDockWidgetTest, RrfsHourGridFollowsWhatIsPublished)
    EXPECT_EQ(slider->maximum(), last);
 
    // "Latest" says which cycle it is, and the list offers real cycles
-   QComboBox* cycles = nullptr;
+   const QComboBox* cycles = nullptr;
    for (auto* combo : group->findChildren<QComboBox*>())
    {
       if (combo->itemText(0).startsWith("Latest"))

@@ -245,14 +245,13 @@ TEST(GribFieldSlicesTest, AvailabilityFollowsWhatIsPublished)
 
    const auto cycles = gribManager->PublishedRrfsCycles();
    ASSERT_FALSE(cycles.empty());
-   EXPECT_TRUE(std::is_sorted(cycles.begin(), cycles.end(), std::greater<> {}));
-   EXPECT_NE(std::find(cycles.begin(), cycles.end(), cycle), cycles.end());
+   EXPECT_TRUE(std::ranges::is_sorted(cycles, std::greater<> {}));
+   EXPECT_NE(std::ranges::find(cycles, cycle), cycles.end());
 
    // An hourly cycle chosen explicitly has no F000: the selected hour moves to
    // the first one that exists
-   const auto hourly = std::find_if(
-      cycles.begin(),
-      cycles.end(),
+   const auto hourly = std::ranges::find_if(
+      cycles,
       [](auto candidate)
       { return provider::RrfsDataProvider::UsesSubhVariant(candidate); });
    if (hourly != cycles.end())

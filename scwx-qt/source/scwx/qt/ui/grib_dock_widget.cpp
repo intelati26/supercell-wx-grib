@@ -213,7 +213,7 @@ struct CategorySection
 // cycle changed) to the RRFS loop-range spinboxes and GribManager. The
 // spinboxes' own valueChanged handlers are blocked throughout, so they
 // only ever see real user edits (see loopEndUserSet).
-void RerangeRrfsLoop(CategorySection& section, int minHour, int maxHour)
+static void RerangeRrfsLoop(CategorySection& section, int minHour, int maxHour)
 {
    {
       const QSignalBlocker blockStart(section.loopStartSpinBox);
@@ -1144,7 +1144,7 @@ void GribDockWidget::Impl::RefreshRrfsCycleCombo(CategorySection& section)
       const auto now = floor<hours>(system_clock::now());
       for (int i = 0; i < kRrfsCycleHistoryHours_; ++i)
       {
-         cycles.push_back(now - hours {i});
+         cycles.emplace_back(now - hours {i});
       }
    }
    if (cycles.size() > static_cast<std::size_t>(kRrfsCycleListMax_))
