@@ -300,6 +300,39 @@ TEST(GribManagerTest, DownloadCacheBudget)
       2 * kGB);
 }
 
+// Eviction goes least recently used first, stops once under budget, and
+// never touches a file used within minAge -- the case that stranded a SHIP
+// decode on a nearly-full CI disk: its already-cached input was the oldest
+// file in the cache and was evicted while the other input downloaded.
+TEST(GribManagerTest, DownloadCacheEvictions)
+{
+   using namespace std::chrono_literals;
+   constexpr std::uintmax_t kMB = 1024ULL * 1024;
+
+   const std::vector<GribManager::CachedFile> files {
+      {100 * kMB, 3h},   // 0: old
+      {300 * kMB, 5min}, // 1: in use (e.g. a SHIP input)
+      {200 * kMB, 2h},   // 2: old
+      {50 * kMB, 1h},    // 3: newer
+   };
+
+   // 650MB against a 400MB budget: the two oldest (0, then 2) are enough.
+   EXPECT_EQ(
+      GribManager::DownloadCacheEvictions(files, 650 * kMB, 400 * kMB, 15min),
+      (std::vector<std::size_t> {0, 2}));
+
+   // Against 100MB: every old file goes, but the in-use one stays even
+   // though that leaves the cache over budget.
+   EXPECT_EQ(
+      GribManager::DownloadCacheEvictions(files, 650 * kMB, 100 * kMB, 15min),
+      (std::vector<std::size_t> {0, 2, 3}));
+
+   // Already under budget: nothing.
+   EXPECT_TRUE(
+      GribManager::DownloadCacheEvictions(files, 650 * kMB, 1000 * kMB, 15min)
+         .empty());
+}
+
 // SetRrfsCycle()/SetRrfsForecastHour()/UseLatestRrfsCycle() are refused
 // (logged, not crashing) against a non-Rrfs instance -- Mrms/Rtma have no
 // forecast-hour axis at all (see the class comment on these methods).

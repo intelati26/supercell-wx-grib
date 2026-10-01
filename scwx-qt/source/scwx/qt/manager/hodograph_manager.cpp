@@ -327,7 +327,7 @@ void HodographManager::Poll()
    // cached as an entry of their own rather than as the ~350MB object.
    const std::string cacheKey   = latestKey + ".fields-hodograph";
    const std::string cachedPath = CachedDownloadPath(cacheKey);
-   if (std::filesystem::exists(cachedPath))
+   if (GribManager::UseCachedDownload(cachedPath))
    {
       // Already cached -- decode is cheap, do it right here rather than
       // bouncing to the background pool.

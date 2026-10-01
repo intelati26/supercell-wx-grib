@@ -192,7 +192,7 @@ void WindBarbManager::Poll()
    // an entry of their own rather than as the ~84MB object.
    const std::string cacheKey   = latestKey + ".fields-windbarbs";
    const std::string cachedPath = CachedDownloadPath(cacheKey);
-   if (std::filesystem::exists(cachedPath))
+   if (GribManager::UseCachedDownload(cachedPath))
    {
       // Already cached -- decode is cheap, do it right here rather than
       // bouncing to the background pool.
