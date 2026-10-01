@@ -1,18 +1,30 @@
+#include <scwx/provider/rrfs_data_provider.hpp>
+#include <scwx/qt/manager/grib_manager.hpp>
 #include <scwx/qt/manager/hodograph_selection.hpp>
 #include <scwx/qt/manager/user_model_registry.hpp>
 #include <scwx/qt/ui/checkable_combo_box.hpp>
 #include <scwx/qt/ui/grib_dock_widget.hpp>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
+#include <set>
+#include <string>
+#include <thread>
+#include <vector>
 
 #include <QApplication>
 #include <QComboBox>
 #include <QGroupBox>
 #include <QLabel>
 #include <QPushButton>
+#include <QCoreApplication>
+#include <QEventLoop>
+#include <QSlider>
 #include <QStandardItemModel>
 
 #include <gtest/gtest.h>
@@ -329,6 +341,95 @@ TEST_F(GribDockWidgetTest, HodographIsAnRrfsProductThatStartsUnpicked)
    products->SetChecked("Gridded Hodograph", false);
    products->CheckedItemsChanged();
    EXPECT_FALSE(selection.IsEnabled());
+}
+
+// Real S3 access, the real dock and the real manager together. Checking an RRFS
+// product lists the bucket; the hour grid, slider and cycle list must then be
+// what is really published -- not 85 buttons out to a cycle's nominal horizon
+// -- with an hour that does not exist disabled, and "Latest" naming the cycle
+// it means.
+TEST_F(GribDockWidgetTest, RrfsHourGridFollowsWhatIsPublished)
+{
+   using namespace std::chrono_literals;
+
+   provider::RrfsDataProvider::ResetAvailabilityForTesting();
+
+   const std::string productName = "Simulated Reflectivity (1km AGL)";
+   auto gribManager = manager::GribManager::Instance(map::GribCategory::Rrfs);
+
+   GribDockWidget dock;
+   dock.resize(420, 1500);
+
+   auto* group = FindGroup(dock, "RRFS");
+   ASSERT_NE(group, nullptr);
+   auto* products = group->findChild<CheckableComboBox*>();
+   ASSERT_NE(products, nullptr);
+
+   // What a user's click does
+   products->SetChecked(productName, true);
+   products->CheckedItemsChanged();
+
+   // The listing comes back through the event loop
+   std::optional<std::set<int>> published;
+   for (int i = 0; i < 1200 && !published.has_value(); ++i)
+   {
+      QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
+      std::this_thread::sleep_for(50ms);
+      published = gribManager->PublishedRrfsForecastHours();
+   }
+   ASSERT_TRUE(published.has_value()) << "S3 was not listed";
+   ASSERT_FALSE(published->empty());
+   QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+
+   // The hour buttons are the three-digit ones
+   std::vector<QPushButton*> buttons;
+   for (auto* button : group->findChildren<QPushButton*>())
+   {
+      if (button->text().size() == 3 && button->text()[0].isDigit())
+      {
+         buttons.push_back(button);
+      }
+   }
+   std::sort(buttons.begin(),
+             buttons.end(),
+             [](auto* a, auto* b) { return a->text() < b->text(); });
+
+   const int last = *published->rbegin();
+   ASSERT_EQ(static_cast<int>(buttons.size()), last + 1)
+      << "the grid should end at the last published hour, F" << last;
+   for (int hour = 0; hour <= last; ++hour)
+   {
+      EXPECT_EQ(buttons[static_cast<std::size_t>(hour)]->isEnabled(),
+                published->contains(hour))
+         << "button F" << hour;
+   }
+
+   // The slider covers the same hours
+   auto* slider = group->findChild<QSlider*>();
+   ASSERT_NE(slider, nullptr);
+   EXPECT_EQ(slider->minimum(), *published->begin());
+   EXPECT_EQ(slider->maximum(), last);
+
+   // "Latest" says which cycle it is, and the list offers real cycles
+   QComboBox* cycles = nullptr;
+   for (auto* combo : group->findChildren<QComboBox*>())
+   {
+      if (combo->itemText(0).startsWith("Latest"))
+      {
+         cycles = combo;
+      }
+   }
+   ASSERT_NE(cycles, nullptr);
+   EXPECT_TRUE(cycles->itemText(0).contains("z)"))
+      << cycles->itemText(0).toStdString();
+   EXPECT_GT(cycles->count(), 1);
+
+   MaybeSnapshot(dock, "dock-rrfs-published-hours");
+
+   products->SetChecked(productName, false);
+   products->CheckedItemsChanged();
+   gribManager->UseLatestRrfsCycle();
+   provider::RrfsDataProvider::ResetAvailabilityForTesting();
 }
 
 } // namespace scwx::qt::ui
