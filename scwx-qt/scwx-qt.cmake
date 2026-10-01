@@ -349,6 +349,7 @@ set(HDR_UI source/scwx/qt/ui/about_dialog.hpp
            source/scwx/qt/ui/collapsible_group.hpp
            source/scwx/qt/ui/county_dialog.hpp
            source/scwx/qt/ui/custom_layer_dialog.hpp
+           source/scwx/qt/ui/clickable_label.hpp
            source/scwx/qt/ui/download_dialog.hpp
            source/scwx/qt/ui/edit_button_dialog.hpp
            source/scwx/qt/ui/edit_line_dialog.hpp
@@ -356,6 +357,7 @@ set(HDR_UI source/scwx/qt/ui/about_dialog.hpp
            source/scwx/qt/ui/edit_marker_dialog.hpp
            source/scwx/qt/ui/flow_layout.hpp
            source/scwx/qt/ui/grib_dock_widget.hpp
+           source/scwx/qt/ui/pending_status_dialog.hpp
            source/scwx/qt/ui/gps_info_dialog.hpp
            source/scwx/qt/ui/hotkey_edit.hpp
            source/scwx/qt/ui/imgui_debug_dialog.hpp
@@ -392,6 +394,7 @@ set(SRC_UI source/scwx/qt/ui/about_dialog.cpp
            source/scwx/qt/ui/collapsible_group.cpp
            source/scwx/qt/ui/county_dialog.cpp
            source/scwx/qt/ui/custom_layer_dialog.cpp
+           source/scwx/qt/ui/clickable_label.cpp
            source/scwx/qt/ui/download_dialog.cpp
            source/scwx/qt/ui/edit_button_dialog.cpp
            source/scwx/qt/ui/edit_line_dialog.cpp
@@ -399,6 +402,7 @@ set(SRC_UI source/scwx/qt/ui/about_dialog.cpp
            source/scwx/qt/ui/export_settings_dialog.cpp
            source/scwx/qt/ui/flow_layout.cpp
            source/scwx/qt/ui/grib_dock_widget.cpp
+           source/scwx/qt/ui/pending_status_dialog.cpp
            source/scwx/qt/ui/gps_info_dialog.cpp
            source/scwx/qt/ui/hotkey_edit.cpp
            source/scwx/qt/ui/imgui_debug_dialog.cpp

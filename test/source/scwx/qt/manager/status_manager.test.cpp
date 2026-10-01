@@ -1,6 +1,7 @@
 #include <scwx/qt/manager/status_manager.hpp>
 
 #include <chrono>
+#include <set>
 #include <thread>
 
 #include <gtest/gtest.h>
@@ -110,7 +111,7 @@ TEST(StatusManagerTest, UnknownTotalOmitsFraction)
    statusManager->ReportComplete("status-manager-test-unknown");
 }
 
-TEST(StatusManagerTest, MultipleEntriesShowMostRecentPlusCount)
+TEST(StatusManagerTest, MultipleEntriesShowTheLongestRunningPlusCount)
 {
    auto statusManager = StatusManager::Instance();
 
@@ -119,14 +120,101 @@ TEST(StatusManagerTest, MultipleEntriesShowMostRecentPlusCount)
    statusManager->ReportProgress(
       "status-manager-test-multi-b", "Second", 2048, -1);
 
-   // "Second" was reported more recently than "First" -- it should be
-   // the one shown, with a "(+1 more)" for the other.
+   // "First" started first, so it stays the line shown -- with a "(+1 more)"
+   // for the other -- even though "Second" reported more recently.
    const std::string text = statusManager->CurrentStatusText();
-   EXPECT_NE(text.find("Second"), std::string::npos);
-   EXPECT_NE(text.find("(+1 more)"), std::string::npos);
+   EXPECT_NE(text.find("First"), std::string::npos) << text;
+   EXPECT_NE(text.find("(+1 more)"), std::string::npos) << text;
 
    statusManager->ReportComplete("status-manager-test-multi-a");
    statusManager->ReportComplete("status-manager-test-multi-b");
+}
+
+// The regression: two downloads at once (wind barbs and hodographs at startup)
+// each report many times a second, and the line used to follow whichever
+// reported last -- flipping between them on every chunk.
+TEST(StatusManagerTest, TheLineDoesNotFlipBetweenConcurrentDownloads)
+{
+   auto statusManager = StatusManager::Instance();
+
+   statusManager->ReportProgress(
+      "status-manager-test-flip-a", "Barbs", 0, 1000);
+   statusManager->ReportProgress("status-manager-test-flip-b", "Hodo", 0, 1000);
+
+   std::set<std::string> descriptions;
+   for (int chunk = 1; chunk <= 20; ++chunk)
+   {
+      statusManager->ReportProgress(
+         "status-manager-test-flip-a", "Barbs", chunk * 10, 1000);
+      statusManager->ReportProgress(
+         "status-manager-test-flip-b", "Hodo", chunk * 10, 1000);
+
+      const std::string text = statusManager->CurrentStatusText();
+      descriptions.insert(text.substr(0, text.find(':')));
+   }
+
+   EXPECT_EQ(descriptions, std::set<std::string> {"Barbs"});
+
+   // When the longer-running one finishes, the other takes over
+   statusManager->ReportComplete("status-manager-test-flip-a");
+   const std::string text = statusManager->CurrentStatusText();
+   EXPECT_EQ(text.substr(0, text.find(':')), "Hodo");
+
+   statusManager->ReportComplete("status-manager-test-flip-b");
+}
+
+// A failure notice is not buried under a running download
+TEST(StatusManagerTest, ANoticeIsShownAheadOfDownloads)
+{
+   auto statusManager = StatusManager::Instance();
+
+   statusManager->ReportProgress(
+      "status-manager-test-ahead-a", "Busy", 10, 100);
+   statusManager->ReportMessage("status-manager-test-ahead-b", "It failed");
+
+   const std::string text = statusManager->CurrentStatusText();
+   EXPECT_EQ(text.substr(0, 9), "It failed") << text;
+   EXPECT_NE(text.find("(+1 more)"), std::string::npos) << text;
+
+   statusManager->ReportComplete("status-manager-test-ahead-a");
+   statusManager->ReportComplete("status-manager-test-ahead-b");
+}
+
+// The "show all pending" list: every entry, in the order the single line would
+// show them, each in the same wording
+TEST(StatusManagerTest, PendingLinesListEveryEntryInDisplayOrder)
+{
+   auto statusManager = StatusManager::Instance();
+
+   statusManager->ReportProgress(
+      "status-manager-test-list-a", "Alpha", 1048576, 2097152);
+   statusManager->ReportProgress("status-manager-test-list-b", "Beta", 0, -1);
+   statusManager->ReportMessage("status-manager-test-list-c", "Gamma failed");
+   // Alpha reports again; it started first, so it keeps its place
+   statusManager->ReportProgress(
+      "status-manager-test-list-a", "Alpha", 1572864, 2097152);
+
+   const auto lines = statusManager->PendingLines();
+
+   // Other tests' entries may be present (a shared singleton); find ours
+   std::vector<std::string> ours;
+   for (const auto& line : lines)
+   {
+      if (line.rfind("Alpha", 0) == 0 || line.rfind("Beta", 0) == 0 ||
+          line.rfind("Gamma", 0) == 0)
+      {
+         ours.push_back(line);
+      }
+   }
+
+   ASSERT_EQ(ours.size(), 3u);
+   EXPECT_EQ(ours[0], "Gamma failed");            // notice first
+   EXPECT_EQ(ours[1], "Alpha: 1.5 MB of 2.0 MB"); // longest running
+   EXPECT_EQ(ours[2], "Beta: 0.0 MB");
+
+   statusManager->ReportComplete("status-manager-test-list-a");
+   statusManager->ReportComplete("status-manager-test-list-b");
+   statusManager->ReportComplete("status-manager-test-list-c");
 }
 
 } // namespace manager

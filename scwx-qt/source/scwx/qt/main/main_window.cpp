@@ -38,6 +38,7 @@
 #include <scwx/qt/ui/about_dialog.hpp>
 #include <scwx/qt/ui/alert_dock_widget.hpp>
 #include <scwx/qt/ui/animation_dock_widget.hpp>
+#include <scwx/qt/ui/clickable_label.hpp>
 #include <scwx/qt/ui/collapsible_group.hpp>
 #include <scwx/qt/ui/export_settings_dialog.hpp>
 #include <scwx/qt/ui/flow_layout.hpp>
@@ -46,6 +47,7 @@
 #include <scwx/qt/ui/imgui_debug_dialog.hpp>
 #include <scwx/qt/ui/layer_dialog.hpp>
 #include <scwx/qt/ui/map_annotation_dock_widget.hpp>
+#include <scwx/qt/ui/pending_status_dialog.hpp>
 #include <scwx/qt/ui/level2_products_widget.hpp>
 #include <scwx/qt/ui/level2_settings_widget.hpp>
 #include <scwx/qt/ui/level3_products_widget.hpp>
@@ -364,6 +366,12 @@ public:
    bool updatingRadarOpacityControls_ {false};
 
    QLabel* coordinateLabel_ {nullptr};
+
+   // Background download activity on the left of the status bar: the one line
+   // StatusManager::CurrentStatusText() gives, and a click on it opens the list
+   // of everything pending.
+   ui::ClickableLabel*      statusLabel_ {nullptr};
+   ui::PendingStatusDialog* pendingStatusDialog_ {nullptr};
    QLabel* timeLabel_ {nullptr};
 
    ui::AlertDockWidget*                  alertDockWidget_ {};
@@ -689,26 +697,36 @@ MainWindow::MainWindow(QWidget* parent) :
    statusBarLayout->addWidget(p->timeLabel_, 0, 1);
    ui->statusbar->addPermanentWidget(statusBarWidget);
 
-   // Background fetch/decode activity shows in the status bar's own
-   // *non-permanent* message area, on the left -- exactly what
-   // QStatusBar::showMessage()/clearMessage() are for, and (confirmed)
-   // nothing else in this app was already using them, unlike the
-   // permanent widgets on the right (coordinate/time) which are a live
-   // readout, not a transient "something is happening" signal.
+   // Background fetch/decode activity shows on the left of the status bar, as a
+   // line of its own that can be clicked to see everything pending -- the line
+   // itself only names the longest-running item and a count of the rest.
+   p->statusLabel_ = new ui::ClickableLabel(this);
+   p->statusLabel_->setVisible(false);
+   p->statusLabel_->setToolTip(tr("Click to show everything pending"));
+   ui->statusbar->addWidget(p->statusLabel_, 1);
+
+   connect(p->statusLabel_,
+           &ui::ClickableLabel::Clicked,
+           this,
+           [this]()
+           {
+              if (p->pendingStatusDialog_ == nullptr)
+              {
+                 p->pendingStatusDialog_ = new ui::PendingStatusDialog(this);
+              }
+              p->pendingStatusDialog_->show();
+              p->pendingStatusDialog_->raise();
+              p->pendingStatusDialog_->activateWindow();
+           });
+
    connect(p->statusManager_.get(),
            &manager::StatusManager::StatusChanged,
            this,
            [this]()
            {
               const std::string text = p->statusManager_->CurrentStatusText();
-              if (text.empty())
-              {
-                 ui->statusbar->clearMessage();
-              }
-              else
-              {
-                 ui->statusbar->showMessage(QString::fromStdString(text));
-              }
+              p->statusLabel_->setText(QString::fromStdString(text));
+              p->statusLabel_->setVisible(!text.empty());
            });
 
    // ImGui Debug Dialog

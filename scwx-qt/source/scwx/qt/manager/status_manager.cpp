@@ -4,6 +4,7 @@
 #include <chrono>
 #include <map>
 #include <mutex>
+#include <vector>
 
 #include <fmt/format.h>
 
@@ -51,10 +52,14 @@ struct ProgressEntry
    // kMessageLifetime_, and not counted as activity.
    bool isMessage {false};
 
-   // Monotonic sequence number -- which entry is "most recent" for
-   // CurrentStatusText()'s own single-line display, since std::map's own
-   // key order (by id) has nothing to do with recency.
+   // Monotonic sequence numbers (std::map's own key order, by id, says nothing
+   // about either): when this entry was last reported, and when it first
+   // appeared. A download keeps reporting many times a second, so which entry
+   // CurrentStatusText() shows must not follow `sequence` -- two concurrent
+   // downloads would take turns being the most recent, and the status bar
+   // would flip between them on every chunk.
    std::uint64_t sequence {};
+   std::uint64_t startSequence {};
 
    std::chrono::steady_clock::time_point lastUpdate {};
 };
@@ -76,6 +81,32 @@ void PruneStaleEntries(std::map<std::string, ProgressEntry>& entries)
          ++it;
       }
    }
+}
+
+// Notices ahead of downloads, newest notice first; downloads longest-running
+// first.
+bool DisplaysBefore(const ProgressEntry& a, const ProgressEntry& b)
+{
+   if (a.isMessage != b.isMessage)
+   {
+      return a.isMessage;
+   }
+   return a.isMessage ? a.sequence > b.sequence :
+                        a.startSequence < b.startSequence;
+}
+
+std::string FormatEntry(const ProgressEntry& entry)
+{
+   std::string text = entry.description;
+   if (!entry.isMessage)
+   {
+      text += ": " + FormatBytes(entry.bytesReceived);
+      if (entry.totalBytes > 0)
+      {
+         text += " of " + FormatBytes(entry.totalBytes);
+      }
+   }
+   return text;
 }
 
 } // namespace
@@ -134,13 +165,18 @@ void StatusManager::ReportProgress(const std::string& id,
 {
    {
       std::lock_guard lock(p->mutex_);
-      auto&           entry = p->entries_[id];
-      entry.description     = description;
-      entry.bytesReceived   = bytesReceived;
-      entry.totalBytes      = totalBytes;
-      entry.isMessage       = false;
-      entry.sequence        = p->nextSequence_++;
-      entry.lastUpdate      = std::chrono::steady_clock::now();
+      const auto [it, isNew] = p->entries_.try_emplace(id);
+      auto& entry            = it->second;
+      if (isNew || entry.isMessage)
+      {
+         entry.startSequence = p->nextSequence_++;
+      }
+      entry.description   = description;
+      entry.bytesReceived = bytesReceived;
+      entry.totalBytes    = totalBytes;
+      entry.isMessage     = false;
+      entry.sequence      = p->nextSequence_++;
+      entry.lastUpdate    = std::chrono::steady_clock::now();
 
       // Opportunistic, not on a timer -- keeps the map bounded over a
       // long session without needing a dedicated cleanup thread/timer;
@@ -163,6 +199,7 @@ void StatusManager::ReportMessage(const std::string& id,
       entry.totalBytes       = -1;
       entry.isMessage        = true;
       entry.sequence         = p->nextSequence_++;
+      entry.startSequence    = entry.sequence;
       entry.lastUpdate       = std::chrono::steady_clock::now();
 
       PruneStaleEntries(p->entries_);
@@ -189,24 +226,20 @@ std::string StatusManager::CurrentStatusText() const
       return {};
    }
 
-   const ProgressEntry* mostRecent = nullptr;
+   // A notice (something went wrong) is shown ahead of any download, newest
+   // first. Otherwise the download that has been running longest: it stays on
+   // screen until it finishes, then the next takes over, rather than the line
+   // changing on every progress report of whichever download spoke last.
+   const ProgressEntry* first = nullptr;
    for (const auto& [id, entry] : p->entries_)
    {
-      if (mostRecent == nullptr || entry.sequence > mostRecent->sequence)
+      if (first == nullptr || DisplaysBefore(entry, *first))
       {
-         mostRecent = &entry;
+         first = &entry;
       }
    }
 
-   std::string text = mostRecent->description;
-   if (!mostRecent->isMessage)
-   {
-      text += ": " + FormatBytes(mostRecent->bytesReceived);
-   }
-   if (!mostRecent->isMessage && mostRecent->totalBytes > 0)
-   {
-      text += " of " + FormatBytes(mostRecent->totalBytes);
-   }
+   std::string text = FormatEntry(*first);
 
    if (p->entries_.size() > 1)
    {
@@ -214,6 +247,30 @@ std::string StatusManager::CurrentStatusText() const
    }
 
    return text;
+}
+
+std::vector<std::string> StatusManager::PendingLines() const
+{
+   std::lock_guard lock(p->mutex_);
+   PruneStaleEntries(p->entries_);
+
+   std::vector<const ProgressEntry*> sorted;
+   for (const auto& [id, entry] : p->entries_)
+   {
+      sorted.push_back(&entry);
+   }
+   std::sort(sorted.begin(),
+             sorted.end(),
+             [](const ProgressEntry* a, const ProgressEntry* b)
+             { return DisplaysBefore(*a, *b); });
+
+   std::vector<std::string> lines;
+   lines.reserve(sorted.size());
+   for (const ProgressEntry* entry : sorted)
+   {
+      lines.push_back(FormatEntry(*entry));
+   }
+   return lines;
 }
 
 bool StatusManager::IsBusy() const

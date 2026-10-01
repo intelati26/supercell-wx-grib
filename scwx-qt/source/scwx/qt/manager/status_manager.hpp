@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <QObject>
 
@@ -63,11 +64,18 @@ public:
 
    // The single line the status bar should currently show, or an empty
    // string when nothing is in progress. When more than one id is
-   // active, shows the most recently *updated* one plus a "(+N more)"
-   // suffix -- a simple "what's the freshest thing happening" readout,
-   // not an attempt at a multi-line console.
+   // active, shows the one that has been running longest (a notice from
+   // ReportMessage() ahead of any download) plus a "(+N more)" suffix -- not
+   // the most recently updated one, which with concurrent downloads would
+   // change on every progress report. See PendingLines() for the full list.
    [[nodiscard]] std::string CurrentStatusText() const;
-   [[nodiscard]] bool        IsBusy() const;
+
+   // Every entry as its own line, in the order CurrentStatusText() would show
+   // them (notices first, then downloads longest-running first) -- what the
+   // status bar's "show all pending" list displays. Empty when nothing is
+   // pending.
+   [[nodiscard]] std::vector<std::string> PendingLines() const;
+   [[nodiscard]] bool                     IsBusy() const;
 
 signals:
    // Emitted whenever CurrentStatusText()/IsBusy() may have changed --
