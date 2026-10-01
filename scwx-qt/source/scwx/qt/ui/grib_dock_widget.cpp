@@ -6,6 +6,7 @@
 #include <scwx/qt/map/grib_frame_info.hpp>
 #include <scwx/qt/map/visible_grib_layers.hpp>
 #include <scwx/qt/ui/checkable_combo_box.hpp>
+#include <scwx/qt/ui/rrfs_hours.hpp>
 #include <scwx/qt/ui/widgets/focused_spin_box.hpp>
 #include <scwx/provider/nbm_data_provider.hpp>
 #include <scwx/provider/rrfs_data_provider.hpp>
@@ -77,6 +78,10 @@ QString JoinLines(const std::vector<std::string>& lines, std::size_t limit = 12)
 // FetchArchiveFrameForProduct already has for any other out-of-range time.
 constexpr int kRrfsCycleHistoryHours_ = 24;
 
+// Most cycles offered once S3 has been listed (today's and yesterday's, newest
+// first).
+constexpr int kRrfsCycleListMax_ = 48;
+
 // One forecast-hour step per tick -- a full 84-step loop (a 6-hourly
 // cycle's own max) takes ~42s at this pace, fast enough to actually watch
 // evolve without being so fast the frame-by-frame detail blurs together.
@@ -87,20 +92,20 @@ constexpr int kRrfsAnimationIntervalMs_ = 500;
 // one, and the only way to turn hodographs on -- see HodographSelection.
 const std::string kHodographProduct_ = "Gridded Hodograph";
 
-// Rough size of one RRFS hour's prslev object (see GribManager's
-// PrefetchRrfsForecastHourRange doc) -- only used to tell the user what a
-// pick list is about to cost, not for any accounting.
-constexpr int kRrfsApproxHourMegabytes_ = 320;
+// Rough size of one RRFS field of one forecast hour as downloaded (a product's
+// own messages, not the ~350MB object: see grib_field_selectors) -- only used
+// to tell the user what a pick list is about to cost, not for any accounting.
+constexpr int kRrfsApproxProductHourMegabytes_ = 2;
 
 // Hour buttons per grid row: 8 fits the dock width (a full 84h cycle is 11
 // rows).
 constexpr int kRrfsHourButtonColumns_ = 8;
 
-// Where the RRFS Play loop ends until the user picks otherwise -- every
-// forecast hour is its own ~320MB download, so looping (and prefetching,
-// see GribManager::PrefetchRrfsForecastHourRange()) a 6-hourly cycle's full
-// 84 hours costs ~27GB; 18h is ~6GB, and is already the whole range of
-// every non-6-hourly cycle.
+// Where the RRFS Play loop ends until the user picks otherwise -- 18 hours is
+// the whole range of every non-6-hourly cycle and a useful, quick-to-watch
+// window of a 6-hourly one. (Each hour of each checked product is a download of
+// a megabyte or a few -- see grib_field_selectors -- so the length of the loop
+// costs little; the full 84 hours of a long run is a choice, not a hazard.)
 constexpr int kDefaultRrfsLoopEndHour_ = 18;
 
 // Same reasoning as kRrfsCycleHistoryHours_ -- NBM also cycles hourly.
@@ -208,18 +213,18 @@ struct CategorySection
 // cycle changed) to the RRFS loop-range spinboxes and GribManager. The
 // spinboxes' own valueChanged handlers are blocked throughout, so they
 // only ever see real user edits (see loopEndUserSet).
-void RerangeRrfsLoop(CategorySection& section, int maxHour)
+void RerangeRrfsLoop(CategorySection& section, int minHour, int maxHour)
 {
    {
       const QSignalBlocker blockStart(section.loopStartSpinBox);
       const QSignalBlocker blockEnd(section.loopEndSpinBox);
 
-      section.loopStartSpinBox->setRange(0, maxHour);
-      section.loopEndSpinBox->setRange(0, maxHour);
+      section.loopStartSpinBox->setRange(minHour, maxHour);
+      section.loopEndSpinBox->setRange(minHour, maxHour);
       if (!section.loopEndUserSet)
       {
          section.loopEndSpinBox->setValue(
-            std::min(maxHour, kDefaultRrfsLoopEndHour_));
+            std::clamp(kDefaultRrfsLoopEndHour_, minHour, maxHour));
       }
 
       // Re-apply the start <= end cross-clamp setRange() just widened.
@@ -247,6 +252,19 @@ public:
    [[nodiscard]] std::vector<int> PlaybackHours(CategorySection& section);
    void                           RebuildHourButtons(CategorySection& section);
    void                           RefreshHourButtons(CategorySection& section);
+
+   // The first and last forecast hour the RRFS picker covers: the hours really
+   // published for this cycle once S3 has been listed (an hourly cycle starts
+   // at F001; a cycle still running has not reached its nominal horizon), the
+   // cycle's nominal horizon until then.
+   [[nodiscard]] std::pair<int, int> HourRange(CategorySection& section);
+
+   // Re-ranges the slider, loop range and hour buttons to HourRange()
+   void ApplyRrfsRange(CategorySection& section);
+
+   // Rebuilds the cycle list from the cycles that exist, and labels "Latest"
+   // with the cycle it resolves to
+   void RefreshRrfsCycleCombo(CategorySection& section);
 
    // Idx sections (NBM, custom models): the "Latest"-plus-recent-cycles picker
    // filled from the manager, which knows which cycles the model really runs.
@@ -408,7 +426,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
             "command-line tools."));
       groupLayout->addWidget(section.exportLoopButton);
 
-      RerangeRrfsLoop(section, initialMaxHour);
+      RerangeRrfsLoop(section, 0, initialMaxHour);
 
       section.animationTimer = new QTimer(self_);
       section.animationTimer->setInterval(kRrfsAnimationIntervalMs_);
@@ -491,10 +509,7 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
               // whenever the cycle changes.
               if (category == map::GribCategory::Rrfs)
               {
-                 const int maxHour = stored.gribManager->MaxRrfsForecastHour();
-                 stored.hourSlider->setRange(0, maxHour);
-                 RerangeRrfsLoop(stored, maxHour);
-                 RebuildHourButtons(stored);
+                 ApplyRrfsRange(stored);
               }
               else if (IsIdxSection(category))
               {
@@ -600,17 +615,26 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
                   hodographManager->SetCycle(cycleTime);
                }
             }
-            stored.hourSlider->setRange(
-               0, stored.gribManager->MaxRrfsForecastHour());
-
-            // Same reasoning as hourSlider's own re-range above -- a
-            // shrunk max (e.g. a 3-hourly cycle capping at F018) clamps
-            // both spinboxes' current values automatically via Qt's own
-            // setRange(); GribManager needs telling explicitly, since it
-            // doesn't watch these spinboxes itself.
-            RerangeRrfsLoop(stored, stored.gribManager->MaxRrfsForecastHour());
-            RebuildHourButtons(stored);
+            // A shrunk range (e.g. a cycle capping at F018, or an hourly
+            // one starting at F001) clamps the slider's and spinboxes' current
+            // values automatically via Qt's own setRange(); GribManager needs
+            // telling explicitly about the loop range, since it doesn't watch
+            // those spinboxes itself. (S3 has not been listed for this cycle
+            // yet, so this is its nominal horizon until
+            // RrfsAvailabilityChanged.)
+            ApplyRrfsRange(stored);
          });
+
+      // What is published changed (S3 was listed): the hour picker, cycle list
+      // and what "Latest" means follow.
+      connect(stored.gribManager.get(),
+              &manager::GribManager::RrfsAvailabilityChanged,
+              self_,
+              [this, &stored]()
+              {
+                 ApplyRrfsRange(stored);
+                 RefreshRrfsCycleCombo(stored);
+              });
 
       connect(stored.hourSlider,
               &QSlider::valueChanged,
@@ -1034,12 +1058,20 @@ std::set<int>& GribDockWidget::Impl::Picks(CategorySection& section)
 
 std::vector<int> GribDockWidget::Impl::PlaybackHours(CategorySection& section)
 {
-   const int        maxHour = section.gribManager->MaxRrfsForecastHour();
+   const int  maxHour   = HourRange(section).second;
+   const auto published = section.gribManager->PublishedRrfsForecastHours();
+   // Only hours that exist can be shown: an unpublished one would just leave
+   // the previous hour on screen
+   const auto usable = [&](int hour)
+   {
+      return hour <= maxHour && rrfs_hours::Available(published, hour);
+   };
+
    std::vector<int> hours;
 
    for (const int hour : Picks(section))
    {
-      if (hour <= maxHour)
+      if (usable(hour))
       {
          hours.push_back(hour);
       }
@@ -1051,16 +1083,111 @@ std::vector<int> GribDockWidget::Impl::PlaybackHours(CategorySection& section)
            hour <= section.loopEndSpinBox->value();
            ++hour)
       {
-         hours.push_back(hour);
+         if (usable(hour))
+         {
+            hours.push_back(hour);
+         }
       }
    }
 
    return hours;
 }
 
+std::pair<int, int> GribDockWidget::Impl::HourRange(CategorySection& section)
+{
+   const auto range =
+      rrfs_hours::Covered(section.gribManager->PublishedRrfsForecastHours(),
+                          section.gribManager->MaxRrfsForecastHour());
+   return {range.first, range.last};
+}
+
+void GribDockWidget::Impl::ApplyRrfsRange(CategorySection& section)
+{
+   const auto [minHour, maxHour] = HourRange(section);
+
+   // setRange() clamps the current value into the new range, announcing the
+   // change if it had to -- which is what moves an F000 selection to F001 on an
+   // hourly cycle
+   section.hourSlider->setRange(minHour, maxHour);
+   RerangeRrfsLoop(section, minHour, maxHour);
+   RebuildHourButtons(section);
+}
+
+void GribDockWidget::Impl::RefreshRrfsCycleCombo(CategorySection& section)
+{
+   using namespace std::chrono;
+
+   auto* combo = section.cycleComboBox;
+
+   const auto label = [](system_clock::time_point cycle)
+   {
+      return QString::fromStdString(fmt::format(
+         "{:%Y-%m-%d %H}z ({}h)",
+         fmt::gmtime(cycle),
+         provider::RrfsDataProvider::MaxForecastHourForCycle(cycle)));
+   };
+
+   const QSignalBlocker blocker(combo);
+
+   const bool     latest   = section.gribManager->IsUsingLatestRrfsCycle();
+   const QVariant selected = combo->currentData();
+
+   // Cycles that exist, newest first, up to a few days back; before S3 has been
+   // listed, the hourly cycles of the past day by the clock
+   auto cycles = section.gribManager->PublishedRrfsCycles();
+   if (cycles.empty())
+   {
+      const auto now = floor<hours>(system_clock::now());
+      for (int i = 0; i < kRrfsCycleHistoryHours_; ++i)
+      {
+         cycles.push_back(now - hours {i});
+      }
+   }
+   if (cycles.size() > static_cast<std::size_t>(kRrfsCycleListMax_))
+   {
+      cycles.resize(kRrfsCycleListMax_);
+   }
+
+   QString latestText = tr("Latest");
+   if (latest)
+   {
+      const auto resolved = section.gribManager->CurrentRrfsCycle();
+      if (resolved != system_clock::time_point {})
+      {
+         latestText += tr(" (%1)").arg(QString::fromStdString(
+            fmt::format("{:%H}z", fmt::gmtime(resolved))));
+      }
+   }
+
+   combo->clear();
+   combo->addItem(latestText, QVariant());
+
+   const auto addCycle = [&](system_clock::time_point cycle)
+   {
+      combo->addItem(
+         label(cycle),
+         QVariant::fromValue<qint64>(cycle.time_since_epoch().count()));
+   };
+   for (const auto cycle : cycles)
+   {
+      addCycle(cycle);
+   }
+
+   // The explicitly selected cycle stays selectable even if it is older than
+   // the list reaches
+   if (!latest && selected.isValid() && combo->findData(selected) < 0)
+   {
+      combo->addItem(label(system_clock::time_point {
+                        system_clock::duration {selected.value<qint64>()}}),
+                     selected);
+   }
+
+   combo->setCurrentIndex(latest ? 0 : std::max(0, combo->findData(selected)));
+}
+
 void GribDockWidget::Impl::RebuildHourButtons(CategorySection& section)
 {
-   const int hourCount = section.gribManager->MaxRrfsForecastHour() + 1;
+   const int hourCount = HourRange(section).second + 1;
 
    if (static_cast<int>(section.hourButtons.size()) != hourCount)
    {
@@ -1115,6 +1242,7 @@ void GribDockWidget::Impl::RefreshHourButtons(CategorySection& section)
    const std::set<int>& picks  = Picks(section);
    const std::set<int>  cached = section.gribManager->CachedRrfsForecastHours();
    const int            current = section.hourSlider->value();
+   const auto published = section.gribManager->PublishedRrfsForecastHours();
 
    // Three independent cues so any combination stays readable:
    // downloaded = filled, picked = accent border, viewing = bold text.
@@ -1134,6 +1262,13 @@ void GribDockWidget::Impl::RefreshHourButtons(CategorySection& section)
       style += isViewing ? QStringLiteral("font-weight: bold; ") : QString();
       style += QStringLiteral("}");
       section.hourButtons[hour]->setStyleSheet(style);
+
+      // An hour that is not on S3 -- F000 of an hourly cycle, or one the
+      // running forecast has not reached -- cannot be shown, picked or played
+      const bool available = rrfs_hours::Available(published, h);
+      section.hourButtons[hour]->setEnabled(available);
+      section.hourButtons[hour]->setToolTip(
+         available ? QString {} : tr("Not published for this cycle (yet)"));
    }
 
    int toDownload = 0;
@@ -1158,7 +1293,9 @@ void GribDockWidget::Impl::RefreshHourButtons(CategorySection& section)
          tr("%1 picked, %2 to download (~%3 MB)")
             .arg(picks.size())
             .arg(toDownload)
-            .arg(toDownload * kRrfsApproxHourMegabytes_));
+            .arg(toDownload * kRrfsApproxProductHourMegabytes_ *
+                 static_cast<int>(std::max<std::size_t>(
+                    1, section.gribManager->ActiveProductIndices().size()))));
    }
    section.clearPicksButton->setEnabled(!picks.empty());
 }

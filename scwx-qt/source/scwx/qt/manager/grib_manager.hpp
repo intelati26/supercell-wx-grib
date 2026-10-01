@@ -260,6 +260,32 @@ public:
    // hour buttons' downloaded/not-downloaded look. Filesystem probes only.
    [[nodiscard]] std::set<int> CachedRrfsForecastHours() const;
 
+   // Rrfs-only: what is really published on S3, as opposed to what a cycle's
+   // nominal horizon says. RRFS writes a cycle's hours as the forecast runs
+   // (the 00z run is still at F035 of 84 hours after its nominal time), an
+   // hourly cycle has no F000 and no pressure-level file, and the newest cycle
+   // is not one a clock-based guess reliably lands on -- so the hour picker,
+   // the cycle list and what "Latest" means all come from listing the bucket
+   // (provider::RrfsDataProvider::RefreshAvailability()).
+   //
+   // RefreshRrfsAvailability() lists on a background thread (at most every half
+   // minute unless `force`) and, if anything changed, moves to a published hour
+   // when the selected one is not, re-fetches (so "Latest" follows a newer
+   // cycle) and emits RrfsAvailabilityChanged(). Called when a product is
+   // checked, when the cycle changes, and on each poll.
+   void RefreshRrfsAvailability(bool force = false);
+
+   // The forecast hours of the current cycle that exist for the current product
+   // (for SHIP, in both of its files), or std::nullopt before the first listing
+   // or with no product active.
+   [[nodiscard]] std::optional<std::set<int>>
+   PublishedRrfsForecastHours() const;
+
+   // Cycles that have files for the current product, newest first (empty before
+   // the first listing).
+   [[nodiscard]] std::vector<std::chrono::system_clock::time_point>
+   PublishedRrfsCycles() const;
+
    // Nbm-only cycle/forecast-hour selection -- same shape and reasoning as
    // the Rrfs block above (a second, orthogonal axis from the main
    // timeline, applied to every active provider, fetched immediately
@@ -326,6 +352,11 @@ signals:
    // buttons flip to their downloaded look.
    void RrfsCacheChanged();
 
+   // The listing behind PublishedRrfsForecastHours()/PublishedRrfsCycles() (or
+   // what "Latest" resolves to) changed -- the hour picker and cycle list
+   // should be rebuilt. Emitted on the GUI thread.
+   void RrfsAvailabilityChanged();
+
    // Emitted on the calling (GUI) thread whenever SetProductActive()
    // actually changes which products are active -- which changes what
    // GribProductLayer draws without any new frame arriving (a product was
@@ -335,6 +366,7 @@ signals:
 
 private:
    void Poll();
+   void HandleRrfsAvailability();
    void HandleLiveStateUpdated(bool isLive);
    void
    HandleSelectedTimeUpdated(std::chrono::system_clock::time_point dateTime);

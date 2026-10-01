@@ -3,7 +3,9 @@
 #include <scwx/provider/aws_nexrad_data_provider.hpp>
 
 #include <optional>
+#include <set>
 #include <string>
+#include <vector>
 
 namespace scwx::provider
 {
@@ -149,6 +151,58 @@ public:
    // SetCycle()/SetForecastHour() are.
    void                         SetFileFamily(RrfsFileFamily family);
    [[nodiscard]] RrfsFileFamily FileFamily() const;
+
+   // ---- What is actually published ----------------------------------------
+   //
+   // RRFS publishes a cycle's hours as the forecast runs, and a cycle only
+   // appears once it starts: neither is knowable from the clock. The 00z run is
+   // still being written (F000-F035 of 84) for hours after its nominal time, an
+   // hourly cycle has no F000 and no pressure-level file at all, and the newest
+   // cycle may not be the one a lag guess lands on. So the provider lists S3 --
+   // the cycle "directories" of today and yesterday, and the published hours of
+   // the newest cycles and of the selected cycle -- and keeps the answer where
+   // every RrfsDataProvider of the process shares it (one listing serves every
+   // product).
+   //
+   // Lists S3 now (a few requests) unless it did so within the last half minute
+   // and `force` is false; blocking, so call it from a background thread.
+   // Returns whether anything it knows changed. Afterwards CurrentCycle() in
+   // "latest" mode is the newest cycle that really has this provider's file
+   // family, not a lag-adjusted guess.
+   bool RefreshAvailability(bool force = false);
+
+   // Forecast hours of `cycle`'s `family` files that are published and usable
+   // (a grib2 object whose .idx is there too, in the filename variant
+   // BuildKey() uses for that cycle), or std::nullopt if that cycle has never
+   // been listed. Empty means listed, nothing published.
+   [[nodiscard]] std::optional<std::set<int>>
+   PublishedHours(std::chrono::system_clock::time_point cycle,
+                  RrfsFileFamily                        family) const;
+
+   // The cycles a picker can offer for `family`, newest first: every cycle up
+   // to the newest one that has files of it (the one "latest" resolves to) --
+   // empty before the first listing. Pressure-level files exist only for the
+   // 3-hourly cycles, so only those are listed for that family.
+   [[nodiscard]] std::vector<std::chrono::system_clock::time_point>
+   PublishedCycles(RrfsFileFamily family) const;
+
+   // The parts of the above that need no network, for testing: the usable hours
+   // in a listing of `cycle`'s keys for `family` (a grib2 key counts only with
+   // its ".idx" listed beside it, and only in the filename variant -- plain or
+   // ".subh." -- BuildKey() would use), and the cycle hours present among
+   // listed "rrfs.<day>/<HH>/" directories of `day` ("YYYYMMDD").
+   [[nodiscard]] static std::set<int>
+   ParsePublishedHours(const std::vector<std::string>&       keys,
+                       std::chrono::system_clock::time_point cycle,
+                       RrfsFileFamily                        family);
+   [[nodiscard]] static std::set<int>
+   ParseCycleHours(const std::vector<std::string>& directories,
+                   const std::string&              day);
+
+   // Forgets everything RefreshAvailability() learned (it is shared by every
+   // provider in the process), so a test that listed S3 does not change what
+   // "latest" means for the tests after it.
+   static void ResetAvailabilityForTesting();
 
    [[nodiscard]] std::chrono::system_clock::time_point
    GetTimePointByKey(const std::string& key) const override;

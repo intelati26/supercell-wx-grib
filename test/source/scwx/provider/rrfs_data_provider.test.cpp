@@ -1,6 +1,11 @@
 #include <scwx/provider/rrfs_data_provider.hpp>
+#include <algorithm>
 #include <chrono>
 #include <format>
+#include <functional>
+#include <set>
+#include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -313,6 +318,153 @@ TEST(RrfsDataProvider, LoadObjectByKeyNotApplicable)
    auto file = provider.LoadObjectByKey("anything");
 
    EXPECT_EQ(file, nullptr);
+}
+
+// Key names as they really appear in noaa-rrfs-ops-pds (captured
+// 2026-09-30/10-01 by listing the prefix of each cycle): a 3-hourly cycle
+// publishes the plain 2dfld files and ".subh." ones side by side.
+TEST(RrfsDataProvider, PublishedHoursOfA3HourlyCycleAreThePlainFilesWithIdx)
+{
+   using namespace std::chrono;
+   using sys_days = time_point<system_clock, days>;
+
+   const auto cycle = sys_days {2026y / September / 30d} + hours {18};
+
+   const std::vector<std::string> keys {
+      "rrfs.20260930/18/rrfs.t18z.2dfld.3km.f000.conus.grib2",
+      "rrfs.20260930/18/rrfs.t18z.2dfld.3km.f000.conus.grib2.idx",
+      "rrfs.20260930/18/rrfs.t18z.2dfld.3km.f001.conus.grib2",
+      "rrfs.20260930/18/rrfs.t18z.2dfld.3km.f001.conus.grib2.idx",
+      "rrfs.20260930/18/rrfs.t18z.2dfld.3km.f002.conus.grib2",
+      "rrfs.20260930/18/rrfs.t18z.2dfld.3km.f002.conus.grib2.idx",
+      // the same cycle's sub-hourly files are not what its hour picker steps
+      "rrfs.20260930/18/rrfs.t18z.2dfld.3km.subh.f000.conus.grib2",
+      "rrfs.20260930/18/rrfs.t18z.2dfld.3km.subh.f000.conus.grib2.idx",
+      "rrfs.20260930/18/rrfs.t18z.2dfld.3km.subh.f009.conus.grib2",
+      "rrfs.20260930/18/rrfs.t18z.2dfld.3km.subh.f009.conus.grib2.idx",
+      // another family's file in the same listing
+      "rrfs.20260930/18/rrfs.t18z.prslev.3km.f007.conus.grib2",
+      "rrfs.20260930/18/rrfs.t18z.prslev.3km.f007.conus.grib2.idx"};
+
+   EXPECT_EQ(RrfsDataProvider::ParsePublishedHours(
+                keys, cycle, RrfsFileFamily::TwoDField),
+             (std::set<int> {0, 1, 2}));
+   EXPECT_EQ(RrfsDataProvider::ParsePublishedHours(
+                keys, cycle, RrfsFileFamily::PressureLevel),
+             (std::set<int> {7}));
+}
+
+// An hourly cycle has only the ".subh." files, and they start at F001
+TEST(RrfsDataProvider, PublishedHoursOfAnHourlyCycleAreTheSubhFiles)
+{
+   using namespace std::chrono;
+   using sys_days = time_point<system_clock, days>;
+
+   const auto cycle = sys_days {2026y / September / 30d} + hours {23};
+
+   std::vector<std::string> keys;
+   for (int hour = 1; hour <= 18; ++hour)
+   {
+      const auto key = std::format(
+         "rrfs.20260930/23/rrfs.t23z.2dfld.3km.subh.f{:03d}.conus.grib2", hour);
+      keys.push_back(key);
+      keys.push_back(key + ".idx");
+   }
+
+   const auto published = RrfsDataProvider::ParsePublishedHours(
+      keys, cycle, RrfsFileFamily::TwoDField);
+   EXPECT_EQ(published.size(), 18u);
+   EXPECT_EQ(*published.begin(), 1); // no F000
+   EXPECT_EQ(*published.rbegin(), 18);
+
+   // ...and no pressure-level file at all
+   EXPECT_TRUE(RrfsDataProvider::ParsePublishedHours(
+                  keys, cycle, RrfsFileFamily::PressureLevel)
+                  .empty());
+}
+
+// The grib2 object can be there before its .idx: the app reads through the idx,
+// so that hour is not usable yet
+TEST(RrfsDataProvider, AnHourWithoutItsIdxIsNotPublishedYet)
+{
+   using namespace std::chrono;
+   using sys_days = time_point<system_clock, days>;
+
+   const auto cycle = sys_days {2026y / October / 1d} + hours {0};
+
+   const std::vector<std::string> keys {
+      "rrfs.20261001/00/rrfs.t00z.2dfld.3km.f035.conus.grib2",
+      "rrfs.20261001/00/rrfs.t00z.2dfld.3km.f035.conus.grib2.idx",
+      "rrfs.20261001/00/rrfs.t00z.2dfld.3km.f036.conus.grib2"};
+
+   EXPECT_EQ(RrfsDataProvider::ParsePublishedHours(
+                keys, cycle, RrfsFileFamily::TwoDField),
+             (std::set<int> {35}));
+}
+
+TEST(RrfsDataProvider, ParseCycleHoursReadsTheDirectoriesOfOneDay)
+{
+   const std::vector<std::string> directories {"rrfs.20261001/00/",
+                                               "rrfs.20261001/01/",
+                                               "rrfs.20261001/02/",
+                                               "rrfs.20260930/23/",
+                                               "rrfs.20261001/index.html"};
+
+   EXPECT_EQ(RrfsDataProvider::ParseCycleHours(directories, "20261001"),
+             (std::set<int> {0, 1, 2}));
+   EXPECT_EQ(RrfsDataProvider::ParseCycleHours(directories, "20260930"),
+             (std::set<int> {23}));
+   EXPECT_TRUE(RrfsDataProvider::ParseCycleHours({}, "20261001").empty());
+}
+
+// Real S3 access. "Latest" must be a cycle that really has files -- not a lag
+// guess that can land on a cycle still being written (or one hourly cycles are
+// newer than) -- and the hours it reports must be ones that really exist.
+TEST(RrfsDataProvider, RefreshAvailabilityFindsTheNewestPublishedCycle)
+{
+   RrfsDataProvider::ResetAvailabilityForTesting();
+
+   RrfsDataProvider provider;
+   EXPECT_FALSE(
+      provider.PublishedHours(RecentFixedCycle(), RrfsFileFamily::TwoDField)
+         .has_value());
+
+   ASSERT_TRUE(provider.RefreshAvailability(true));
+
+   const auto cycles = provider.PublishedCycles(RrfsFileFamily::TwoDField);
+   ASSERT_FALSE(cycles.empty());
+   EXPECT_TRUE(std::is_sorted(cycles.begin(), cycles.end(), std::greater<> {}));
+
+   // Latest mode now resolves to the newest of them, and not to the future
+   EXPECT_TRUE(provider.IsUsingLatestCycle());
+   EXPECT_EQ(provider.CurrentCycle(), cycles.front());
+   EXPECT_LE(provider.CurrentCycle(), std::chrono::system_clock::now());
+
+   // Its hours are real: contiguous from F000 (3-hourly) or F001 (hourly) up to
+   // what has been published, never beyond the cycle's own horizon
+   const auto hoursPublished = provider.PublishedHours(
+      provider.CurrentCycle(), RrfsFileFamily::TwoDField);
+   ASSERT_TRUE(hoursPublished.has_value());
+   ASSERT_FALSE(hoursPublished->empty());
+   EXPECT_LE(
+      *hoursPublished->rbegin(),
+      RrfsDataProvider::MaxForecastHourForCycle(provider.CurrentCycle()));
+   EXPECT_GE(*hoursPublished->begin(),
+             RrfsDataProvider::UsesSubhVariant(provider.CurrentCycle()) ? 1 :
+                                                                          0);
+
+   // A repeat inside the half-minute window does not list again
+   EXPECT_FALSE(provider.RefreshAvailability());
+
+   // The pressure-level files exist only for the 3-hourly cycles, so its latest
+   // is never an hourly one
+   const auto prslev = provider.PublishedCycles(RrfsFileFamily::PressureLevel);
+   if (!prslev.empty())
+   {
+      EXPECT_FALSE(RrfsDataProvider::UsesSubhVariant(prslev.front()));
+   }
+
+   RrfsDataProvider::ResetAvailabilityForTesting();
 }
 
 } // namespace provider

@@ -471,6 +471,57 @@ std::optional<std::string> AwsNexradDataProvider::DownloadGribMessageByIndex(
       bucketName, key, range, outputPath, progressCallback);
 }
 
+std::optional<std::vector<std::string>>
+AwsNexradDataProvider::ListKeysByPrefix(const std::string& bucketName,
+                                        const std::string& prefix,
+                                        bool               directoriesOnly)
+{
+   Aws::S3::Model::ListObjectsV2Request request;
+   request.SetBucket(bucketName);
+   request.SetPrefix(prefix);
+   if (directoriesOnly)
+   {
+      request.SetDelimiter("/");
+   }
+
+   std::vector<std::string> found;
+
+   for (;;)
+   {
+      auto outcome = p->client_->ListObjectsV2(request);
+      if (!outcome.IsSuccess())
+      {
+         logger_->warn(
+            "Could not list {}: {}", prefix, outcome.GetError().GetMessage());
+         return std::nullopt;
+      }
+
+      const auto& result = outcome.GetResult();
+      if (directoriesOnly)
+      {
+         for (const auto& common : result.GetCommonPrefixes())
+         {
+            found.push_back(common.GetPrefix());
+         }
+      }
+      else
+      {
+         for (const auto& object : result.GetContents())
+         {
+            found.push_back(object.GetKey());
+         }
+      }
+
+      if (!result.GetIsTruncated())
+      {
+         break;
+      }
+      request.SetContinuationToken(result.GetNextContinuationToken());
+   }
+
+   return found;
+}
+
 std::optional<std::string>
 AwsNexradDataProvider::IndexText(const std::string& bucketName,
                                  const std::string& key)

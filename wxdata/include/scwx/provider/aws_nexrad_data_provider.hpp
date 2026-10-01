@@ -162,6 +162,14 @@ protected:
       const std::string&                                outputPath,
       const DownloadProgressCallback& progressCallback = nullptr);
 
+   // The object keys under `prefix`, or -- with `directoriesOnly` -- the
+   // "directories" (key prefixes up to the next "/") directly under it, all
+   // pages of the listing. std::nullopt if the listing fails.
+   std::optional<std::vector<std::string>>
+   ListKeysByPrefix(const std::string& bucketName,
+                    const std::string& prefix,
+                    bool               directoriesOnly = false);
+
    virtual std::string
    GetPrefix(std::chrono::system_clock::time_point date) = 0;
 

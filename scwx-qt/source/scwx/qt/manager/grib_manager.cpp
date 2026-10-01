@@ -18,6 +18,7 @@
 #include <scwx/util/time.hpp>
 
 #include <algorithm>
+#include <iterator>
 #include <chrono>
 #include <deque>
 #include <atomic>
@@ -2049,6 +2050,7 @@ void GribManager::SetProductActive(const std::string& displayName, bool active)
             // SetRrfsCycle()'s own doc in grib_manager.hpp for why these
             // are independent axes.
             FetchRrfsSelection();
+            RefreshRrfsAvailability();
          }
          else if (IsIdxCategory(p->category_))
          {
@@ -2154,6 +2156,7 @@ void GribManager::SetRrfsCycle(std::chrono::system_clock::time_point cycleTime)
    }
 
    FetchRrfsSelection();
+   RefreshRrfsAvailability(true);
 }
 
 void GribManager::UseLatestRrfsCycle()
@@ -2173,6 +2176,7 @@ void GribManager::UseLatestRrfsCycle()
    }
 
    FetchRrfsSelection();
+   RefreshRrfsAvailability(true);
 }
 
 bool GribManager::IsUsingLatestRrfsCycle() const
@@ -2307,6 +2311,10 @@ void GribManager::PrefetchRrfsForecastHours(const std::set<int>& hours)
    // download cache are skipped. SHIP is skipped: its two inputs go through
    // its own dispatch (see FetchShipSelection()).
    int queued = 0;
+
+   // Hours not on S3 (yet) would only fail; skip them when that is known
+   const auto published = PublishedRrfsForecastHours();
+
    for (const std::size_t index : p->activeProducts_)
    {
       const ProductConfig& product = Products(p->category_)[index];
@@ -2318,7 +2326,8 @@ void GribManager::PrefetchRrfsForecastHours(const std::set<int>& hours)
       const auto productProvider = p->providers_.at(index);
       for (const int hour : hours)
       {
-         if (hour < 0 || hour > maxHour)
+         if (hour < 0 || hour > maxHour ||
+             (published.has_value() && !published->contains(hour)))
          {
             continue;
          }
@@ -2373,8 +2382,132 @@ std::set<int> GribManager::CachedRrfsForecastHours() const
    return cached;
 }
 
+void GribManager::RefreshRrfsAvailability(bool force)
+{
+   if (p->category_ != map::GribCategory::Rrfs)
+   {
+      return;
+   }
+
+   const auto index = CurrentProductIndex();
+   if (!index)
+   {
+      return; // nothing active: nothing to size a picker for
+   }
+
+   // Copied: it is listed from a pool thread, and the product may be unchecked
+   // meanwhile.
+   const std::shared_ptr<provider::AwsNexradDataProvider> provider =
+      p->providers_.at(*index);
+
+   boost::asio::post(p->lookupPool_,
+                     [this, provider, force]()
+                     {
+                        const bool changed =
+                           ProviderAs<provider::RrfsDataProvider>(*provider)
+                              .RefreshAvailability(force);
+
+                        if (changed || force)
+                        {
+                           QMetaObject::invokeMethod(
+                              this,
+                              [this]() { HandleRrfsAvailability(); },
+                              Qt::QueuedConnection);
+                        }
+                     });
+}
+
+void GribManager::HandleRrfsAvailability()
+{
+   // The hour selected may not exist (an hourly cycle has no F000; the cycle
+   // may not have reached it yet): move to the nearest one that does, which
+   // also fetches it. Otherwise "Latest" may now mean a newer cycle, so fetch
+   // what is selected -- already showing it is recognised and costs nothing.
+   const auto published = PublishedRrfsForecastHours();
+   if (published.has_value() && !published->empty() &&
+       !published->contains(p->rrfsForecastHour_))
+   {
+      const auto next = published->lower_bound(p->rrfsForecastHour_);
+      SetRrfsForecastHour(next != published->end() ? *next :
+                                                     *published->rbegin());
+   }
+   else
+   {
+      FetchRrfsSelection();
+   }
+
+   Q_EMIT RrfsAvailabilityChanged();
+}
+
+std::optional<std::set<int>> GribManager::PublishedRrfsForecastHours() const
+{
+   const auto index = CurrentProductIndex();
+   if (p->category_ != map::GribCategory::Rrfs || !index)
+   {
+      return std::nullopt;
+   }
+
+   const auto& provider =
+      ProviderAs<provider::RrfsDataProvider>(*p->providers_.at(*index));
+   const ProductConfig& product = Products(p->category_)[*index];
+   const auto           cycle   = provider.CurrentCycle();
+
+   auto hours = provider.PublishedHours(cycle, product.rrfsFileFamily);
+   if (!hours.has_value())
+   {
+      return std::nullopt;
+   }
+
+   if (product.derivedIndex == "ship")
+   {
+      // SHIP reads both of RRFS's files: an hour needs both
+      const auto pressure = provider.PublishedHours(
+         cycle, provider::RrfsFileFamily::PressureLevel);
+      if (!pressure.has_value())
+      {
+         return std::nullopt;
+      }
+
+      std::set<int> both;
+      std::set_intersection(hours->begin(),
+                            hours->end(),
+                            pressure->begin(),
+                            pressure->end(),
+                            std::inserter(both, both.begin()));
+      return both;
+   }
+
+   return hours;
+}
+
+std::vector<std::chrono::system_clock::time_point>
+GribManager::PublishedRrfsCycles() const
+{
+   const auto index = CurrentProductIndex();
+   if (p->category_ != map::GribCategory::Rrfs || !index)
+   {
+      return {};
+   }
+
+   const auto& provider =
+      ProviderAs<provider::RrfsDataProvider>(*p->providers_.at(*index));
+   const ProductConfig& product = Products(p->category_)[*index];
+
+   return provider.PublishedCycles(product.derivedIndex == "ship" ?
+                                      provider::RrfsFileFamily::PressureLevel :
+                                      product.rrfsFileFamily);
+}
+
 void GribManager::Poll()
 {
+   // RRFS only: keep the picker's idea of what is published current -- listed
+   // every poll (the provider rate-limits itself), whether or not the main
+   // timeline is live
+   if (p->category_ == map::GribCategory::Rrfs)
+   {
+      RefreshRrfsAvailability();
+   }
+
    // Only the live path polls for "whatever's newest" -- once the user
    // scrubs into archive mode, HandleSelectedTimeUpdated() drives fetches
    // instead, and there's nothing meaningful for a "latest" poll to do.

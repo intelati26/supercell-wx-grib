@@ -3,6 +3,10 @@
 #include <scwx/util/time.hpp>
 
 #include <algorithm>
+#include <functional>
+#include <iterator>
+#include <map>
+#include <mutex>
 #include <regex>
 
 #include <fmt/chrono.h>
@@ -22,6 +26,43 @@ static const auto        logger_    = scwx::util::Logger::Create(logPrefix_);
 // provider gets from GribManager means a wrong guess just costs one
 // empty poll, not a hard failure.
 static constexpr std::chrono::hours kAvailabilityLag_ {2};
+
+namespace
+{
+
+// How long a listing is reused before RefreshAvailability() lists again.
+constexpr std::chrono::seconds kAvailabilityTtl_ {30};
+
+// How many of the newest cycles are searched for the latest one with files.
+// Hourly cycles carry no pressure-level file, so the newest cycle with one can
+// be a few back; this is generous, and stops early.
+constexpr std::size_t kMaxCyclesSearched_ = 8;
+
+using TimePoint = std::chrono::system_clock::time_point;
+
+// What every RrfsDataProvider on one bucket has learned from S3.
+struct Availability
+{
+   std::set<TimePoint>                                           cycles;
+   std::map<std::pair<TimePoint, RrfsFileFamily>, std::set<int>> hours;
+   std::map<RrfsFileFamily, TimePoint>                           latest;
+   std::chrono::steady_clock::time_point                         refreshed {};
+   bool                                                          known {false};
+
+   bool SameFindings(const Availability& other) const
+   {
+      return cycles == other.cycles && hours == other.hours &&
+             latest == other.latest;
+   }
+};
+
+std::mutex                          gAvailabilityMutex;
+std::map<std::string, Availability> gAvailability;
+
+const char* FamilyName(RrfsFileFamily family)
+{ return family == RrfsFileFamily::PressureLevel ? "prslev" : "2dfld"; }
+
+} // namespace
 
 class RrfsDataProvider::Impl
 {
@@ -98,8 +139,24 @@ std::chrono::system_clock::time_point RrfsDataProvider::CurrentCycle() const
       return p->cycleOverride_;
    }
 
-   // Same lag-adjusted "latest complete 3-hourly cycle" guess GetPrefix()
-   // always used before SetCycle() existed -- see class comment.
+   // The newest cycle S3 really has files of this family for, once
+   // RefreshAvailability() has listed it ...
+   {
+      std::lock_guard lock(gAvailabilityMutex);
+      const auto      state = gAvailability.find(p->bucketName_);
+      if (state != gAvailability.end())
+      {
+         const auto latest = state->second.latest.find(p->fileFamily_);
+         if (latest != state->second.latest.end())
+         {
+            return latest->second;
+         }
+      }
+   }
+
+   // ... until then (or if the listing found nothing), the lag-adjusted "latest
+   // complete 3-hourly cycle" guess GetPrefix() always used before
+   // SetCycle() existed -- see class comment.
    const auto targetTime = util::time::now() - kAvailabilityLag_;
    const auto targetDay  = floor<days>(targetTime);
    const auto rawHour    = duration_cast<hours>(targetTime - targetDay).count();
@@ -119,6 +176,268 @@ void RrfsDataProvider::SetFileFamily(RrfsFileFamily family)
 
 RrfsFileFamily RrfsDataProvider::FileFamily() const
 { return p->fileFamily_; }
+
+std::set<int> RrfsDataProvider::ParsePublishedHours(
+   const std::vector<std::string>&       keys,
+   std::chrono::system_clock::time_point cycle,
+   RrfsFileFamily                        family)
+{
+   using namespace std::chrono;
+
+   // The variant BuildKey() names for this cycle: plain, or ".subh." for the
+   // 2dfld of a non-3-hourly cycle. (A 3-hourly cycle publishes both side by
+   // side; only the plain files are the hours its picker steps through.)
+   const bool subh =
+      family == RrfsFileFamily::TwoDField && UsesSubhVariant(cycle);
+
+   static const std::regex kKeyRegex {
+      R"(rrfs\.\d{8}/\d{2}/rrfs\.t\d{2}z\.(2dfld|prslev)\.3km\.(subh\.)?f(\d{3})\.conus\.grib2(\.idx)?$)"};
+
+   std::set<int> grib;
+   std::set<int> idx;
+
+   for (const auto& key : keys)
+   {
+      std::smatch match;
+      if (!std::regex_search(key, match, kKeyRegex) ||
+          match[1].str() != FamilyName(family) || match[2].matched != subh)
+      {
+         continue;
+      }
+
+      (match[4].matched ? idx : grib).insert(std::stoi(match[3].str()));
+   }
+
+   // Usable means the .idx is there too: the app reads only the messages it
+   // needs through it, and the idx can lag the file.
+   std::set<int> usable;
+   std::set_intersection(grib.begin(),
+                         grib.end(),
+                         idx.begin(),
+                         idx.end(),
+                         std::inserter(usable, usable.begin()));
+   return usable;
+}
+
+std::set<int>
+RrfsDataProvider::ParseCycleHours(const std::vector<std::string>& directories,
+                                  const std::string&              day)
+{
+   const std::regex pattern {"^rrfs\\." + day + R"(/(\d{2})/$)"};
+
+   std::set<int> hours;
+   for (const auto& directory : directories)
+   {
+      std::smatch match;
+      if (std::regex_match(directory, match, pattern))
+      {
+         hours.insert(std::stoi(match[1].str()));
+      }
+   }
+   return hours;
+}
+
+void RrfsDataProvider::ResetAvailabilityForTesting()
+{
+   std::lock_guard lock(gAvailabilityMutex);
+   gAvailability.clear();
+}
+
+bool RrfsDataProvider::RefreshAvailability(bool force)
+{
+   using namespace std::chrono;
+
+   {
+      std::lock_guard lock(gAvailabilityMutex);
+      const auto      state = gAvailability.find(p->bucketName_);
+      if (!force && state != gAvailability.end() && state->second.known &&
+          steady_clock::now() - state->second.refreshed < kAvailabilityTtl_)
+      {
+         return false;
+      }
+   }
+
+   // Cycles that exist, newest first (today's and yesterday's directories)
+   const auto now   = util::time::now();
+   const auto today = floor<days>(now);
+
+   std::vector<TimePoint> candidates;
+   bool                   listedAny = false;
+   for (const auto& day : {today, today - days {1}})
+   {
+      const std::string dayString = fmt::format("{:%Y%m%d}", day);
+      const auto        directories =
+         ListKeysByPrefix(p->bucketName_, "rrfs." + dayString + "/", true);
+      if (!directories.has_value())
+      {
+         continue;
+      }
+      listedAny = true;
+
+      const auto cycleHours = ParseCycleHours(*directories, dayString);
+      for (auto it = cycleHours.rbegin(); it != cycleHours.rend(); ++it)
+      {
+         const TimePoint cycle = day + std::chrono::hours {*it};
+         if (cycle <= now)
+         {
+            candidates.push_back(cycle);
+         }
+      }
+   }
+
+   if (!listedAny)
+   {
+      return false; // keep what was known; try again at the next poll
+   }
+
+   // Not a copy of the shared state: only what this listing found, merged in
+   // below
+   Availability found;
+   found.cycles.insert(candidates.begin(), candidates.end());
+
+   const auto listHours = [&](TimePoint cycle, RrfsFileFamily family)
+   {
+      const auto cycleDay  = floor<days>(cycle);
+      const auto cycleHour = duration_cast<hours>(cycle - cycleDay).count();
+      const auto keys      = ListKeysByPrefix(
+         p->bucketName_,
+         fmt::format("rrfs.{:%Y%m%d}/{:02d}/rrfs.t{:02d}z.{}.3km.",
+                     cycleDay,
+                     cycleHour,
+                     cycleHour,
+                     FamilyName(family)));
+      if (!keys.has_value())
+      {
+         return false;
+      }
+      found.hours[{cycle, family}] = ParsePublishedHours(*keys, cycle, family);
+      return true;
+   };
+
+   // The selected cycle always, so its hour picker is right whatever it is ...
+   if (!p->useLatestCycle_)
+   {
+      listHours(p->cycleOverride_, RrfsFileFamily::TwoDField);
+      listHours(p->cycleOverride_, RrfsFileFamily::PressureLevel);
+   }
+
+   // ... and the newest cycles until each family has its latest
+   std::size_t searched = 0;
+   for (const TimePoint cycle : candidates)
+   {
+      if (searched++ == kMaxCyclesSearched_ ||
+          (found.latest.count(RrfsFileFamily::TwoDField) != 0 &&
+           found.latest.count(RrfsFileFamily::PressureLevel) != 0))
+      {
+         break;
+      }
+
+      for (const auto family :
+           {RrfsFileFamily::TwoDField, RrfsFileFamily::PressureLevel})
+      {
+         if (found.latest.count(family) != 0)
+         {
+            continue;
+         }
+
+         if (found.hours.count({cycle, family}) == 0 &&
+             !listHours(cycle, family))
+         {
+            continue;
+         }
+         if (!found.hours[{cycle, family}].empty())
+         {
+            found.latest[family] = cycle;
+         }
+      }
+   }
+
+   std::lock_guard lock(gAvailabilityMutex);
+   Availability&   state = gAvailability[p->bucketName_];
+
+   Availability merged = state;
+   merged.cycles       = found.cycles;
+   merged.latest       = found.latest;
+   for (const auto& [key, listed] : found.hours)
+   {
+      merged.hours[key] = listed;
+   }
+   merged.refreshed = steady_clock::now();
+   merged.known     = true;
+
+   const bool changed = !state.known || !merged.SameFindings(state);
+   state              = std::move(merged);
+
+   if (changed)
+   {
+      logger_->debug(
+         "RRFS availability: latest 2dfld {}, latest prslev {}",
+         state.latest.count(RrfsFileFamily::TwoDField) != 0 ?
+            fmt::format("{:%Y-%m-%d %Hz}",
+                        state.latest.at(RrfsFileFamily::TwoDField)) :
+            "none",
+         state.latest.count(RrfsFileFamily::PressureLevel) != 0 ?
+            fmt::format("{:%Y-%m-%d %Hz}",
+                        state.latest.at(RrfsFileFamily::PressureLevel)) :
+            "none");
+   }
+
+   return changed;
+}
+
+std::optional<std::set<int>>
+RrfsDataProvider::PublishedHours(std::chrono::system_clock::time_point cycle,
+                                 RrfsFileFamily family) const
+{
+   std::lock_guard lock(gAvailabilityMutex);
+
+   const auto state = gAvailability.find(p->bucketName_);
+   if (state == gAvailability.end())
+   {
+      return std::nullopt;
+   }
+
+   const auto hours = state->second.hours.find({cycle, family});
+   if (hours == state->second.hours.end())
+   {
+      return std::nullopt;
+   }
+   return hours->second;
+}
+
+std::vector<std::chrono::system_clock::time_point>
+RrfsDataProvider::PublishedCycles(RrfsFileFamily family) const
+{
+   std::lock_guard lock(gAvailabilityMutex);
+
+   std::vector<TimePoint> cycles;
+
+   const auto state = gAvailability.find(p->bucketName_);
+   if (state == gAvailability.end())
+   {
+      return cycles;
+   }
+
+   // Every cycle up to the newest one that has files of this family. A newer
+   // cycle may already have a directory but nothing in it yet; and pressure-
+   // level files exist only for the 3-hourly cycles.
+   const auto latest = state->second.latest.find(family);
+   if (latest == state->second.latest.end())
+   {
+      return cycles;
+   }
+
+   for (const TimePoint cycle : state->second.cycles)
+   {
+      if (cycle <= latest->second &&
+          (family == RrfsFileFamily::TwoDField || !UsesSubhVariant(cycle)))
+      {
+         cycles.push_back(cycle);
+      }
+   }
+   std::sort(cycles.begin(), cycles.end(), std::greater<> {});
+   return cycles;
+}
 
 std::string
 RrfsDataProvider::GetPrefix(std::chrono::system_clock::time_point date)

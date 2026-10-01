@@ -358,6 +358,7 @@ set(HDR_UI source/scwx/qt/ui/about_dialog.hpp
            source/scwx/qt/ui/flow_layout.hpp
            source/scwx/qt/ui/grib_dock_widget.hpp
            source/scwx/qt/ui/pending_status_dialog.hpp
+           source/scwx/qt/ui/rrfs_hours.hpp
            source/scwx/qt/ui/gps_info_dialog.hpp
            source/scwx/qt/ui/hotkey_edit.hpp
            source/scwx/qt/ui/imgui_debug_dialog.hpp
