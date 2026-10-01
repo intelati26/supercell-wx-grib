@@ -259,7 +259,8 @@ TEST_F(GribDockWidgetTest, ImportingAModelUpdatesAnOpenDockWithoutARestart)
    MaybeSnapshot(dock, "dock-after-import");
 }
 
-TEST_F(GribDockWidgetTest, OnlyRrfsOffersALoopExportAndEveryoneCanExportAnImage)
+TEST_F(GribDockWidgetTest,
+       OnlyRrfsNbmAndCustomModelsOfferALoopExportAndEveryoneCanExportAnImage)
 {
    GribDockWidget dock;
    dock.resize(420, 1500);
@@ -285,7 +286,8 @@ TEST_F(GribDockWidgetTest, OnlyRrfsOffersALoopExportAndEveryoneCanExportAnImage)
       ASSERT_NE(group, nullptr) << title;
       EXPECT_NE(buttonNamed(group, "Export image..."), nullptr) << title;
       EXPECT_EQ(buttonNamed(group, loopText) != nullptr,
-                std::string(title) == "RRFS")
+                std::string(title) == "RRFS" || std::string(title) == "NBM" ||
+                   std::string(title) == "Custom Models")
          << title;
    }
 
@@ -293,6 +295,56 @@ TEST_F(GribDockWidgetTest, OnlyRrfsOffersALoopExportAndEveryoneCanExportAnImage)
    // slider reads as 0, and moving it is a harmless no-op.
    dock.SetForecastHour(map::GribCategory::Mrms, 5);
    EXPECT_EQ(dock.ForecastHour(map::GribCategory::Mrms), 0);
+}
+
+// Each upper-air level is one pick that switches its height contours and wind
+// speed together; only 500 mb also keeps its two products pickable singly.
+TEST_F(GribDockWidgetTest, UpperAirLevelsAreCombinedHeightAndWindPicks)
+{
+   GribDockWidget dock;
+   dock.resize(420, 1500);
+
+   auto* rrfs = FindGroup(dock, "RRFS");
+   ASSERT_NE(rrfs, nullptr);
+   auto* products = rrfs->findChild<CheckableComboBox*>();
+   ASSERT_NE(products, nullptr);
+   auto* itemModel = qobject_cast<QStandardItemModel*>(products->model());
+   ASSERT_NE(itemModel, nullptr);
+
+   std::set<QString> items;
+   for (int row = 0; row < itemModel->rowCount(); ++row)
+   {
+      items.insert(itemModel->item(row)->text());
+   }
+
+   for (const char* level : {"1000", "850", "700", "500", "300", "250"})
+   {
+      EXPECT_TRUE(items.contains(QString("%1mb Height + Wind").arg(level)))
+         << level;
+   }
+   EXPECT_TRUE(items.contains("500mb Height"));
+   EXPECT_TRUE(items.contains("500mb Wind Speed"));
+   EXPECT_FALSE(items.contains("300mb Height"));
+   EXPECT_FALSE(items.contains("300mb Wind Speed"));
+
+   // Ticking the pick activates both of its products, unticking releases them
+   const auto gribManager =
+      manager::GribManager::Instance(map::GribCategory::Rrfs);
+   const auto active = [&gribManager](const std::string& name)
+   {
+      const auto names = gribManager->ActiveProductNames();
+      return std::find(names.begin(), names.end(), name) != names.end();
+   };
+
+   products->SetChecked("300mb Height + Wind", true);
+   products->CheckedItemsChanged();
+   EXPECT_TRUE(active("300mb Height"));
+   EXPECT_TRUE(active("300mb Wind Speed"));
+
+   products->SetChecked("300mb Height + Wind", false);
+   products->CheckedItemsChanged();
+   EXPECT_FALSE(active("300mb Height"));
+   EXPECT_FALSE(active("300mb Wind Speed"));
 }
 
 // The gridded hodograph is a product in the RRFS list and nowhere else: picking
