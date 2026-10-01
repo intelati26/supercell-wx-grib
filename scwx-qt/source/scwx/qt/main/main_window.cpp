@@ -3538,15 +3538,8 @@ QImage MainWindowImpl::CaptureGribImage()
 
    // A legend for every GRIB product visible in this pane, not just the
    // section whose button was pressed: the picture shows them all.
-   std::vector<qt::util::grib_legend::Source> sources;
-   for (const auto& visible : activeMap_->VisibleGribLayers())
-   {
-      sources.push_back({manager::GribManager::Instance(visible.category),
-                         visible.category,
-                         map::GribCategoryDisplayName(visible.category),
-                         visible.opacity});
-   }
-   qt::util::grib_legend::DrawLegends(image, sources);
+   qt::util::grib_legend::DrawVisibleLegends(image,
+                                             activeMap_->VisibleGribLayers());
 
    return image;
 }

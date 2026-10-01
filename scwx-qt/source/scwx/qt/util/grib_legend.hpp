@@ -2,6 +2,7 @@
 
 #include <scwx/qt/manager/grib_manager.hpp>
 #include <scwx/qt/map/grib_frame_info.hpp>
+#include <scwx/qt/map/visible_grib_layers.hpp>
 
 #include <memory>
 #include <optional>
@@ -52,5 +53,12 @@ LayoutPanels(QSize imageSize, std::size_t panelCount);
 // Products with no decoded frame yet (colorScale == 0) are skipped; a no-op if
 // none has one.
 void DrawLegends(QImage& image, const std::vector<Source>& sources);
+
+// DrawLegends() for the GRIB layers visible in one map pane (see
+// map::VisibleGribLayers(), top layer first) -- what every export of a map
+// picture does: the picture shows those layers, so its legend lists them.
+// Nothing is drawn when none is visible.
+void DrawVisibleLegends(QImage&                                   image,
+                        const std::vector<map::VisibleGribLayer>& visible);
 
 } // namespace scwx::qt::util::grib_legend

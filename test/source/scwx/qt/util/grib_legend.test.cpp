@@ -62,4 +62,17 @@ TEST(GribLegendTest, NoSourcesLeavesTheImageAlone)
    EXPECT_EQ(image, before);
 }
 
+// Every export of a map picture draws the legends of the layers visible in it;
+// with none visible (a radar-only map) the picture is exactly what the map drew
+TEST(GribLegendTest, NoVisibleGribLayersLeavesTheImageAlone)
+{
+   QImage image(400, 300, QImage::Format_ARGB32);
+   image.fill(Qt::green);
+   const QImage before = image.copy();
+
+   DrawVisibleLegends(image, {});
+
+   EXPECT_EQ(image, before);
+}
+
 } // namespace scwx::qt::util::grib_legend

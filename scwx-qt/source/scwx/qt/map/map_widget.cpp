@@ -31,6 +31,7 @@
 #include <scwx/qt/types/unit_types.hpp>
 #include <scwx/qt/ui/edit_marker_dialog.hpp>
 #include <scwx/qt/util/file.hpp>
+#include <scwx/qt/util/grib_legend.hpp>
 #include <scwx/qt/util/image_export.hpp>
 #include <scwx/qt/util/maplibre.hpp>
 #include <scwx/qt/util/tooltip.hpp>
@@ -3259,8 +3260,10 @@ std::vector<VisibleGribLayer> MapWidget::VisibleGribLayers() const
 
 void MapWidgetImpl::ScreenCaptureCopy()
 {
-   const QImage image     = widget_->grabFramebuffer();
-   QClipboard*  clipboard = QGuiApplication::clipboard();
+   QImage image = widget_->grabFramebuffer();
+   util::grib_legend::DrawVisibleLegends(image, widget_->VisibleGribLayers());
+
+   QClipboard* clipboard = QGuiApplication::clipboard();
    clipboard->setImage(image);
 
    logger_->info("Map captured to clipboard");
@@ -3268,7 +3271,9 @@ void MapWidgetImpl::ScreenCaptureCopy()
 
 void MapWidgetImpl::ScreenCaptureSaveImage()
 {
-   const QImage image     = widget_->grabFramebuffer();
+   QImage image = widget_->grabFramebuffer();
+   util::grib_legend::DrawVisibleLegends(image, widget_->VisibleGribLayers());
+
    const QSize  size      = widget_->size();
    const double latitude  = map_->latitude();
    const double longitude = map_->longitude();

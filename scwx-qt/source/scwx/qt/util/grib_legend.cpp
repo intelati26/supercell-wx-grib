@@ -263,4 +263,21 @@ void DrawLegends(QImage& image, const std::vector<Source>& sources)
    }
 }
 
+void DrawVisibleLegends(QImage&                                   image,
+                        const std::vector<map::VisibleGribLayer>& visible)
+{
+   std::vector<Source> sources;
+   sources.reserve(visible.size());
+
+   for (const auto& layer : visible)
+   {
+      sources.push_back({manager::GribManager::Instance(layer.category),
+                         layer.category,
+                         map::GribCategoryDisplayName(layer.category),
+                         layer.opacity});
+   }
+
+   DrawLegends(image, sources);
+}
+
 } // namespace scwx::qt::util::grib_legend
