@@ -914,6 +914,43 @@ static const std::vector<ProductConfig> kRrfsProducts_ {
     PhysicalQuantity::SpeedMetersPerSecond, "m/s", 0.0f, "wind500", "", -1,
     -1, -1, -1, provider::RrfsFileFamily::PressureLevel},
 
+   // The same height-contour + wind-speed pair at the other standard
+   // mandatory levels (the dock's "NNNmb Height + Wind" picks tick both).
+   // Contour interval is the usual synoptic one for the level (30 m low,
+   // 120 m near the jet); colorOffset/colorScale of a contour product are
+   // vestigial (see 500mb Height) and the wind scale covers typical jet
+   // speeds with headroom (not measured per level).
+   {"1000mb Height", "", "gh", 0.0f, 1500.0f, -999.0f,
+    PhysicalQuantity::None, "m", 30.0f, "", "isobaricInhPa", 1000, 1000, -1, -1,
+    provider::RrfsFileFamily::PressureLevel},
+   {"1000mb Wind Speed", "", "", 0.0f, 40.0f, -999.0f,
+    PhysicalQuantity::SpeedMetersPerSecond, "m/s", 0.0f, "wind1000", "", -1,
+    -1, -1, -1, provider::RrfsFileFamily::PressureLevel},
+   {"850mb Height", "", "gh", 0.0f, 1500.0f, -999.0f,
+    PhysicalQuantity::None, "m", 30.0f, "", "isobaricInhPa", 850, 850, -1, -1,
+    provider::RrfsFileFamily::PressureLevel},
+   {"850mb Wind Speed", "", "", 0.0f, 50.0f, -999.0f,
+    PhysicalQuantity::SpeedMetersPerSecond, "m/s", 0.0f, "wind850", "", -1,
+    -1, -1, -1, provider::RrfsFileFamily::PressureLevel},
+   {"700mb Height", "", "gh", 0.0f, 1500.0f, -999.0f,
+    PhysicalQuantity::None, "m", 30.0f, "", "isobaricInhPa", 700, 700, -1, -1,
+    provider::RrfsFileFamily::PressureLevel},
+   {"700mb Wind Speed", "", "", 0.0f, 60.0f, -999.0f,
+    PhysicalQuantity::SpeedMetersPerSecond, "m/s", 0.0f, "wind700", "", -1,
+    -1, -1, -1, provider::RrfsFileFamily::PressureLevel},
+   {"300mb Height", "", "gh", 0.0f, 1500.0f, -999.0f,
+    PhysicalQuantity::None, "m", 120.0f, "", "isobaricInhPa", 300, 300, -1, -1,
+    provider::RrfsFileFamily::PressureLevel},
+   {"300mb Wind Speed", "", "", 0.0f, 90.0f, -999.0f,
+    PhysicalQuantity::SpeedMetersPerSecond, "m/s", 0.0f, "wind300", "", -1,
+    -1, -1, -1, provider::RrfsFileFamily::PressureLevel},
+   {"250mb Height", "", "gh", 0.0f, 1500.0f, -999.0f,
+    PhysicalQuantity::None, "m", 120.0f, "", "isobaricInhPa", 250, 250, -1, -1,
+    provider::RrfsFileFamily::PressureLevel},
+   {"250mb Wind Speed", "", "", 0.0f, 100.0f, -999.0f,
+    PhysicalQuantity::SpeedMetersPerSecond, "m/s", 0.0f, "wind250", "", -1,
+    -1, -1, -1, provider::RrfsFileFamily::PressureLevel},
+
    // Significant Hail Parameter (SHIP), SPC mesoanalysis form -- the one
    // product that needed prslev to exist at all (T500/T700, see
    // decode_grib.cpp's ComputeShip for the full formula/field-selection

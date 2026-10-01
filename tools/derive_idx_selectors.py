@@ -50,6 +50,16 @@ DERIVED_INPUTS = {
     "wind10": {"2dfld": [("10u", "", -1, -1), ("10v", "", -1, -1)]},
     "wind500": {"prslev": [
         ("u", "isobaricInhPa", 500, 500), ("v", "isobaricInhPa", 500, 500)]},
+    "wind1000": {"prslev": [
+        ("u", "isobaricInhPa", 1000, 1000), ("v", "isobaricInhPa", 1000, 1000)]},
+    "wind850": {"prslev": [
+        ("u", "isobaricInhPa", 850, 850), ("v", "isobaricInhPa", 850, 850)]},
+    "wind700": {"prslev": [
+        ("u", "isobaricInhPa", 700, 700), ("v", "isobaricInhPa", 700, 700)]},
+    "wind300": {"prslev": [
+        ("u", "isobaricInhPa", 300, 300), ("v", "isobaricInhPa", 300, 300)]},
+    "wind250": {"prslev": [
+        ("u", "isobaricInhPa", 250, 250), ("v", "isobaricInhPa", 250, 250)]},
 }
 
 

@@ -92,6 +92,39 @@ constexpr int kRrfsAnimationIntervalMs_ = 500;
 // one, and the only way to turn hodographs on -- see HodographSelection.
 const std::string kHodographProduct_ = "Gridded Hodograph";
 
+// Upper-air picks that tick a level's height contours and wind-speed fill
+// together: not products of their own, just two GribManager products
+// switched as one (see the CheckedItemsChanged handler). The 500 mb pair also
+// stays pickable singly, the other levels are only offered combined.
+struct HeightWindPick
+{
+   std::string name;
+   std::string height;
+   std::string wind;
+   bool        alsoSingly;
+};
+
+const std::vector<HeightWindPick> kHeightWindPicks_ {
+   {"1000mb Height + Wind", "1000mb Height", "1000mb Wind Speed", false},
+   {"850mb Height + Wind", "850mb Height", "850mb Wind Speed", false},
+   {"700mb Height + Wind", "700mb Height", "700mb Wind Speed", false},
+   {"500mb Height + Wind", "500mb Height", "500mb Wind Speed", true},
+   {"300mb Height + Wind", "300mb Height", "300mb Wind Speed", false},
+   {"250mb Height + Wind", "250mb Height", "250mb Wind Speed", false}};
+
+// Whether `product` is offered in the list on its own (a product that only
+// exists as half of a combined pick is not).
+bool OfferedSingly(const std::string& product)
+{
+   return std::none_of(kHeightWindPicks_.begin(),
+                       kHeightWindPicks_.end(),
+                       [&product](const HeightWindPick& pick)
+                       {
+                          return !pick.alsoSingly && (pick.height == product ||
+                                                      pick.wind == product);
+                       });
+}
+
 // Rough size of one RRFS field of one forecast hour as downloaded (a product's
 // own messages, not the ~350MB object: see grib_field_selectors) -- only used
 // to tell the user what a pick list is about to cost, not for any accounting.
@@ -358,6 +391,13 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
    std::vector<std::string> productNames = section.gribManager->ProductNames();
    if (category == map::GribCategory::Rrfs)
    {
+      std::erase_if(productNames,
+                    [](const std::string& name)
+                    { return !OfferedSingly(name); });
+      for (const auto& pick : kHeightWindPicks_)
+      {
+         productNames.push_back(pick.name);
+      }
       productNames.push_back(kHodographProduct_);
    }
    section.comboBox->SetItems(productNames);
@@ -536,8 +576,18 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
            {
               for (const auto& name : stored.gribManager->ProductNames())
               {
-                 stored.gribManager->SetProductActive(
-                    name, stored.comboBox->IsChecked(name));
+                 bool wanted = stored.comboBox->IsChecked(name);
+                 if (category == map::GribCategory::Rrfs)
+                 {
+                    // Also wanted when a combined pick that includes it is
+                    for (const auto& pick : kHeightWindPicks_)
+                    {
+                       wanted = wanted ||
+                                (stored.comboBox->IsChecked(pick.name) &&
+                                 (name == pick.height || name == pick.wind));
+                    }
+                 }
+                 stored.gribManager->SetProductActive(name, wanted);
               }
 
               if (category == map::GribCategory::Rrfs)

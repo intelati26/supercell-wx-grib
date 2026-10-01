@@ -756,6 +756,21 @@ ShipResult ComputeShip(FILE* f2dfld, FILE* fPrslev, long ni, long nj)
    return result;
 }
 
+// "wind<hPa>" -- wind speed at one isobaric level (wind500, wind300, ...) --
+// returns the level, or 0 when `name` is not of that form.
+long IsobaricWindLevel(const std::string& name)
+{
+   static constexpr long kLevels[] = {1000, 850, 700, 500, 300, 250};
+   for (const long level : kLevels)
+   {
+      if (name == "wind" + std::to_string(level))
+      {
+         return level;
+      }
+   }
+   return 0;
+}
+
 // Shared by "shear6" and "wind10" below -- both are just
 // sqrt(u^2 + v^2) of a wind-component pair, differing only in which two
 // messages they read. Missing propagates the same pointwise way
@@ -835,7 +850,7 @@ int RunDerived(int argc, char** argv)
    const char* outputPath = argv[twoInputs ? 5 : 4];
 
    if (name != "stp" && name != "shear6" && name != "wind10" &&
-       name != "wind500" && name != "ship")
+       IsobaricWindLevel(name) == 0 && name != "ship")
    {
       std::cerr << "Unknown derived index: " << name << "\n";
       return 1;
@@ -901,7 +916,7 @@ int RunDerived(int argc, char** argv)
          firstTopLevel    = -1;
          firstBottomLevel = -1;
       }
-      else if (name == "wind500")
+      else if (const long windLevel = IsobaricWindLevel(name); windLevel != 0)
       {
          // prslev, not 2dfld -- eccodes' own shortName for isobaric u/v
          // is just "u"/"v" (confirmed live via grib_ls against a real
@@ -912,8 +927,8 @@ int RunDerived(int argc, char** argv)
          // typeOfLevel/topLevel/bottomLevel filter needs no extension.
          firstShortName   = "u";
          firstTypeOfLevel = "isobaricInhPa";
-         firstTopLevel    = 500;
-         firstBottomLevel = 500;
+         firstTopLevel    = windLevel;
+         firstBottomLevel = windLevel;
       }
 
       std::rewind(f);
@@ -972,19 +987,19 @@ int RunDerived(int argc, char** argv)
          values       = std::move(mag.values);
          missingValue = mag.missingValue;
       }
-      else if (name == "wind500")
+      else if (const long windLevel = IsobaricWindLevel(name); windLevel != 0)
       {
          auto mag     = ComputeVectorMagnitude(f,
                                                ni,
                                                nj,
                                                "u",
                                                "isobaricInhPa",
-                                               500,
-                                               500,
+                                               windLevel,
+                                               windLevel,
                                                "v",
                                                "isobaricInhPa",
-                                               500,
-                                               500);
+                                               windLevel,
+                                               windLevel);
          values       = std::move(mag.values);
          missingValue = mag.missingValue;
       }
