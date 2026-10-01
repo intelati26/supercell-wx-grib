@@ -496,6 +496,10 @@ void GribDockWidget::Impl::BuildSection(map::GribCategory category,
               {
                  manager::HodographSelection::Instance().SetEnabled(
                     stored.comboBox->IsChecked(kHodographProduct_));
+
+                 // The hodograph alone is a selection too (it follows the same
+                 // cycle and hour): list what is published for it
+                 stored.gribManager->RefreshRrfsAvailability();
               }
 
               // Rrfs/Nbm start with no product active (see GribManager's
@@ -1200,8 +1204,7 @@ void GribDockWidget::Impl::RebuildHourButtons(CategorySection& section)
 
       // A cycle that's gone (nothing active yet) has one degenerate hour;
       // don't show a lone F000 button for it.
-      const bool haveCycle =
-         section.gribManager->CurrentProductIndex().has_value();
+      const bool haveCycle = section.gribManager->HasRrfsSelection();
       for (int hour = 0; haveCycle && hour < hourCount; ++hour)
       {
          auto* button =

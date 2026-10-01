@@ -432,4 +432,78 @@ TEST_F(GribDockWidgetTest, RrfsHourGridFollowsWhatIsPublished)
    provider::RrfsDataProvider::ResetAvailabilityForTesting();
 }
 
+// The gridded hodograph is picked like a product but has none of its own: with
+// it the only thing ticked, the cycle and hour controls must still work -- they
+// used to stay at their empty construction-time range until a normal product
+// was checked.
+TEST_F(GribDockWidgetTest, HodographAloneSizesTheRrfsHourControls)
+{
+   using namespace std::chrono_literals;
+
+   provider::RrfsDataProvider::ResetAvailabilityForTesting();
+   manager::HodographSelection::Instance().SetEnabled(false);
+
+   auto gribManager = manager::GribManager::Instance(map::GribCategory::Rrfs);
+   ASSERT_TRUE(gribManager->ActiveProductIndices().empty());
+   EXPECT_FALSE(gribManager->HasRrfsSelection());
+
+   GribDockWidget dock;
+   dock.resize(420, 1500);
+
+   auto* group = FindGroup(dock, "RRFS");
+   ASSERT_NE(group, nullptr);
+   auto* products = group->findChild<CheckableComboBox*>();
+   ASSERT_NE(products, nullptr);
+
+   const auto hourButtons = [&]()
+   {
+      int count = 0;
+      for (auto* button : group->findChildren<QPushButton*>())
+      {
+         count +=
+            (button->text().size() == 3 && button->text()[0].isDigit()) ? 1 : 0;
+      }
+      return count;
+   };
+   EXPECT_EQ(hourButtons(), 0) << "no selection, no hour grid";
+
+   // Only the hodograph ticked
+   products->SetChecked("Gridded Hodograph", true);
+   products->CheckedItemsChanged();
+   EXPECT_TRUE(gribManager->HasRrfsSelection());
+
+   std::optional<std::set<int>> published;
+   for (int i = 0; i < 1200 && !published.has_value(); ++i)
+   {
+      QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
+      std::this_thread::sleep_for(50ms);
+      published = gribManager->PublishedRrfsForecastHours();
+   }
+   ASSERT_TRUE(published.has_value()) << "S3 was not listed";
+   ASSERT_FALSE(published->empty());
+   QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+
+   EXPECT_EQ(hourButtons(), *published->rbegin() + 1);
+
+   auto* slider = group->findChild<QSlider*>();
+   ASSERT_NE(slider, nullptr);
+   EXPECT_EQ(slider->minimum(), *published->begin());
+   EXPECT_EQ(slider->maximum(), *published->rbegin());
+
+   // "Latest" is a real, 3-hourly cycle -- the hodograph needs the file an
+   // hourly cycle does not have
+   const auto cycle = gribManager->CurrentRrfsCycle();
+   EXPECT_NE(cycle, std::chrono::system_clock::time_point {});
+   EXPECT_FALSE(provider::RrfsDataProvider::UsesSubhVariant(cycle));
+
+   // Unticked again, the grid goes away
+   products->SetChecked("Gridded Hodograph", false);
+   products->CheckedItemsChanged();
+   EXPECT_FALSE(gribManager->HasRrfsSelection());
+   EXPECT_EQ(hourButtons(), 0);
+
+   gribManager->UseLatestRrfsCycle();
+   provider::RrfsDataProvider::ResetAvailabilityForTesting();
+}
+
 } // namespace scwx::qt::ui

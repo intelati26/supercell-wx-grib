@@ -281,6 +281,13 @@ public:
    [[nodiscard]] std::optional<std::set<int>>
    PublishedRrfsForecastHours() const;
 
+   // Whether there is an RRFS selection to size a picker for: a product is
+   // checked, or the gridded hodograph is picked (it follows the same cycle and
+   // hour, and has no GribManager product of its own). The cycle, hour range
+   // and availability functions above answer for it; with neither they report
+   // nothing.
+   [[nodiscard]] bool HasRrfsSelection() const;
+
    // Cycles that have files for the current product, newest first (empty before
    // the first listing).
    [[nodiscard]] std::vector<std::chrono::system_clock::time_point>
@@ -489,6 +496,13 @@ private:
    // defaults) in line with whatever selection is already in effect.
    // Rrfs-only; caller must already know category_ == Rrfs.
    void SyncRrfsProviderState(provider::AwsNexradDataProvider& provider) const;
+
+   // The provider the RRFS cycle/hour/availability questions are asked of: the
+   // first checked product's, or -- with none checked but the hodograph picked
+   // -- one kept for the purpose, synced to the selection. Null if there is
+   // neither.
+   [[nodiscard]] std::shared_ptr<provider::AwsNexradDataProvider>
+   RrfsSelectionProvider() const;
 
    // SetRrfsCycle()/SetRrfsForecastHour()/UseLatestRrfsCycle()'s shared
    // "now go fetch that" tail -- computes the targeted (cycle + forecast

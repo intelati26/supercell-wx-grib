@@ -1,4 +1,5 @@
 #include <scwx/qt/manager/grib_manager.hpp>
+#include <scwx/qt/manager/hodograph_selection.hpp>
 #include <scwx/qt/manager/grib_field_download.hpp>
 #include <scwx/qt/manager/grib_field_selectors.hpp>
 #include <scwx/qt/manager/status_manager.hpp>
@@ -1719,6 +1720,10 @@ public:
    std::chrono::system_clock::time_point rrfsCycleOverride_ {};
    int                                   rrfsForecastHour_ {0};
 
+   // See RrfsSelectionProvider(): only exists while the hodograph is picked
+   // with no product checked.
+   std::shared_ptr<provider::AwsNexradDataProvider> rrfsSelectionProvider_;
+
    // Bounds PrefetchRrfsForecastHourRange() and (via GribDockWidget's own
    // Play/pause loop) where the animation wraps back to -- see
    // SetRrfsLoopRange()'s own doc. rrfsLoopEndHour_ < 0 means "unset, use
@@ -2182,24 +2187,50 @@ void GribManager::UseLatestRrfsCycle()
 bool GribManager::IsUsingLatestRrfsCycle() const
 { return p->category_ != map::GribCategory::Rrfs || p->rrfsUseLatestCycle_; }
 
-std::chrono::system_clock::time_point GribManager::CurrentRrfsCycle() const
+bool GribManager::HasRrfsSelection() const
+{
+   return p->category_ == map::GribCategory::Rrfs &&
+          (CurrentProductIndex().has_value() ||
+           HodographSelection::Instance().IsEnabled());
+}
+
+std::shared_ptr<provider::AwsNexradDataProvider>
+GribManager::RrfsSelectionProvider() const
 {
    if (p->category_ != map::GribCategory::Rrfs)
    {
-      return {};
+      return nullptr;
    }
 
-   // Epoch when nothing is active yet -- same "nothing meaningful to
-   // report" fallback as the category check above, just for the other
-   // way this can have no real answer.
-   const auto index = CurrentProductIndex();
-   if (!index)
+   if (const auto index = CurrentProductIndex())
+   {
+      return p->providers_.at(*index);
+   }
+
+   if (!HodographSelection::Instance().IsEnabled())
+   {
+      return nullptr;
+   }
+
+   if (!p->rrfsSelectionProvider_)
+   {
+      p->rrfsSelectionProvider_ =
+         std::make_shared<provider::RrfsDataProvider>();
+   }
+   SyncRrfsProviderState(*p->rrfsSelectionProvider_); // cheap setters
+   return p->rrfsSelectionProvider_;
+}
+
+std::chrono::system_clock::time_point GribManager::CurrentRrfsCycle() const
+{
+   // Epoch when there is no selection yet -- "nothing meaningful to report"
+   const auto provider = RrfsSelectionProvider();
+   if (!provider)
    {
       return {};
    }
 
-   return ProviderAs<provider::RrfsDataProvider>(*p->providers_.at(*index))
-      .CurrentCycle();
+   return ProviderAs<provider::RrfsDataProvider>(*provider).CurrentCycle();
 }
 
 void GribManager::SetRrfsForecastHour(int hour)
@@ -2226,9 +2257,9 @@ int GribManager::RrfsForecastHour() const
 
 int GribManager::MaxRrfsForecastHour() const
 {
-   if (p->category_ != map::GribCategory::Rrfs || !CurrentProductIndex())
+   if (!HasRrfsSelection())
    {
-      // The second check matters on its own, not just as a guard against
+      // The check matters on its own, not just as a guard against
       // CurrentRrfsCycle()'s own epoch fallback below -- an epoch cycle
       // would still resolve to *some* (meaningless) max-hour value rather
       // than the real "nothing selected yet" of 0.
@@ -2389,16 +2420,14 @@ void GribManager::RefreshRrfsAvailability(bool force)
       return;
    }
 
-   const auto index = CurrentProductIndex();
-   if (!index)
-   {
-      return; // nothing active: nothing to size a picker for
-   }
-
    // Copied: it is listed from a pool thread, and the product may be unchecked
    // meanwhile.
    const std::shared_ptr<provider::AwsNexradDataProvider> provider =
-      p->providers_.at(*index);
+      RrfsSelectionProvider();
+   if (!provider)
+   {
+      return; // nothing selected: nothing to size a picker for
+   }
 
    boost::asio::post(p->lookupPool_,
                      [this, provider, force]()
@@ -2441,24 +2470,31 @@ void GribManager::HandleRrfsAvailability()
 
 std::optional<std::set<int>> GribManager::PublishedRrfsForecastHours() const
 {
-   const auto index = CurrentProductIndex();
-   if (p->category_ != map::GribCategory::Rrfs || !index)
+   const auto selection = RrfsSelectionProvider();
+   if (!selection)
    {
       return std::nullopt;
    }
 
-   const auto& provider =
-      ProviderAs<provider::RrfsDataProvider>(*p->providers_.at(*index));
-   const ProductConfig& product = Products(p->category_)[*index];
-   const auto           cycle   = provider.CurrentCycle();
+   const auto  index    = CurrentProductIndex();
+   const auto& provider = ProviderAs<provider::RrfsDataProvider>(*selection);
+   const auto  cycle    = provider.CurrentCycle();
 
-   auto hours = provider.PublishedHours(cycle, product.rrfsFileFamily);
+   // With only the hodograph picked there is no product: it reads RRFS's 2D
+   // file
+   const ProductConfig* product =
+      index ? &Products(p->category_)[*index] : nullptr;
+
+   auto hours = provider.PublishedHours(cycle,
+                                        product != nullptr ?
+                                           product->rrfsFileFamily :
+                                           provider::RrfsFileFamily::TwoDField);
    if (!hours.has_value())
    {
       return std::nullopt;
    }
 
-   if (product.derivedIndex == "ship")
+   if (product != nullptr && product->derivedIndex == "ship")
    {
       // SHIP reads both of RRFS's files: an hour needs both
       const auto pressure = provider.PublishedHours(
@@ -2483,16 +2519,21 @@ std::optional<std::set<int>> GribManager::PublishedRrfsForecastHours() const
 std::vector<std::chrono::system_clock::time_point>
 GribManager::PublishedRrfsCycles() const
 {
-   const auto index = CurrentProductIndex();
-   if (p->category_ != map::GribCategory::Rrfs || !index)
+   const auto selection = RrfsSelectionProvider();
+   if (!selection)
    {
       return {};
    }
 
-   const auto& provider =
-      ProviderAs<provider::RrfsDataProvider>(*p->providers_.at(*index));
-   const ProductConfig& product = Products(p->category_)[*index];
+   const auto  index    = CurrentProductIndex();
+   const auto& provider = ProviderAs<provider::RrfsDataProvider>(*selection);
 
+   if (!index)
+   {
+      return provider.PublishedCycles(provider::RrfsFileFamily::TwoDField);
+   }
+
+   const ProductConfig& product = Products(p->category_)[*index];
    return provider.PublishedCycles(product.derivedIndex == "ship" ?
                                       provider::RrfsFileFamily::PressureLevel :
                                       product.rrfsFileFamily);
