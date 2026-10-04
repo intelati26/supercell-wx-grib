@@ -35,7 +35,20 @@ static constexpr float kTargetHeightKm_       = 4.0f;
 static constexpr float kAxisTopKm_            = 20.0f;
 static constexpr float kAxisTickKm_           = 5.0f;
 static constexpr float kOpaqueThreshold_      = 0.999f;
-static constexpr int   kLabelMarginPx_        = 6;
+static constexpr float kDefaultHalfSizeKm_    = 50.0f;
+static constexpr float kDefaultVerticalScale_ = 3.0f;
+static constexpr float kDefaultOpacity_       = 0.75f;
+static constexpr float kMaxDistanceScale_     = 10.0f;
+static constexpr float kLabelClipNdc_         = 1.2f;
+static constexpr qreal kLabelMarginPx_        = 6.0;
+static constexpr int   kMinWidthPx_           = 200;
+static constexpr int   kMinHeightPx_          = 150;
+static constexpr int   kAxisTickCount_ =
+   static_cast<int>(kAxisTopKm_ / kAxisTickKm_);
+
+static constexpr QRgb kAxisLabelColor_ = qRgb(210, 210, 215);
+static constexpr QRgb kGridLabelColor_ = qRgb(150, 156, 168);
+static constexpr QRgb kCaptionColor_   = qRgb(235, 235, 240);
 
 static constexpr std::array<std::uint8_t, 4> kGroundColor_ {38, 42, 50, 255};
 static constexpr std::array<std::uint8_t, 4> kGridColor_ {70, 76, 88, 255};
@@ -70,9 +83,9 @@ public:
    GLint                              uOpacityLocation_ {-1};
    bool                               glReady_ {false};
 
-   GLuint meshVao_ {0};
-   GLuint meshBuffers_[2] {0, 0};
-   bool   meshUploaded_ {false};
+   GLuint                meshVao_ {0};
+   std::array<GLuint, 2> meshBuffers_ {0, 0};
+   bool                  meshUploaded_ {false};
 
    GLuint  guideVao_ {0};
    GLuint  guideVbo_ {0};
@@ -83,9 +96,9 @@ public:
    std::shared_ptr<const volume::VolumeMesh>  pendingMesh_ {};
    std::vector<volume::VolumeMesh::TiltRange> tilts_ {};
 
-   double      halfSizeKm_ {50.0};
-   float       verticalScale_ {3.0f};
-   float       opacity_ {0.75f};
+   double      halfSizeKm_ {kDefaultHalfSizeKm_};
+   float       verticalScale_ {kDefaultVerticalScale_};
+   float       opacity_ {kDefaultOpacity_};
    std::size_t visibleTiltCount_ {std::numeric_limits<std::size_t>::max()};
    QString     caption_ {};
 
@@ -101,7 +114,7 @@ public:
 VolumeViewWidget::VolumeViewWidget(QWidget* parent) :
     QOpenGLWidget(parent), p {std::make_unique<Impl>(this)}
 {
-   setMinimumSize(200, 150);
+   setMinimumSize(kMinWidthPx_, kMinHeightPx_);
    ResetCamera();
 }
 
@@ -232,7 +245,7 @@ void VolumeViewWidget::Impl::DeleteMeshBuffers()
    if (meshVao_ != 0)
    {
       glDeleteVertexArrays(1, &meshVao_);
-      glDeleteBuffers(2, static_cast<GLuint*>(meshBuffers_));
+      glDeleteBuffers(2, meshBuffers_.data());
       meshVao_        = 0;
       meshBuffers_[0] = 0;
       meshBuffers_[1] = 0;
@@ -240,24 +253,29 @@ void VolumeViewWidget::Impl::DeleteMeshBuffers()
    meshUploaded_ = false;
 }
 
+// GL takes vertex attribute offsets into the bound buffer as pointers.
+static const void* BufferOffset(std::size_t bytes)
+{
+   // NOLINTNEXTLINE(performance-no-int-to-ptr)
+   return reinterpret_cast<const void*>(bytes);
+}
+
 static void SetVertexLayout()
 {
    constexpr auto kStride = static_cast<GLsizei>(sizeof(volume::MeshVertex));
-   glVertexAttribPointer(
-      0,
-      3,
-      GL_FLOAT,
-      GL_FALSE,
-      kStride,
-      reinterpret_cast<void*>(offsetof(volume::MeshVertex, x)));
+   glVertexAttribPointer(0,
+                         3,
+                         GL_FLOAT,
+                         GL_FALSE,
+                         kStride,
+                         BufferOffset(offsetof(volume::MeshVertex, x)));
    glEnableVertexAttribArray(0);
-   glVertexAttribPointer(
-      1,
-      4,
-      GL_UNSIGNED_BYTE,
-      GL_TRUE,
-      kStride,
-      reinterpret_cast<void*>(offsetof(volume::MeshVertex, rgba)));
+   glVertexAttribPointer(1,
+                         4,
+                         GL_UNSIGNED_BYTE,
+                         GL_TRUE,
+                         kStride,
+                         BufferOffset(offsetof(volume::MeshVertex, rgba)));
    glEnableVertexAttribArray(1);
 }
 
@@ -275,7 +293,7 @@ void VolumeViewWidget::Impl::UploadMesh()
    }
 
    glGenVertexArrays(1, &meshVao_);
-   glGenBuffers(2, static_cast<GLuint*>(meshBuffers_));
+   glGenBuffers(2, meshBuffers_.data());
    glBindVertexArray(meshVao_);
 
    glBindBuffer(GL_ARRAY_BUFFER, meshBuffers_[0]);
@@ -332,8 +350,9 @@ void VolumeViewWidget::Impl::UploadGuides()
 
    // Grid lines through the centre, then outward.
    const float spacing = GridSpacingKm();
-   for (float d = 0.0f; d < half; d += spacing)
+   for (int i = 0; static_cast<float>(i) * spacing < half; ++i)
    {
+      const float d = static_cast<float>(i) * spacing;
       for (const float v : {d, -d})
       {
          add(v, -half, 0.0f, kGridColor_);
@@ -358,8 +377,9 @@ void VolumeViewWidget::Impl::UploadGuides()
    add(-half, -half, 0.0f, kAxisColor_);
    add(-half, -half, kAxisTopKm_, kAxisColor_);
    const float tick = std::max(1.0f, half * 0.02f);
-   for (float z = kAxisTickKm_; z <= kAxisTopKm_; z += kAxisTickKm_)
+   for (int i = 1; i <= kAxisTickCount_; ++i)
    {
+      const float z = static_cast<float>(i) * kAxisTickKm_;
       add(-half, -half, z, kAxisColor_);
       add(-half + tick, -half, z, kAxisColor_);
    }
@@ -489,45 +509,46 @@ void VolumeViewWidget::Impl::DrawLabels(QPainter& painter, const glm::mat4& mvp)
          return std::nullopt;
       }
       const glm::vec3 ndc = glm::vec3 {clip} / clip.w;
-      if (std::abs(ndc.x) > 1.2f || std::abs(ndc.y) > 1.2f)
+      if (std::abs(ndc.x) > kLabelClipNdc_ || std::abs(ndc.y) > kLabelClipNdc_)
       {
          return std::nullopt;
       }
-      return QPointF {(ndc.x + 1.0f) / 2.0f * w, (1.0f - ndc.y) / 2.0f * h};
+      return QPointF {(ndc.x + 1.0f) / 2 * w, (1.0f - ndc.y) / 2 * h};
    };
 
    const auto half = static_cast<float>(halfSizeKm_);
 
-   painter.setPen(QColor {210, 210, 215});
-   for (float z = kAxisTickKm_; z <= kAxisTopKm_; z += kAxisTickKm_)
+   painter.setPen(QColor::fromRgb(kAxisLabelColor_));
+   for (int i = 1; i <= kAxisTickCount_; ++i)
    {
+      const float z = static_cast<float>(i) * kAxisTickKm_;
       if (const auto pt = project(-half, -half, z))
       {
-         painter.drawText(pt->x() + kLabelMarginPx_,
-                          pt->y() + kLabelMarginPx_ / 2,
-                          QString("%1 km").arg(z, 0, 'f', 0));
+         painter.drawText(
+            QPointF {pt->x() + kLabelMarginPx_, pt->y() + kLabelMarginPx_ / 2},
+            QString("%1 km").arg(z, 0, 'f', 0));
       }
    }
 
-   painter.setPen(QColor {150, 156, 168});
+   painter.setPen(QColor::fromRgb(kGridLabelColor_));
    if (const auto pt = project(0.0f, -half, 0.0f))
    {
-      painter.drawText(pt->x(),
-                       pt->y() + kLabelMarginPx_ * 3,
+      painter.drawText(QPointF {pt->x(), pt->y() + kLabelMarginPx_ * 3},
                        QString("%1 km grid").arg(GridSpacingKm(), 0, 'f', 0));
    }
    if (const auto pt = project(0.0f, half, 0.0f))
    {
-      painter.drawText(pt->x(), pt->y() - kLabelMarginPx_, QStringLiteral("N"));
+      painter.drawText(QPointF {pt->x(), pt->y() - kLabelMarginPx_},
+                       QStringLiteral("N"));
    }
 
    if (!caption_.isEmpty())
    {
-      painter.setPen(QColor {235, 235, 240});
-      painter.drawText(QRectF {static_cast<qreal>(kLabelMarginPx_),
-                               static_cast<qreal>(kLabelMarginPx_),
-                               w - 2.0 * kLabelMarginPx_,
-                               h - 2.0 * kLabelMarginPx_},
+      painter.setPen(QColor::fromRgb(kCaptionColor_));
+      painter.drawText(QRectF {kLabelMarginPx_,
+                               kLabelMarginPx_,
+                               w - 2 * kLabelMarginPx_,
+                               h - 2 * kLabelMarginPx_},
                        Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
                        caption_);
    }
@@ -595,7 +616,7 @@ void VolumeViewWidget::wheelEvent(QWheelEvent* event)
    p->distanceKm_ =
       std::clamp(p->distanceKm_ * std::pow(kZoomPerWheelStep_, steps),
                  kMinDistanceKm_,
-                 static_cast<float>(p->halfSizeKm_) * 10.0f);
+                 static_cast<float>(p->halfSizeKm_) * kMaxDistanceScale_);
    update();
    event->accept();
 }

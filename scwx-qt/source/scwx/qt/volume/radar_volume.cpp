@@ -24,17 +24,27 @@ static constexpr double        kSameElevationDeg_    = 0.05;
 static constexpr double        kFullDetailHalfKm_    = 50.0;
 static constexpr double        kHalfDetailHalfKm_    = 100.0;
 static constexpr double        kQuarterDetailHalfKm_ = 200.0;
+static constexpr double        kHalfTurnDeg_         = 180.0;
+static constexpr double        kHalfGate_            = 0.5;
+
+static constexpr CellSize kFullDetail_ {.gateKm = 0.25, .azimuthDeg = 0.5};
+static constexpr CellSize kHalfDetail_ {.gateKm = 0.5, .azimuthDeg = 0.5};
+static constexpr CellSize kQuarterDetail_ {.gateKm = 1.0, .azimuthDeg = 1.0};
+static constexpr CellSize kCoarseDetail_ {.gateKm = 2.0, .azimuthDeg = 1.0};
 
 static double DegToRad(double deg)
 {
-   return deg * std::numbers::pi / 180.0;
+   return deg * std::numbers::pi / kHalfTurnDeg_;
 }
 
 double BeamHeightKm(double rangeKm, double elevationDeg)
 {
-   const double ka = kEffectiveRadiusKm_;
-   return std::sqrt(rangeKm * rangeKm + ka * ka +
-                    2.0 * rangeKm * ka * std::sin(DegToRad(elevationDeg))) -
+   // sqrt(r^2 + ka^2 + 2 r ka sin(el)) - ka, written as the hypotenuse of
+   // the beam point's offsets along and across the antenna's vertical.
+   const double ka        = kEffectiveRadiusKm_;
+   const double elevation = DegToRad(elevationDeg);
+   return std::hypot(rangeKm + ka * std::sin(elevation),
+                     ka * std::cos(elevation)) -
           ka;
 }
 
@@ -65,17 +75,17 @@ CellSize ChooseCellSize(double halfSizeKm)
 {
    if (halfSizeKm <= kFullDetailHalfKm_)
    {
-      return {.gateKm = 0.25, .azimuthDeg = 0.5};
+      return kFullDetail_;
    }
    if (halfSizeKm <= kHalfDetailHalfKm_)
    {
-      return {.gateKm = 0.5, .azimuthDeg = 0.5};
+      return kHalfDetail_;
    }
    if (halfSizeKm <= kQuarterDetailHalfKm_)
    {
-      return {.gateKm = 1.0, .azimuthDeg = 1.0};
+      return kQuarterDetail_;
    }
-   return {.gateKm = 2.0, .azimuthDeg = 1.0};
+   return kCoarseDetail_;
 }
 
 std::size_t RadarVolume::CellCount() const
@@ -260,9 +270,11 @@ VolumeTilt ExtractTilt(const wsr88d::rda::ElevationScan& scan,
             {.az0Deg = az0,
              .az1Deg = az1,
              .r0Km   = static_cast<float>(
-                firstGateKm + (static_cast<double>(firstGate) - 0.5) * gateKm),
+                firstGateKm +
+                (static_cast<double>(firstGate) - kHalfGate_) * gateKm),
              .r1Km = static_cast<float>(
-                firstGateKm + (static_cast<double>(lastGate) + 0.5) * gateKm),
+                firstGateKm +
+                (static_cast<double>(lastGate) + kHalfGate_) * gateKm),
              .value = best[b].value});
       }
 
@@ -335,10 +347,10 @@ VolumeMesh BuildMesh(const RadarVolume&   volume,
             z0 + BeamHeightKm(cell.r0Km, tilt->elevationDeg));
          const auto h1 = static_cast<float>(
             z0 + BeamHeightKm(cell.r1Km, tilt->elevationDeg));
-         const double sin0 = std::sin(DegToRad(cell.az0Deg));
-         const double cos0 = std::cos(DegToRad(cell.az0Deg));
-         const double sin1 = std::sin(DegToRad(cell.az1Deg));
-         const double cos1 = std::cos(DegToRad(cell.az1Deg));
+         const double sinStart = std::sin(DegToRad(cell.az0Deg));
+         const double cosStart = std::cos(DegToRad(cell.az0Deg));
+         const double sinEnd   = std::sin(DegToRad(cell.az1Deg));
+         const double cosEnd   = std::cos(DegToRad(cell.az1Deg));
 
          const auto base = static_cast<std::uint32_t>(mesh.vertices.size());
          auto       add  = [&](double s, double sinAz, double cosAz, float h)
@@ -348,10 +360,10 @@ VolumeMesh BuildMesh(const RadarVolume&   volume,
                                      .z    = h,
                                      .rgba = rgba});
          };
-         add(s0, sin0, cos0, h0);
-         add(s0, sin1, cos1, h0);
-         add(s1, sin1, cos1, h1);
-         add(s1, sin0, cos0, h1);
+         add(s0, sinStart, cosStart, h0);
+         add(s0, sinEnd, cosEnd, h0);
+         add(s1, sinEnd, cosEnd, h1);
+         add(s1, sinStart, cosStart, h1);
 
          mesh.indices.insert(
             mesh.indices.end(),

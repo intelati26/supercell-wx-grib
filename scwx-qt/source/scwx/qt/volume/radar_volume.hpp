@@ -113,7 +113,9 @@ struct MeshVertex
    float                       z {};
    std::array<std::uint8_t, 4> rgba {};
 };
-static_assert(sizeof(MeshVertex) == 16);
+// Tightly packed: the GL vertex layout relies on it.
+static_assert(sizeof(MeshVertex) ==
+              3 * sizeof(float) + sizeof(std::array<std::uint8_t, 4>));
 
 struct VolumeMesh
 {

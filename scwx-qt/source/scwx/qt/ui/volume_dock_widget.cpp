@@ -54,26 +54,77 @@ struct ProductInfo
    int                        decimals;
 };
 
+// Per product: its data block, threshold units and the threshold the pane
+// starts with.
+static constexpr ProductInfo kReflectivityInfo_ {
+   .blockType    = wsr88d::rda::DataBlockType::MomentRef,
+   .units        = " dBZ",
+   .signedValues = false,
+   .thresholdOn  = true,
+   .threshold    = 20.0,
+   .decimals     = 1};
+static constexpr ProductInfo kVelocityInfo_ {
+   .blockType    = wsr88d::rda::DataBlockType::MomentVel,
+   .units        = " m/s",
+   .signedValues = true,
+   .thresholdOn  = true,
+   .threshold    = 15.0,
+   .decimals     = 1};
+static constexpr ProductInfo kSpectrumWidthInfo_ {
+   .blockType    = wsr88d::rda::DataBlockType::MomentSw,
+   .units        = " m/s",
+   .signedValues = false,
+   .thresholdOn  = false,
+   .threshold    = 4.0,
+   .decimals     = 1};
+static constexpr ProductInfo kDifferentialReflectivityInfo_ {
+   .blockType    = wsr88d::rda::DataBlockType::MomentZdr,
+   .units        = " dB",
+   .signedValues = false,
+   .thresholdOn  = false,
+   .threshold    = 2.0,
+   .decimals     = 1};
+static constexpr ProductInfo kDifferentialPhaseInfo_ {
+   .blockType    = wsr88d::rda::DataBlockType::MomentPhi,
+   .units        = "\302\260",
+   .signedValues = false,
+   .thresholdOn  = false,
+   .threshold    = 90.0,
+   .decimals     = 0};
+static constexpr ProductInfo kCorrelationCoefficientInfo_ {
+   .blockType    = wsr88d::rda::DataBlockType::MomentRho,
+   .units        = "",
+   .signedValues = false,
+   .thresholdOn  = false,
+   .threshold    = 0.8,
+   .decimals     = 2};
+static constexpr ProductInfo kClutterFilterPowerRemovedInfo_ {
+   .blockType    = wsr88d::rda::DataBlockType::MomentCfp,
+   .units        = " dB",
+   .signedValues = false,
+   .thresholdOn  = false,
+   .threshold    = 0.0,
+   .decimals     = 1};
+
 static ProductInfo GetProductInfo(common::Level2Product product)
 {
-   using wsr88d::rda::DataBlockType;
    switch (product)
    {
    case common::Level2Product::Velocity:
-      return {DataBlockType::MomentVel, " m/s", true, true, 15.0, 1};
+      return kVelocityInfo_;
    case common::Level2Product::SpectrumWidth:
-      return {DataBlockType::MomentSw, " m/s", false, false, 4.0, 1};
+      return kSpectrumWidthInfo_;
    case common::Level2Product::DifferentialReflectivity:
-      return {DataBlockType::MomentZdr, " dB", false, false, 2.0, 1};
+      return kDifferentialReflectivityInfo_;
    case common::Level2Product::DifferentialPhase:
-      return {DataBlockType::MomentPhi, "\302\260", false, false, 90.0, 0};
+      return kDifferentialPhaseInfo_;
    case common::Level2Product::CorrelationCoefficient:
-      return {DataBlockType::MomentRho, "", false, false, 0.8, 2};
+      return kCorrelationCoefficientInfo_;
    case common::Level2Product::ClutterFilterPowerRemoved:
-      return {DataBlockType::MomentCfp, " dB", false, false, 0.0, 1};
+      return kClutterFilterPowerRemovedInfo_;
    case common::Level2Product::Reflectivity:
    default:
-      return {DataBlockType::MomentRef, " dBZ", false, true, 20.0, 1};
+      return kReflectivityInfo_;
    }
 }
 
@@ -361,7 +412,16 @@ void VolumeDockWidget::Impl::StartFetch()
 
    boost::asio::post(
       pool_,
-      [=, this]()
+      [this,
+       generation,
+       product,
+       info,
+       region,
+       siteId,
+       siteLat,
+       siteLon,
+       siteHeightKm,
+       time]()
       {
          auto volume           = std::make_shared<volume::RadarVolume>();
          volume->siteId        = siteId;
@@ -448,15 +508,16 @@ void VolumeDockWidget::Impl::StartMesh()
 
    boost::asio::post(
       pool_,
-      [=, this]()
+      [this, generation, table, options, volume]()
       {
          const volume::ColorFunction color =
             [&table](float value) -> std::array<std::uint8_t, 4>
          {
             if (table == nullptr || !table->IsValid())
             {
-               constexpr std::uint8_t kGray = 200;
-               return {kGray, kGray, kGray, 255};
+               constexpr std::uint8_t kGray   = 200;
+               constexpr std::uint8_t kOpaque = 255;
+               return {kGray, kGray, kGray, kOpaque};
             }
             const boost::gil::rgba8_pixel_t c = table->Color(value);
             return {c[0], c[1], c[2], c[3]};

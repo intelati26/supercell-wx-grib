@@ -334,7 +334,7 @@ void RunMapPaneContextMenu(const MapPaneContextMenuConfig& cfg,
 
    if (!cfg.text_view_3d.isEmpty() && cfg.on_view_3d)
    {
-      QAction* const view3dAction = menu.addAction(cfg.text_view_3d);
+      const QAction* const view3dAction = menu.addAction(cfg.text_view_3d);
       QObject::connect(
          view3dAction,
          &QAction::triggered,
