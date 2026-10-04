@@ -74,6 +74,7 @@ set(SRC_QT_SETTINGS_TESTS source/scwx/qt/settings/settings_container.test.cpp
                           source/scwx/qt/settings/settings_variable.test.cpp
                           source/scwx/qt/settings/ui_settings.test.cpp
                           source/scwx/qt/settings/unit_settings.test.cpp)
+set(SRC_QT_VOLUME_TESTS source/scwx/qt/volume/radar_volume.test.cpp)
 set(SRC_QT_UTIL_TESTS source/scwx/qt/util/file.test.cpp
                       source/scwx/qt/util/grib_legend.test.cpp
                       source/scwx/qt/util/image_export.test.cpp
@@ -112,6 +113,7 @@ add_executable(wxtest ${SRC_MAIN}
                       ${SRC_QT_UI_TESTS}
                       ${SRC_QT_SETTINGS_TESTS}
                       ${SRC_QT_UTIL_TESTS}
+                      ${SRC_QT_VOLUME_TESTS}
                       ${SRC_TYPES_TESTS}
                       ${SRC_UTIL_TESTS}
                       ${SRC_WSR88D_TESTS}
@@ -134,6 +136,7 @@ source_group("Source Files\\qt\\types"    FILES ${SRC_QT_TYPES_TESTS})
 source_group("Source Files\\qt\\ui"       FILES ${SRC_QT_UI_TESTS})
 source_group("Source Files\\qt\\settings" FILES ${SRC_QT_SETTINGS_TESTS})
 source_group("Source Files\\qt\\util"     FILES ${SRC_QT_UTIL_TESTS})
+source_group("Source Files\\qt\\volume"   FILES ${SRC_QT_VOLUME_TESTS})
 source_group("Source Files\\types"        FILES ${SRC_TYPES_TESTS})
 source_group("Source Files\\util"         FILES ${SRC_UTIL_TESTS})
 source_group("Source Files\\wsr88d"       FILES ${SRC_WSR88D_TESTS})

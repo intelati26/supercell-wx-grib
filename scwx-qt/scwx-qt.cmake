@@ -385,6 +385,8 @@ set(HDR_UI source/scwx/qt/ui/about_dialog.hpp
            source/scwx/qt/ui/threshold_line_edit_sync.hpp
            source/scwx/qt/ui/threshold_value_utility.hpp
            source/scwx/qt/ui/update_dialog.hpp
+           source/scwx/qt/ui/volume_dock_widget.hpp
+           source/scwx/qt/ui/volume_view_widget.hpp
            source/scwx/qt/ui/wfo_dialog.hpp)
 set(SRC_UI source/scwx/qt/ui/about_dialog.cpp
            source/scwx/qt/ui/alert_dialog.cpp
@@ -428,6 +430,8 @@ set(SRC_UI source/scwx/qt/ui/about_dialog.cpp
            source/scwx/qt/ui/settings_dialog.cpp
            source/scwx/qt/ui/serial_port_dialog.cpp
            source/scwx/qt/ui/update_dialog.cpp
+           source/scwx/qt/ui/volume_dock_widget.cpp
+           source/scwx/qt/ui/volume_view_widget.cpp
            source/scwx/qt/ui/wfo_dialog.cpp)
 set(UI_UI  source/scwx/qt/ui/about_dialog.ui
            source/scwx/qt/ui/alert_dialog.ui
@@ -453,6 +457,7 @@ set(UI_UI  source/scwx/qt/ui/about_dialog.ui
            source/scwx/qt/ui/settings_dialog.ui
            source/scwx/qt/ui/serial_port_dialog.ui
            source/scwx/qt/ui/update_dialog.ui
+           source/scwx/qt/ui/volume_dock_widget.ui
            source/scwx/qt/ui/wfo_dialog.ui)
 set(HDR_UI_IMPORT source/scwx/qt/ui/import/import_options_page.hpp
                   source/scwx/qt/ui/import/import_settings_wizard.hpp
@@ -521,6 +526,8 @@ set(SRC_UTIL source/scwx/qt/util/color.cpp
              source/scwx/qt/util/queue_counter.cpp
              source/scwx/qt/util/time.cpp
              source/scwx/qt/util/tooltip.cpp)
+set(HDR_VOLUME source/scwx/qt/volume/radar_volume.hpp)
+set(SRC_VOLUME source/scwx/qt/volume/radar_volume.cpp)
 set(HDR_VIEW source/scwx/qt/view/level2_product_view.hpp
              source/scwx/qt/view/level3_product_view.hpp
              source/scwx/qt/view/level3_radial_view.hpp
@@ -552,7 +559,9 @@ set(SHADER_FILES gl/annotation_geo.vert
                  gl/texture2d.frag
                  gl/texture2d_array.frag
                  gl/texture2d_array.vert
-                 gl/threshold.geom)
+                 gl/threshold.geom
+                 gl/volume.frag
+                 gl/volume.vert)
 
 set(CMAKE_FILES scwx-qt.cmake)
 
@@ -618,6 +627,8 @@ set(PROJECT_SOURCES ${HDR_MAIN}
                     ${SRC_UTIL}
                     ${HDR_VIEW}
                     ${SRC_VIEW}
+                    ${HDR_VOLUME}
+                    ${SRC_VOLUME}
                     ${SHADER_FILES}
                     ${GIS_FILES}
                     ${JSON_FILES}
@@ -664,6 +675,8 @@ source_group("Header Files\\util"         FILES ${HDR_UTIL})
 source_group("Source Files\\util"         FILES ${SRC_UTIL})
 source_group("Header Files\\view"         FILES ${HDR_VIEW})
 source_group("Source Files\\view"         FILES ${SRC_VIEW})
+source_group("Header Files\\volume"       FILES ${HDR_VOLUME})
+source_group("Source Files\\volume"       FILES ${SRC_VOLUME})
 source_group("OpenGL Shaders"             FILES ${SHADER_FILES})
 source_group("Resources"                  FILES ${RESOURCE_FILES})
 source_group("Resources\\gis"             FILES ${GIS_FILES})

@@ -57,6 +57,7 @@
 #include <scwx/qt/ui/radar_site_dialog.hpp>
 #include <scwx/qt/ui/settings_dialog.hpp>
 #include <scwx/qt/ui/update_dialog.hpp>
+#include <scwx/qt/ui/volume_dock_widget.hpp>
 #include <scwx/qt/ui/import/import_settings_wizard.hpp>
 #include <scwx/common/characters.hpp>
 #include <scwx/common/products.hpp>
@@ -327,6 +328,7 @@ public:
                                           const std::string& id,
                                           bool               updateCoordinates);
    void UpdateVcp();
+   void UpdateVolumeSource();
    void UpdateMatchMapStyleFromPanesState(bool allowAutocheck);
    void ApplyMatchMapStyleFromMainToAllPanes();
    void OnPanesMatchMapStyleToggled(bool checked);
@@ -376,6 +378,7 @@ public:
 
    ui::AlertDockWidget*                  alertDockWidget_ {};
    ui::GribDockWidget*                   gribDockWidget_ {};
+   ui::VolumeDockWidget*                 volumeDockWidget_ {};
    QPointer<ui::MapAnnotationDockWidget> mapAnnotationDock_ {};
    ui::AnimationDockWidget*              animationDockWidget_ {};
    ui::AboutDialog*                      aboutDialog_ {};
@@ -519,6 +522,15 @@ MainWindow::MainWindow(QWidget* parent) :
    p->gribDockWidget_->toggleViewAction()->setText(tr("&GRIB"));
    ui->menuView->addAction(p->gribDockWidget_->toggleViewAction());
    p->gribDockWidget_->hide();
+
+   // 3D volume pane, also appended to the View menu directly. Opened from
+   // here or from a map's context menu ("3D view here").
+   p->volumeDockWidget_ = new ui::VolumeDockWidget(this);
+   addDockWidget(Qt::RightDockWidgetArea, p->volumeDockWidget_);
+   p->volumeDockWidget_->toggleViewAction()->setText(tr("&3D Volume"));
+   ui->menuView->addAction(p->volumeDockWidget_->toggleViewAction());
+   p->volumeDockWidget_->hide();
+   p->UpdateVolumeSource();
 
    connect(p->gribDockWidget_,
            &ui::GribDockWidget::MapBoundsRequested,
@@ -2837,6 +2849,7 @@ void MainWindowImpl::ConnectMapSignals()
                UpdateRadarProductSettings();
                UpdateRadarSite();
                UpdateVcp();
+               UpdateVolumeSource();
             }
          },
          Qt::QueuedConnection);
@@ -3836,6 +3849,8 @@ void MainWindowImpl::SetActiveMap(map::MapWidget* mapWidget)
       widget->SetActive(mapWidget == widget);
    }
 
+   UpdateVolumeSource();
+
    if (!mapAnnotationDock_.isNull())
    {
       if (activeMap_ != nullptr)
@@ -3850,6 +3865,18 @@ void MainWindowImpl::SetActiveMap(map::MapWidget* mapWidget)
          mapAnnotationDock_->BindToLayer(nullptr);
       }
    }
+}
+
+void MainWindowImpl::UpdateVolumeSource()
+{
+   if (volumeDockWidget_ == nullptr || activeMap_ == nullptr)
+   {
+      return;
+   }
+   volumeDockWidget_->SetSource({.radarSite = activeMap_->GetRadarSite(),
+                                 .group   = activeMap_->GetRadarProductGroup(),
+                                 .product = activeMap_->GetRadarProductName(),
+                                 .time    = activeMap_->GetSelectedTime()});
 }
 
 void MainWindowImpl::UpdateAvailableLevel3Products()
@@ -3967,6 +3994,20 @@ void MainWindowImpl::OnMapPaneContextMenuRequested(const QPoint& globalPos)
       "Use Dock on a popped-out map, or close this menu "
       "and reset layout from the main window.");
    cfg.text_draw            = mainWindow_->tr("&Draw");
+   cfg.text_view_3d         = mainWindow_->tr("&3D view here");
+   cfg.on_view_3d           = [this](map::MapWidget* w, const QPoint& globalPos)
+   {
+      const std::optional<common::Coordinate> coordinate =
+         w->CoordinateAtPixel(w->mapFromGlobal(QPointF {globalPos}));
+      if (!coordinate.has_value() || volumeDockWidget_ == nullptr)
+      {
+         return;
+      }
+      SetActiveMap(w);
+      UpdateVolumeSource();
+      volumeDockWidget_->ShowRegion(coordinate->latitude_,
+                                    coordinate->longitude_);
+   };
    cfg.is_draw_toolbar_open = [this](std::size_t i)
    {
       if (mapAnnotationDock_.isNull() || i >= maps_.size() ||

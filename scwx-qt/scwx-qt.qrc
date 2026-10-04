@@ -17,6 +17,8 @@
         <file>gl/texture2d_array.frag</file>
         <file>gl/texture2d_array.vert</file>
         <file>gl/threshold.geom</file>
+        <file>gl/volume.frag</file>
+        <file>gl/volume.vert</file>
         <file>res/audio/wikimedia/Emergency_Alert_System_Attention_Signal_20s.ogg</file>
         <file>res/config/radar_sites.json</file>
         <file>res/config/radars_iastate.gis</file>
