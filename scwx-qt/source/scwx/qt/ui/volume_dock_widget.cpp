@@ -208,7 +208,8 @@ void VolumeDockWidget::Impl::ConnectControls()
    QObject::connect(ui_->opacitySlider,
                     &QSlider::valueChanged,
                     self_,
-                    [this](int value) {
+                    [this](int value)
+                    {
                        ui_->volumeView->SetOpacity(static_cast<float>(value) /
                                                    kOpacityPercent_);
                     });
