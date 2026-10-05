@@ -16,6 +16,16 @@ namespace qt
 namespace manager
 {
 
+// Reads a frame file's JSON header line, closing the file before returning:
+// Windows cannot replace a file that is open, so a poll that kept it open
+// across its sleep made the manager's every replace attempt fail ("Access is
+// denied") and the frame never updated.
+static bool ReadFrameHeader(const std::string& path, std::string& header)
+{
+   std::ifstream in(path, std::ios::binary);
+   return in.is_open() && std::getline(in, header).good();
+}
+
 // Real S3/decode access below -- mirrors GribManagerTest's own
 // RrfsForecastHourSelection test, and deliberately reuses the exact same
 // known-real historical cycle (2026-09-25 12z, F000). Unlike that test's
@@ -65,10 +75,8 @@ TEST(HodographManagerTest, CycleForecastHourSelection)
 
    for (int i = 0; i < 180 && !found; ++i)
    {
-      std::ifstream in(uFramePath, std::ios::binary);
-      if (in.is_open())
+      if (ReadFrameHeader(uFramePath, header))
       {
-         std::getline(in, header);
          if (header.find(std::format(R"("validTime":"{:%Y-%m-%dT%H:%M:%SZ}")",
                                      floor<seconds>(fixedCycle))) !=
              std::string::npos)
@@ -117,11 +125,8 @@ TEST(HodographManagerTest, LatestCycleHasEveryLevel)
    std::string header;
    for (int i = 0; i < 240 && !found; ++i) // up to two minutes
    {
-      std::ifstream in(uFramePath, std::ios::binary);
-      if (in.is_open())
+      if (ReadFrameHeader(uFramePath, header))
       {
-         std::getline(in, header);
-
          const auto at = header.find("\"validTime\":\"");
          int        y = 0, mo = 0, d = 0, h = 0, mi = 0, sec = 0;
          if (at != std::string::npos && std::sscanf(header.c_str() + at + 13,
