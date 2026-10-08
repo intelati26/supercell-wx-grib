@@ -7,10 +7,11 @@ uniform float uVerticalScale;
 uniform float uOpacity;
 
 smooth out vec4 color;
+smooth out vec3 position;
 
 void main()
 {
-   gl_Position = uMVPMatrix *
-                 vec4(aPosition.xy, aPosition.z * uVerticalScale, 1.0f);
+   position    = vec3(aPosition.xy, aPosition.z * uVerticalScale);
+   gl_Position = uMVPMatrix * vec4(position, 1.0f);
    color       = vec4(aColor.rgb, aColor.a * uOpacity);
 }

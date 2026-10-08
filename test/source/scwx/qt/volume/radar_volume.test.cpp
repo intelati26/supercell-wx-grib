@@ -1,7 +1,9 @@
 #include <scwx/qt/volume/radar_volume.hpp>
 #include <scwx/wsr88d/ar2v_file.hpp>
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numbers>
 
 #include <gtest/gtest.h>
@@ -118,7 +120,7 @@ TEST(RadarVolume, MeshSkipsCellsBelowThresholdAndTransparent)
          // 60 dBZ is transparent in this table.
          return {255, 0, 0, static_cast<std::uint8_t>(value >= 60 ? 0 : 255)};
       },
-      {.threshold = 20.0f, .signedProduct = false});
+      {.threshold = 20.0f, .signedProduct = false, .solid = false});
 
    ASSERT_EQ(mesh.tilts.size(), 2u);
    EXPECT_FLOAT_EQ(mesh.tilts[0].elevationDeg, 0.5f);
@@ -158,7 +160,9 @@ TEST(RadarVolume, MeshThresholdUsesMagnitudeForSignedProducts)
        }});
 
    const VolumeMesh mesh =
-      BuildMesh(volume, Opaque, {.threshold = 20.0f, .signedProduct = true});
+      BuildMesh(volume,
+                Opaque,
+                {.threshold = 20.0f, .signedProduct = true, .solid = false});
    EXPECT_EQ(mesh.vertices.size(), 8u);
 }
 
@@ -173,13 +177,86 @@ TEST(RadarVolume, MeshIsCentredOnRegion)
                                              .r1Km   = 50.5f,
                                              .value  = 1}}});
 
-   const VolumeMesh mesh = BuildMesh(volume, Opaque, {});
+   const VolumeMesh mesh = BuildMesh(volume, Opaque, {.solid = false});
    ASSERT_EQ(mesh.vertices.size(), 4u);
    for (const auto& v : mesh.vertices)
    {
       EXPECT_NEAR(v.x, 0.0f, 0.5f);
       EXPECT_NEAR(v.y, 0.0f, 0.6f);
    }
+}
+
+static float MinZ(const VolumeMesh& mesh, std::size_t first, std::size_t count)
+{
+   float z = std::numeric_limits<float>::max();
+   for (std::size_t i = first; i < first + count; ++i)
+   {
+      z = std::min(z, mesh.vertices.at(i).z);
+   }
+   return z;
+}
+
+static float MaxZ(const VolumeMesh& mesh, std::size_t first, std::size_t count)
+{
+   float z = std::numeric_limits<float>::lowest();
+   for (std::size_t i = first; i < first + count; ++i)
+   {
+      z = std::max(z, mesh.vertices.at(i).z);
+   }
+   return z;
+}
+
+TEST(RadarVolume, SolidCellsFillBetweenTilts)
+{
+   // The same bin on three tilts, 50 km out.
+   RadarVolume volume {};
+   for (const float elevation : {0.5f, 1.5f, 3.5f})
+   {
+      volume.tilts.push_back({.elevationDeg = elevation,
+                              .cells        = {{.az0Deg = 0.0f,
+                                                .az1Deg = 1.0f,
+                                                .r0Km   = 50.0f,
+                                                .r1Km   = 50.0f,
+                                                .value  = 40.0f}}});
+   }
+
+   const VolumeMesh mesh = BuildMesh(volume, Opaque, {});
+   ASSERT_EQ(mesh.tilts.size(), 3u);
+   ASSERT_EQ(mesh.vertices.size(), 3u * 8u);
+   ASSERT_EQ(mesh.indices.size(), 3u * 36u);
+   EXPECT_EQ(mesh.tilts[1].firstIndex, 36u);
+   EXPECT_EQ(mesh.tilts[1].indexCount, 36u);
+
+   // Lowest tilt: half a beamwidth below its own angle; each boundary half
+   // way between tilts, shared by the solids on either side; highest tilt:
+   // half a beamwidth above.
+   EXPECT_NEAR(MinZ(mesh, 0, 8), BeamHeightKm(50.0, 0.0), 1e-4);
+   EXPECT_NEAR(MaxZ(mesh, 0, 8), BeamHeightKm(50.0, 1.0), 1e-4);
+   EXPECT_NEAR(MinZ(mesh, 8, 8), BeamHeightKm(50.0, 1.0), 1e-4);
+   EXPECT_NEAR(MaxZ(mesh, 8, 8), BeamHeightKm(50.0, 2.5), 1e-4);
+   EXPECT_NEAR(MinZ(mesh, 16, 8), BeamHeightKm(50.0, 2.5), 1e-4);
+   EXPECT_NEAR(MaxZ(mesh, 16, 8), BeamHeightKm(50.0, 4.0), 1e-4);
+
+   for (const std::uint32_t index : mesh.indices)
+   {
+      EXPECT_LT(index, mesh.vertices.size());
+   }
+}
+
+TEST(RadarVolume, SingleTiltSolidSpansOneBeamwidth)
+{
+   RadarVolume volume {};
+   volume.tilts.push_back({.elevationDeg = 2.0f,
+                           .cells        = {{.az0Deg = 90.0f,
+                                             .az1Deg = 91.0f,
+                                             .r0Km   = 20.0f,
+                                             .r1Km   = 21.0f,
+                                             .value  = 30.0f}}});
+
+   const VolumeMesh mesh = BuildMesh(volume, Opaque, {});
+   ASSERT_EQ(mesh.vertices.size(), 8u);
+   EXPECT_NEAR(MinZ(mesh, 0, 8), BeamHeightKm(20.0, 1.5), 1e-4);
+   EXPECT_NEAR(MaxZ(mesh, 0, 8), BeamHeightKm(21.0, 2.5), 1e-4);
 }
 
 class RadarVolumeFileTest : public testing::Test

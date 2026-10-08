@@ -230,6 +230,10 @@ void VolumeDockWidget::Impl::ConnectControls()
                        ui_->thresholdSpinBox->setEnabled(checked);
                        ScheduleMesh();
                     });
+   QObject::connect(ui_->fillCheckBox,
+                    &QCheckBox::toggled,
+                    self_,
+                    [this]() { ScheduleMesh(); });
    QObject::connect(ui_->thresholdSpinBox,
                     &QDoubleSpinBox::valueChanged,
                     self_,
@@ -503,7 +507,8 @@ void VolumeDockWidget::Impl::StartMesh()
                           std::optional<float> {
                          static_cast<float>(ui_->thresholdSpinBox->value())} :
                           std::nullopt,
-      .signedProduct = info.signedValues};
+      .signedProduct = info.signedValues,
+      .solid         = ui_->fillCheckBox->isChecked()};
    const std::shared_ptr<const volume::RadarVolume> volume = volume_;
 
    boost::asio::post(

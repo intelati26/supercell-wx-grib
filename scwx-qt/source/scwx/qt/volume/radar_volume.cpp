@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <utility>
 
 namespace scwx::qt::volume
 {
@@ -26,6 +27,21 @@ static constexpr double        kHalfDetailHalfKm_    = 100.0;
 static constexpr double        kQuarterDetailHalfKm_ = 200.0;
 static constexpr double        kHalfTurnDeg_         = 180.0;
 static constexpr double        kHalfGate_            = 0.5;
+// Half the WSR-88D's ~0.95 degree beamwidth: how far the lowest and highest
+// tilts' solids reach below and above their own angle.
+static constexpr double kHalfBeamwidthDeg_ = 0.5;
+
+// Corner c of a solid cell is (elevation edge, range edge, azimuth edge) =
+// (c / 4, c / 2 % 2, c % 2); two triangles per face.
+static constexpr std::array<std::uint32_t, 36> kSolidIndices_ {
+   0, 1, 3, 0, 3, 2, // bottom
+   4, 6, 7, 4, 7, 5, // top
+   0, 4, 5, 0, 5, 1, // near
+   2, 3, 7, 2, 7, 6, // far
+   0, 2, 6, 0, 6, 4, // start azimuth side
+   1, 5, 7, 1, 7, 3  // end azimuth side
+};
+static constexpr std::array<std::uint32_t, 6> kPatchIndices_ {0, 1, 2, 0, 2, 3};
 
 static constexpr CellSize kFullDetail_ {.gateKm = 0.25, .azimuthDeg = 0.5};
 static constexpr CellSize kHalfDetail_ {.gateKm = 0.5, .azimuthDeg = 0.5};
@@ -316,14 +332,40 @@ VolumeMesh BuildMesh(const RadarVolume&   volume,
    const double cy = volume.region.centerYKm;
    const double z0 = volume.siteHeightKm;
 
-   for (const VolumeTilt* tilt : tilts)
+   // First the cells that are drawn, with their colours, so the buffers can
+   // be sized exactly: growing them cell by cell cost most of the build.
+   struct DrawnCell
    {
-      VolumeMesh::TiltRange range {
-         .elevationDeg = tilt->elevationDeg,
-         .firstIndex   = static_cast<std::uint32_t>(mesh.indices.size()),
-         .indexCount   = 0};
+      const VolumeCell*           cell;
+      std::array<std::uint8_t, 4> rgba;
+   };
+   struct DrawnTilt
+   {
+      double                 elevationDeg;
+      double                 elevationLowDeg;
+      double                 elevationHighDeg;
+      std::vector<DrawnCell> cells;
+   };
+   std::vector<DrawnTilt> drawn {};
+   drawn.reserve(tilts.size());
+   std::size_t drawnCount = 0;
+   for (std::size_t t = 0; t < tilts.size(); ++t)
+   {
+      const double elevation = tilts[t]->elevationDeg;
 
-      for (const VolumeCell& cell : tilt->cells)
+      // The solid's lower and upper elevation edges: half way to the
+      // neighbouring tilts, so the solids of adjacent tilts meet.
+      DrawnTilt& tilt = drawn.emplace_back(DrawnTilt {
+         .elevationDeg     = elevation,
+         .elevationLowDeg  = t == 0 ?
+                                elevation - kHalfBeamwidthDeg_ :
+                                (tilts[t - 1]->elevationDeg + elevation) / 2,
+         .elevationHighDeg = t + 1 == tilts.size() ?
+                                elevation + kHalfBeamwidthDeg_ :
+                                (elevation + tilts[t + 1]->elevationDeg) / 2,
+         .cells            = {}});
+
+      for (const VolumeCell& cell : tilts[t]->cells)
       {
          if (options.threshold.has_value())
          {
@@ -336,38 +378,88 @@ VolumeMesh BuildMesh(const RadarVolume&   volume,
          }
 
          const std::array<std::uint8_t, 4> rgba = color(cell.value);
-         if (rgba[3] == 0)
+         if (rgba[3] != 0)
          {
-            continue;
+            tilt.cells.push_back({.cell = &cell, .rgba = rgba});
          }
+      }
+      drawnCount += tilt.cells.size();
+   }
 
-         const double s0 = GroundRangeKm(cell.r0Km, tilt->elevationDeg);
-         const double s1 = GroundRangeKm(cell.r1Km, tilt->elevationDeg);
-         const auto   h0 = static_cast<float>(
-            z0 + BeamHeightKm(cell.r0Km, tilt->elevationDeg));
-         const auto h1 = static_cast<float>(
-            z0 + BeamHeightKm(cell.r1Km, tilt->elevationDeg));
-         const double sinStart = std::sin(DegToRad(cell.az0Deg));
-         const double cosStart = std::cos(DegToRad(cell.az0Deg));
-         const double sinEnd   = std::sin(DegToRad(cell.az1Deg));
-         const double cosEnd   = std::cos(DegToRad(cell.az1Deg));
+   const std::size_t verticesPerCell = options.solid ? 8 : 4;
+   mesh.vertices.reserve(drawnCount * verticesPerCell);
+   mesh.indices.reserve(drawnCount * (options.solid ? kSolidIndices_.size() :
+                                                      kPatchIndices_.size()));
+
+   for (const DrawnTilt& tilt : drawn)
+   {
+      const double elevation     = tilt.elevationDeg;
+      const double elevationLow  = tilt.elevationLowDeg;
+      const double elevationHigh = tilt.elevationHighDeg;
+
+      VolumeMesh::TiltRange range {
+         .elevationDeg = static_cast<float>(elevation),
+         .firstIndex   = static_cast<std::uint32_t>(mesh.indices.size()),
+         .indexCount   = 0};
+
+      for (const auto& [cellPtr, rgba] : tilt.cells)
+      {
+         const VolumeCell& cell = *cellPtr;
+
+         const std::array<double, 2> sinAz {std::sin(DegToRad(cell.az0Deg)),
+                                            std::sin(DegToRad(cell.az1Deg))};
+         const std::array<double, 2> cosAz {std::cos(DegToRad(cell.az0Deg)),
+                                            std::cos(DegToRad(cell.az1Deg))};
+         const std::array<double, 2> ranges {cell.r0Km, cell.r1Km};
 
          const auto base = static_cast<std::uint32_t>(mesh.vertices.size());
-         auto       add  = [&](double s, double sinAz, double cosAz, float h)
+         // The beam point at slant range r and elevation el, at both
+         // azimuth edges.
+         auto addEdge = [&](double r, double el)
          {
-            mesh.vertices.push_back({.x    = static_cast<float>(s * sinAz - cx),
-                                     .y    = static_cast<float>(s * cosAz - cy),
-                                     .z    = h,
-                                     .rgba = rgba});
+            const double s = GroundRangeKm(r, el);
+            const auto   h = static_cast<float>(z0 + BeamHeightKm(r, el));
+            for (std::size_t a = 0; a < 2; ++a)
+            {
+               // The analyzer loses track of drawn's elements between the
+               // two passes and calls rgba uninitialized; it is set in the
+               // first pass for every cell kept.
+               // NOLINTBEGIN(clang-analyzer-core.CallAndMessage)
+               mesh.vertices.push_back(
+                  {.x    = static_cast<float>(s * sinAz.at(a) - cx),
+                   .y    = static_cast<float>(s * cosAz.at(a) - cy),
+                   .z    = h,
+                   .rgba = rgba});
+               // NOLINTEND(clang-analyzer-core.CallAndMessage)
+            }
          };
-         add(s0, sinStart, cosStart, h0);
-         add(s0, sinEnd, cosEnd, h0);
-         add(s1, sinEnd, cosEnd, h1);
-         add(s1, sinStart, cosStart, h1);
 
-         mesh.indices.insert(
-            mesh.indices.end(),
-            {base, base + 1, base + 2, base, base + 2, base + 3});
+         if (options.solid)
+         {
+            for (const double el : {elevationLow, elevationHigh})
+            {
+               for (const double r : ranges)
+               {
+                  addEdge(r, el);
+               }
+            }
+            for (const std::uint32_t i : kSolidIndices_)
+            {
+               mesh.indices.push_back(base + i);
+            }
+         }
+         else
+         {
+            // Near edge start -> end azimuth, then far edge end -> start,
+            // so the patch's corners go round.
+            addEdge(cell.r0Km, elevation);
+            addEdge(cell.r1Km, elevation);
+            std::swap(mesh.vertices[base + 2], mesh.vertices[base + 3]);
+            for (const std::uint32_t i : kPatchIndices_)
+            {
+               mesh.indices.push_back(base + i);
+            }
+         }
       }
 
       range.indexCount =
@@ -375,8 +467,6 @@ VolumeMesh BuildMesh(const RadarVolume&   volume,
       mesh.tilts.push_back(range);
    }
 
-   mesh.vertices.shrink_to_fit();
-   mesh.indices.shrink_to_fit();
    return mesh;
 }
 

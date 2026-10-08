@@ -81,6 +81,7 @@ public:
    GLint                              uMvpLocation_ {-1};
    GLint                              uVerticalScaleLocation_ {-1};
    GLint                              uOpacityLocation_ {-1};
+   GLint                              uShadeLocation_ {-1};
    bool                               glReady_ {false};
 
    GLuint                meshVao_ {0};
@@ -201,6 +202,7 @@ void VolumeViewWidget::initializeGL()
    p->uVerticalScaleLocation_ =
       p->shader_->GetUniformLocation("uVerticalScale");
    p->uOpacityLocation_ = p->shader_->GetUniformLocation("uOpacity");
+   p->uShadeLocation_   = p->shader_->GetUniformLocation("uShade");
 
    glGenVertexArrays(1, &p->guideVao_);
    glGenBuffers(1, &p->guideVbo_);
@@ -451,6 +453,7 @@ void VolumeViewWidget::paintGL()
 
       // Ground, pushed back so the grid lines on it win the depth test.
       glUniform1f(p->uOpacityLocation_, 1.0f);
+      glUniform1f(p->uShadeLocation_, 0.0f);
       glBindVertexArray(p->guideVao_);
       glEnable(GL_POLYGON_OFFSET_FILL);
       glPolygonOffset(1.0f, 1.0f);
@@ -477,6 +480,7 @@ void VolumeViewWidget::paintGL()
                glDepthMask(GL_FALSE);
             }
             glUniform1f(p->uOpacityLocation_, p->opacity_);
+            glUniform1f(p->uShadeLocation_, 1.0f);
             glBindVertexArray(p->meshVao_);
             glDrawElements(GL_TRIANGLES,
                            static_cast<GLsizei>(indexCount),

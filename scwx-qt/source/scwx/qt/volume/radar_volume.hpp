@@ -139,11 +139,16 @@ struct MeshOptions
    // Cells below this are left out (|value| for signed products).
    std::optional<float> threshold {};
    bool                 signedProduct {false};
+   // Fill the space between tilts: each cell becomes a solid reaching half
+   // way to the tilt above and below (half a beamwidth past the lowest and
+   // highest), so neighbouring tilts meet and the whole is a volume. Off,
+   // each cell is a flat patch on its tilt's cone.
+   bool solid {true};
 };
 
-// Two triangles per cell on the tilt's cone, coloured by color (alpha 0 =
-// left out). Vertices are not shared between cells, so each keeps its own
-// flat colour.
+// Each kept cell (alpha 0 from color = left out) as a solid of 8 corners and
+// 12 triangles, or with solid off as 2 triangles on its tilt's cone. Cells
+// do not share vertices, so each keeps its own flat colour.
 VolumeMesh BuildMesh(const RadarVolume&   volume,
                      const ColorFunction& color,
                      const MeshOptions&   options);

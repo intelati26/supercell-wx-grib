@@ -232,6 +232,19 @@
         </item>
        </layout>
       </item>
+      <item row="3" column="0" colspan="3">
+       <widget class="QCheckBox" name="fillCheckBox">
+        <property name="toolTip">
+         <string>Fill the space between tilts so the echoes form a solid volume: each bin reaches half way to the tilt above and below. Off, each tilt is a thin cone.</string>
+        </property>
+        <property name="text">
+         <string>Fill between tilts</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
      </layout>
     </item>
     <item>
