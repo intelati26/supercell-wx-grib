@@ -1559,6 +1559,17 @@ void MapWidget::GetMapViewParameters(double& latitude,
    p->GetMapViewParameters(latitude, longitude, zoom, bearing, pitch);
 }
 
+std::optional<common::Coordinate>
+MapWidget::CoordinateAtPixel(const QPointF& localPos) const
+{
+   if (p->map_ == nullptr)
+   {
+      return std::nullopt;
+   }
+   const auto coordinate = p->map_->coordinateForPixel(localPos);
+   return common::Coordinate {coordinate.first, coordinate.second};
+}
+
 void MapWidget::SetInitialMapStyle(const std::string& styleName)
 {
    p->initialStyleName_ = styleName;

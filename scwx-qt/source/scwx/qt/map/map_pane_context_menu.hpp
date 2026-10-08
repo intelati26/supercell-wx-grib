@@ -32,6 +32,7 @@ struct MapPaneContextMenuConfig
    QString text_reset_layout;
    QString tooltip_reset_layout_when_popped;
    QString text_draw;
+   QString text_view_3d;
 
    std::size_t                    map_index   = 0;
    const std::vector<MapWidget*>* maps        = nullptr;
@@ -50,6 +51,9 @@ struct MapPaneContextMenuConfig
    /// is checkable; otherwise Draw only opens on click.
    std::function<bool(std::size_t map_index)>            is_draw_toolbar_open;
    std::function<void(std::size_t map_index, bool open)> set_draw_toolbar_open;
+   /// With nonempty \p text_view_3d: opens the 3D volume pane on the map
+   /// point the menu was opened at (\p globalPos of RunMapPaneContextMenu).
+   std::function<void(MapWidget* map, const QPoint& globalPos)> on_view_3d;
 };
 
 void RunMapPaneContextMenu(const MapPaneContextMenuConfig& cfg,

@@ -332,6 +332,29 @@ void RunMapPaneContextMenu(const MapPaneContextMenuConfig& cfg,
       menu.addSeparator();
    }
 
+   if (!cfg.text_view_3d.isEmpty() && cfg.on_view_3d)
+   {
+      const QAction* const view3dAction = menu.addAction(cfg.text_view_3d);
+      QObject::connect(
+         view3dAction,
+         &QAction::triggered,
+         receiver,
+         [receiver, curMap, globalPos, onView3d = cfg.on_view_3d]()
+         {
+            QTimer::singleShot(
+               0,
+               receiver,
+               [map = QPointer<MapWidget> {curMap}, globalPos, onView3d]()
+               {
+                  if (map)
+                  {
+                     onView3d(map, globalPos);
+                  }
+               });
+         });
+      menu.addSeparator();
+   }
+
    if (mapIndex < cfg.popped_out->size() && !cfg.popped_out->at(mapIndex) &&
        onPop)
    {

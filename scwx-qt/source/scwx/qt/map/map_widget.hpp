@@ -181,6 +181,11 @@ public:
                              double& bearing,
                              double& pitch) const;
 
+   // Map coordinate under a point given in this widget's own coordinates, or
+   // nullopt before the map exists.
+   [[nodiscard]] std::optional<common::Coordinate>
+   CoordinateAtPixel(const QPointF& localPos) const;
+
    void SetInitialMapStyle(const std::string& styleName);
    void SetMapStyle(const std::string& styleName, bool force = false);
    void SetRadarWireframeEnabled(bool enabled);
